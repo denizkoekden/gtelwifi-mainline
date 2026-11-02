@@ -1,0 +1,49 @@
+From 20861e8713de7953f4623786ca266100b06928fc Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 08:34:00 +0000
+Subject: [PATCH 39/79] rtc: sc27xx: keep the alarm interrupt armed in suspend
+
+The alarm interrupt comes from the PMIC's regmap-irq chip, which masks
+every interrupt that is not a wakeup source on suspend, so the alarm
+never woke the system although the device is wakeup capable. Register
+it as the wake IRQ of the device.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ drivers/rtc/rtc-sc27xx.c | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/drivers/rtc/rtc-sc27xx.c b/drivers/rtc/rtc-sc27xx.c
+index 2b83561d4..bb0a15c60 100644
+--- a/drivers/rtc/rtc-sc27xx.c
++++ b/drivers/rtc/rtc-sc27xx.c
+@@ -10,6 +10,7 @@
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
++#include <linux/pm_wakeirq.h>
+ #include <linux/regmap.h>
+ #include <linux/rtc.h>
+ 
+@@ -615,6 +616,17 @@ static int sprd_rtc_probe(struct platform_device *pdev)
+ 
+ 	device_init_wakeup(&pdev->dev, true);
+ 
++	/*
++	 * The alarm reaches the CPU through the PMIC interrupt controller,
++	 * which disables (masks) every interrupt that is not a wakeup source
++	 * during suspend. Keep it enabled when the RTC may wake the system.
++	 */
++	ret = devm_pm_set_wake_irq(&pdev->dev, rtc->irq);
++	if (ret) {
++		device_init_wakeup(&pdev->dev, false);
++		return ret;
++	}
++
+ 	rtc->rtc->ops = &sprd_rtc_ops;
+ 	rtc->rtc->range_min = 0;
+ 	rtc->rtc->range_max = 5662310399LL;
+-- 
+2.47.3
+

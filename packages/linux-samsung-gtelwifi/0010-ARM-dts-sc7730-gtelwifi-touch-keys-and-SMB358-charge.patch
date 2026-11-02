@@ -1,0 +1,100 @@
+From 3184a76305179476f418c050c83960fc758f8688 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 1 Nov 2026 17:23:36 +0000
+Subject: [PATCH 10/79] ARM: dts: sc7730-gtelwifi: touch keys and SMB358
+ charger
+
+The capacitive keys next to Home are Zinitix icons 0 and 1.
+
+The SMB358 sits on a bit-banged bus (GPIO 159/160). sboot leaves it at
+a 4.35 V float with termination off; bind smb347-charger with the
+vendor kernel values (4.32 V, 2000/450/200 mA) and its IRQ on GPIO 161.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ .../dts/unisoc/sc7730-samsung-gtelwifi.dts    | 49 ++++++++++++++++++-
+ 1 file changed, 48 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index dd3607b46..6f15212e8 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -10,6 +10,8 @@
+ 
+ #include "sc7730.dtsi"
+ #include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++#include <dt-bindings/power/summit,smb347-charger.h>
+ #include <dt-bindings/interrupt-controller/irq.h>
+ 
+ / {
+@@ -23,12 +25,56 @@ tsp_ldo: regulator-tsp {
+ 		enable-active-high;
+ 		startup-delay-us = <200000>;	/* vendor waits 200 ms */
+ 	};
++
++	/*
++	 * Bit-banged bus to the SMB358 charger, as in the vendor tree; sboot
++	 * drives the same pins and leaves them muxed as GPIO.
++	 */
++	i2c-chg {
++		compatible = "i2c-gpio";
++		sda-gpios = <&gpio 159 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
++		scl-gpios = <&gpio 160 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
++		i2c-gpio,delay-us = <10>;
++		#address-cells = <1>;
++		#size-cells = <0>;
++
++		/*
++		 * sboot leaves a 4.35 V float, charging on, termination off.
++		 * The vendor kernel set 4.32 V; smb347 rewrites only what is
++		 * given here (volatile copies, reloaded from NVM at POR).
++		 * Input stays in sboot's 500 mA USB mode (CMD_B untouched).
++		 * No temperature properties: those would switch on the
++		 * chip's NTC monitor, which the vendor keeps off (0x07 bit 4).
++		 * No input current limits: the mainline SMB358 table differs
++		 * from the one in sboot and the vendor driver.
++		 */
++		charger@6a {
++			compatible = "summit,smb358";
++			reg = <0x6a>;
++			/* without it, "online" stays at its probe-time value */
++			interrupts-extended = <&gpio 161 IRQ_TYPE_EDGE_FALLING>;
++			summit,enable-usb-charging;
++			summit,enable-charge-control = <SMB3XX_CHG_ENABLE_SW>;
++			summit,fast-voltage-threshold-microvolt = <2400000>;
++			monitored-battery = <&battery>;
++		};
++	};
++
++	battery: battery {
++		compatible = "simple-battery";
++		charge-full-design-microamp-hours = <5000000>;
++		constant-charge-voltage-max-microvolt = <4320000>;
++		constant-charge-current-max-microamp = <2000000>;
++		precharge-current-microamp = <450000>;
++		charge-term-current-microamp = <200000>;
++	};
+ };
+ 
+ /*
+  * Zinitix ZT7554 (vendor "zinitix,zt7554_ts"); pinmux for I2C1 and the
+  * IRQ pad comes from the bootloader. GPIOs 81/83 only tell the vendor
+- * driver which firmware image to flash.
++ * driver which firmware image to flash. The two capacitive keys next to
++ * Home are touch controller icons 0 and 1 (vendor: KEY_RECENT, KEY_BACK).
+  */
+ &i2c1 {
+ 	status = "okay";
+@@ -41,6 +87,7 @@ touchscreen@20 {
+ 		vcca-supply = <&tsp_ldo>;
+ 		touchscreen-size-x = <800>;
+ 		touchscreen-size-y = <1280>;
++		linux,keycodes = <KEY_APPSELECT KEY_BACK>;
+ 	};
+ };
+ 
+-- 
+2.47.3
+

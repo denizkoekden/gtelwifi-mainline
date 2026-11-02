@@ -1,0 +1,4 @@
+# GNOME Settings shows the GPU name from switcheroo-control: its own GL probe
+# needs GLES 3, the Mali-400 has GLES 2 only. switcheroo-control reads the
+# names from the parent of the render node, like the PCI database names.
+SUBSYSTEM=="platform", DRIVER=="lima", ENV{SWITCHEROO_CONTROL_VENDOR_NAME}="ARM", ENV{SWITCHEROO_CONTROL_PRODUCT_NAME}="Mali-400 MP2"

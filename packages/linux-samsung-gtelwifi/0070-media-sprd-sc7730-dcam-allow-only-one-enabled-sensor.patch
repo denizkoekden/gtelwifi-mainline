@@ -1,0 +1,50 @@
+From a4907b2aa1f447b31dc6cb12ae01074b046afd3b Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 16:04:22 +0000
+Subject: [PATCH 70/79] media: sprd: sc7730-dcam: allow only one enabled sensor
+ link
+
+Both sensor links end on the single sink pad of the video node, and
+start_streaming takes the first enabled one. Reject enabling a second
+link while another is enabled, so that user space (libcamera's simple
+pipeline handler disables the old link first) cannot leave two sensors
+connected.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ drivers/media/platform/sprd/sc7730-dcam.c | 17 +++++++++++++++++
+ 1 file changed, 17 insertions(+)
+
+diff --git a/drivers/media/platform/sprd/sc7730-dcam.c b/drivers/media/platform/sprd/sc7730-dcam.c
+index 05db1ae40..6f5dc3dc5 100644
+--- a/drivers/media/platform/sprd/sc7730-dcam.c
++++ b/drivers/media/platform/sprd/sc7730-dcam.c
+@@ -837,7 +837,24 @@ static int dcam_link_validate(struct media_link *link)
+ 	return 0;
+ }
+ 
++/* one sensor at a time: the other link must be disabled first */
++static int dcam_link_setup(struct media_entity *entity,
++			   const struct media_pad *local,
++			   const struct media_pad *remote, u32 flags)
++{
++	struct media_link *link;
++
++	if (!(flags & MEDIA_LNK_FL_ENABLED))
++		return 0;
++	list_for_each_entry(link, &entity->links, list)
++		if (link->sink == local && link->source != remote &&
++		    (link->flags & MEDIA_LNK_FL_ENABLED))
++			return -EBUSY;
++	return 0;
++}
++
+ static const struct media_entity_operations dcam_entity_ops = {
++	.link_setup = dcam_link_setup,
+ 	.link_validate = dcam_link_validate,
+ };
+ 
+-- 
+2.47.3
+

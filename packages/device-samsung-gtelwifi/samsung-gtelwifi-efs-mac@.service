@@ -1,0 +1,9 @@
+[Unit]
+Description=Factory %i address from EFS
+After=dev-disk-by\x2dpartlabel-efs.device
+Requires=dev-disk-by\x2dpartlabel-efs.device
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/samsung-gtelwifi/efs-mac %i

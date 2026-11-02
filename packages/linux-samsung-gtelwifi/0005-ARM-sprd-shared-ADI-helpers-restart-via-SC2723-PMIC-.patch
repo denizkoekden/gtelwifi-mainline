@@ -1,0 +1,452 @@
+From 3baa93388d478112119a174f0337cd2c9480081f Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 1 Nov 2026 15:28:47 +0000
+Subject: [PATCH 05/79] ARM: sprd: shared ADI helpers, restart via SC2723 PMIC
+ watchdog
+
+Move the ADI bus access out of the USB bring-up into adi.c so it can be
+shared, and add a restart handler that does what the Samsung vendor kernel
+does: clear the upload magic, leave INFORM2/3 and the PMIC boot mode for
+sboot ("recovery" boots the recovery partition), then let the PMIC
+watchdog fire after 50 ms.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ arch/arm/Kconfig.platforms       |  13 ++++
+ arch/arm/mach-sprd/Makefile      |   2 +
+ arch/arm/mach-sprd/adi.c         | 123 +++++++++++++++++++++++++++++++
+ arch/arm/mach-sprd/adi.h         |  19 +++++
+ arch/arm/mach-sprd/restart.c     | 115 +++++++++++++++++++++++++++++
+ arch/arm/mach-sprd/usb-bringup.c |  63 +++-------------
+ 6 files changed, 281 insertions(+), 54 deletions(-)
+ create mode 100644 arch/arm/mach-sprd/adi.c
+ create mode 100644 arch/arm/mach-sprd/adi.h
+ create mode 100644 arch/arm/mach-sprd/restart.c
+
+diff --git a/arch/arm/Kconfig.platforms b/arch/arm/Kconfig.platforms
+index af9e97e50..4cec93c89 100644
+--- a/arch/arm/Kconfig.platforms
++++ b/arch/arm/Kconfig.platforms
+@@ -182,11 +182,24 @@ config SPRD_BOOTSTRIPES
+ config SPRD_USB_BRINGUP
+ 	bool "Power up the SC7730 USB PHY for dwc2 (bring-up hack)"
+ 	depends on ARCH_SPRD && USB_DWC2
++	select SPRD_ADI
+ 	help
+ 	  Switches on the SC2723 USB LDO, the USB PHY, its AHB clock and
+ 	  resets, then writes the PHY tune value, following the vendor
+ 	  kernel. Stop-gap until clock, PHY and regulator drivers exist.
+ 
++config SPRD_RESTART
++	bool "Restart through the SC2723 PMIC watchdog"
++	depends on ARCH_SPRD
++	select SPRD_ADI
++	help
++	  Restart handler for the SC7730: leaves the boot mode for the
++	  bootloader ("reboot recovery" boots the recovery partition) and
++	  lets the PMIC watchdog reset the system, as the vendor kernel does.
++
++config SPRD_ADI
++	bool
++
+ menuconfig ARCH_SUNPLUS
+ 	bool "Sunplus SoCs"
+ 	depends on ARCH_MULTI_V7
+diff --git a/arch/arm/mach-sprd/Makefile b/arch/arm/mach-sprd/Makefile
+index 38368ab4f..99c642e0c 100644
+--- a/arch/arm/mach-sprd/Makefile
++++ b/arch/arm/mach-sprd/Makefile
+@@ -1,3 +1,5 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ obj-$(CONFIG_SPRD_BOOTSTRIPES)	+= bootstripes.o
+ obj-$(CONFIG_SPRD_USB_BRINGUP)	+= usb-bringup.o
++obj-$(CONFIG_SPRD_ADI)		+= adi.o
++obj-$(CONFIG_SPRD_RESTART)	+= restart.o
+diff --git a/arch/arm/mach-sprd/adi.c b/arch/arm/mach-sprd/adi.c
+new file mode 100644
+index 000000000..98ca20bf2
+--- /dev/null
++++ b/arch/arm/mach-sprd/adi.c
+@@ -0,0 +1,123 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Minimal access to the SC2723 PMIC behind the Spreadtrum ADI bus, for
++ * the bring-up code in this directory (USB LDO, restart).
++ *
++ * Protocol from the vendor 3.10 kernel (arch/arm/mach-sc/adi.c), register
++ * offsets as in mainline drivers/spi/spi-sprd-adi.c:
++ *   read:  write the slave's physical address to RD_CMD, poll RD_DATA
++ *          until bit 31 clears, the value is in bits 15:0
++ *   write: plain MMIO store into the slave window, then wait until the
++ *          write FIFO is empty
++ */
++
++#include <linux/bits.h>
++#include <linux/delay.h>
++#include <linux/errno.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/of.h>
++#include <linux/spinlock.h>
++
++#include "adi.h"
++
++#define ADI_PHYS		0x40030000
++#define ADI_RD_CMD		0x24
++#define ADI_RD_DATA		0x28
++#define ADI_RD_BUSY		BIT(31)
++#define ADI_FIFO_STS		0x2c
++#define ADI_FIFO_EMPTY		BIT(10)
++#define ADI_SLAVE_PHYS		0x40038000
++#define ADI_SLAVE_SIZE		0x1000
++
++static void __iomem *adi, *slave;
++static DEFINE_RAW_SPINLOCK(adi_lock);
++
++static int __adi_read(u32 reg, u32 *val)
++{
++	int i;
++
++	writel(ADI_SLAVE_PHYS + reg, adi + ADI_RD_CMD);
++	for (i = 0; i < 2000; i++) {
++		u32 v = readl(adi + ADI_RD_DATA);
++
++		if (!(v & ADI_RD_BUSY)) {
++			*val = v & 0xffff;
++			return 0;
++		}
++		udelay(1);
++	}
++	return -ETIMEDOUT;
++}
++
++static int __adi_write(u32 reg, u32 val)
++{
++	int i;
++
++	writel(val, slave + reg);
++	for (i = 0; i < 1000; i++) {
++		if (readl(adi + ADI_FIFO_STS) & ADI_FIFO_EMPTY)
++			return 0;
++		udelay(1);
++	}
++	return -ETIMEDOUT;
++}
++
++int sprd_adi_read(u32 reg, u32 *val)
++{
++	unsigned long flags;
++	int ret;
++
++	if (!adi)
++		return -ENODEV;
++	raw_spin_lock_irqsave(&adi_lock, flags);
++	ret = __adi_read(reg, val);
++	raw_spin_unlock_irqrestore(&adi_lock, flags);
++	return ret;
++}
++
++int sprd_adi_write(u32 reg, u32 val)
++{
++	unsigned long flags;
++	int ret;
++
++	if (!adi)
++		return -ENODEV;
++	raw_spin_lock_irqsave(&adi_lock, flags);
++	ret = __adi_write(reg, val);
++	raw_spin_unlock_irqrestore(&adi_lock, flags);
++	return ret;
++}
++
++int sprd_adi_update(u32 reg, u32 clr, u32 set)
++{
++	unsigned long flags;
++	u32 v;
++	int ret;
++
++	if (!adi)
++		return -ENODEV;
++	raw_spin_lock_irqsave(&adi_lock, flags);
++	ret = __adi_read(reg, &v);
++	if (!ret)
++		ret = __adi_write(reg, (v & ~clr) | set);
++	raw_spin_unlock_irqrestore(&adi_lock, flags);
++	return ret;
++}
++
++static int __init sprd_adi_init(void)
++{
++	if (!of_machine_is_compatible("sprd,sc7730"))
++		return 0;
++	adi = ioremap(ADI_PHYS, 0x100);
++	slave = ioremap(ADI_SLAVE_PHYS, ADI_SLAVE_SIZE);
++	if (!adi || !slave) {
++		pr_err("sprd-adi: ioremap failed\n");
++		if (adi)
++			iounmap(adi);
++		adi = NULL;
++		return -ENOMEM;
++	}
++	return 0;
++}
++early_initcall(sprd_adi_init);
+diff --git a/arch/arm/mach-sprd/adi.h b/arch/arm/mach-sprd/adi.h
+new file mode 100644
+index 000000000..f6cd8629f
+--- /dev/null
++++ b/arch/arm/mach-sprd/adi.h
+@@ -0,0 +1,19 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __MACH_SPRD_ADI_H
++#define __MACH_SPRD_ADI_H
++
++#include <linux/types.h>
++
++/*
++ * Registers of the SC2723 PMIC, as offsets into the ADI slave window
++ * (0x40038000). Bring-up helpers until mainline spi-sprd-adi and a
++ * proper SC2723 MFD driver take over.
++ */
++#define SC2723_WDG(x)	(0x040 + (x))	/* PMIC watchdog */
++#define SC2723_GLB(x)	(0x800 + (x))	/* global registers */
++
++int sprd_adi_read(u32 reg, u32 *val);
++int sprd_adi_write(u32 reg, u32 val);
++int sprd_adi_update(u32 reg, u32 clr, u32 set);
++
++#endif
+diff --git a/arch/arm/mach-sprd/restart.c b/arch/arm/mach-sprd/restart.c
+new file mode 100644
+index 000000000..c5b7292d9
+--- /dev/null
++++ b/arch/arm/mach-sprd/restart.c
+@@ -0,0 +1,115 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Restart the SC7730 through the SC2723 PMIC watchdog, the way the Samsung
++ * vendor kernel does it (arch_reset() + sec-reboot.c + sec_debug.c):
++ *
++ *   - clear Samsung's upload magic (0x50003000); the vendor kernel arms it
++ *     at boot and only clears it on a clean reboot, so a watchdog reset
++ *     after a TWRP session would otherwise end in upload mode
++ *   - INFORM2 = "no low-power charging", INFORM3 = reboot reason for sboot
++ *   - PMIC POR_RST_MONITOR = Spreadtrum boot mode ("recovery" -> TWRP)
++ *   - start the PMIC watchdog with 50 ms and wait for it
++ *
++ * The SRAM is only touched when restarting, never at boot.
++ */
++
++#include <linux/delay.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/notifier.h>
++#include <linux/of.h>
++#include <linux/printk.h>
++#include <linux/reboot.h>
++#include <linux/string.h>
++
++#include "adi.h"
++
++#define SEC_DEBUG_PHYS		0x50003000
++#define SEC_UPLOAD_MAGIC	0x00
++#define SEC_INFORM2		0x0c
++#define SEC_INFORM3		0x10
++#define SEC_NO_LPM		0x12345678
++#define SEC_MODE(m)		(0x12345670 | (m))
++#define SEC_MODE_NONE		0
++#define SEC_MODE_DOWNLOAD	1
++#define SEC_MODE_RECOVERY	4
++
++#define GLB_ARM_MODULE_EN	SC2723_GLB(0x000)
++#define GLB_RTC_CLK_EN		SC2723_GLB(0x008)
++#define GLB_POR_RST_MONITOR	SC2723_GLB(0x124)
++#define GLB_WDG_EN		BIT(2)		/* in both enable registers */
++
++#define HWRST_RECOVERY		0x20
++#define HWRST_NORMAL		0x40
++#define HWRST_SPECIAL		0x70
++
++#define WDG_LOAD_LOW		SC2723_WDG(0x00)
++#define WDG_LOAD_HIGH		SC2723_WDG(0x04)
++#define WDG_CTRL		SC2723_WDG(0x08)
++#define WDG_CNT_EN		BIT(1)
++#define WDG_NEW_VER_EN		BIT(2)
++#define WDG_RST_EN		BIT(3)
++#define WDG_INT_RAW		SC2723_WDG(0x10)
++#define WDG_LD_BUSY		BIT(4)
++#define WDG_LOCK		SC2723_WDG(0x20)
++#define WDG_UNLOCK_KEY		0xe551
++#define WDG_TICKS_50MS		(32768 * 50 / 1000)
++
++static void __iomem *sec_debug;
++
++static int sprd_restart(struct notifier_block *nb, unsigned long mode,
++			void *data)
++{
++	const char *cmd = data;
++	u32 hwrst = HWRST_SPECIAL, sec = SEC_MODE_NONE, v;
++	int i;
++
++	if (cmd && !strcmp(cmd, "recovery")) {
++		hwrst = HWRST_RECOVERY;
++		sec = SEC_MODE_RECOVERY;
++	} else if (cmd && !strcmp(cmd, "download")) {
++		hwrst = HWRST_NORMAL;
++		sec = SEC_MODE_DOWNLOAD;
++	} else if (cmd) {
++		hwrst = HWRST_NORMAL;
++	}
++	pr_emerg("sprd-restart: cmd %s, upload magic was %08x\n",
++		 cmd ?: "(none)", sec_debug ? readl(sec_debug) : 0);
++
++	if (sec_debug) {
++		writel(0, sec_debug + SEC_UPLOAD_MAGIC);
++		writel(SEC_NO_LPM, sec_debug + SEC_INFORM2);
++		writel(SEC_MODE(sec), sec_debug + SEC_INFORM3);
++	}
++	sprd_adi_write(GLB_POR_RST_MONITOR, hwrst);
++
++	sprd_adi_update(GLB_ARM_MODULE_EN, 0, GLB_WDG_EN);
++	sprd_adi_update(GLB_RTC_CLK_EN, 0, GLB_WDG_EN);
++	sprd_adi_write(WDG_LOCK, WDG_UNLOCK_KEY);
++	sprd_adi_update(WDG_CTRL, 0, WDG_NEW_VER_EN);
++	sprd_adi_write(WDG_LOAD_HIGH, WDG_TICKS_50MS >> 16);
++	sprd_adi_write(WDG_LOAD_LOW, WDG_TICKS_50MS & 0xffff);
++	for (i = 0; i < 10000; i++)
++		if (sprd_adi_read(WDG_INT_RAW, &v) || !(v & WDG_LD_BUSY))
++			break;
++	sprd_adi_update(WDG_CTRL, 0, WDG_CNT_EN | WDG_RST_EN);
++	sprd_adi_write(WDG_LOCK, ~WDG_UNLOCK_KEY & 0xffff);
++
++	mdelay(1000);
++	pr_emerg("sprd-restart: PMIC watchdog did not reset the system\n");
++	return NOTIFY_DONE;
++}
++
++static struct notifier_block sprd_restart_nb = {
++	.notifier_call = sprd_restart,
++	.priority = 128,
++};
++
++static int __init sprd_restart_init(void)
++{
++	if (!of_machine_is_compatible("sprd,sc7730"))
++		return 0;
++	sec_debug = ioremap(SEC_DEBUG_PHYS, 0x20);
++	return register_restart_handler(&sprd_restart_nb);
++}
++arch_initcall(sprd_restart_init);
+diff --git a/arch/arm/mach-sprd/usb-bringup.c b/arch/arm/mach-sprd/usb-bringup.c
+index 70b8a279f..c997c5263 100644
+--- a/arch/arm/mach-sprd/usb-bringup.c
++++ b/arch/arm/mach-sprd/usb-bringup.c
+@@ -26,18 +26,11 @@
+ #include <linux/printk.h>
+ #include <linux/sprintf.h>
+ 
+-#define ADI_PHYS		0x40030000
+-#define ADI_RD_CMD		0x24
+-#define ADI_RD_DATA		0x28
+-#define ADI_RD_BUSY		BIT(31)
+-#define ADI_FIFO_STS		0x2c
+-#define ADI_FIFO_EMPTY		BIT(10)
+-
+-/* SC2723 global registers: ADI slave window (0x40038000) + 0x800 */
+-#define ANA_GLB_PHYS		0x40038800
+-#define ANA_LDO_PD_CTRL		0x14
++#include "adi.h"
++
++#define ANA_LDO_PD_CTRL		SC2723_GLB(0x14)
+ #define ANA_LDO_USB_PD		BIT(8)
+-#define ANA_LDO_V_CTRL9		0x3c	/* bits 7:0 LDO_USB_V */
++#define ANA_LDO_V_CTRL9		SC2723_GLB(0x3c)	/* bits 7:0 LDO_USB_V */
+ 
+ #define AON_APB_PHYS		0x402e0000
+ #define AON_APB_EB0		0x00
+@@ -65,38 +58,6 @@
+ /* "tune_value" of the vendor usb@f5116000 node for gtelwifi */
+ #define GTELWIFI_PHY_TUNE	0x44076e33
+ 
+-static void __iomem *adi, *ana;
+-
+-static int __init adi_read(u32 off, u32 *val)
+-{
+-	int i;
+-
+-	writel(ANA_GLB_PHYS + off, adi + ADI_RD_CMD);
+-	for (i = 0; i < 2000; i++) {
+-		u32 v = readl(adi + ADI_RD_DATA);
+-
+-		if (!(v & ADI_RD_BUSY)) {
+-			*val = v & 0xffff;
+-			return 0;
+-		}
+-		udelay(1);
+-	}
+-	return -ETIMEDOUT;
+-}
+-
+-static int __init adi_write(u32 off, u32 val)
+-{
+-	int i;
+-
+-	writel(val, ana + off);
+-	for (i = 0; i < 1000; i++) {
+-		if (readl(adi + ADI_FIFO_STS) & ADI_FIFO_EMPTY)
+-			return 0;
+-		udelay(1);
+-	}
+-	return -ETIMEDOUT;
+-}
+-
+ static void __init rmw(void __iomem *reg, u32 clr, u32 set)
+ {
+ 	writel((readl(reg) & ~clr) | set, reg);
+@@ -119,13 +80,11 @@ static int __init sprd_usb_bringup(void)
+ 	if (!ret)
+ 		return 0;
+ 
+-	adi = ioremap(ADI_PHYS, 0x100);
+-	ana = ioremap(ANA_GLB_PHYS, 0x100);
+ 	aon = ioremap(AON_APB_PHYS, 0x100);
+ 	ahb = ioremap(AP_AHB_PHYS, 0x100);
+ 	apb = ioremap(AP_APB_PHYS + AP_APB_USB_PHY_TUNE, 0x10);
+ 	usb = ioremap(USB_PHYS, 0x200);
+-	if (!adi || !ana || !aon || !ahb || !apb || !usb) {
++	if (!aon || !ahb || !apb || !usb) {
+ 		pr_err("sprd-usb: ioremap failed\n");
+ 		goto out;
+ 	}
+@@ -135,12 +94,12 @@ static int __init sprd_usb_bringup(void)
+ 		readl(ahb + AP_AHB_EB), readl(apb + 8), readl(apb));
+ 
+ 	/* 1. LDO_USB */
+-	ret = adi_read(ANA_LDO_PD_CTRL, &pd);
+-	adi_read(ANA_LDO_V_CTRL9, &vusb);
++	ret = sprd_adi_read(ANA_LDO_PD_CTRL, &pd);
++	sprd_adi_read(ANA_LDO_V_CTRL9, &vusb);
+ 	if (!ret && (pd & ANA_LDO_USB_PD))
+-		ret = adi_write(ANA_LDO_PD_CTRL, pd & ~ANA_LDO_USB_PD);
++		ret = sprd_adi_write(ANA_LDO_PD_CTRL, pd & ~ANA_LDO_USB_PD);
+ 	if (!ret)
+-		ret = adi_read(ANA_LDO_PD_CTRL, &pd_new);
++		ret = sprd_adi_read(ANA_LDO_PD_CTRL, &pd_new);
+ 	pr_info("sprd-usb: LDO_PD_CTRL %04x -> %04x (%d), LDO_V_CTRL9 %04x\n",
+ 		pd, pd_new, ret, vusb);
+ 	mdelay(10);
+@@ -185,10 +144,6 @@ static int __init sprd_usb_bringup(void)
+ 		iounmap(ahb);
+ 	if (aon)
+ 		iounmap(aon);
+-	if (ana)
+-		iounmap(ana);
+-	if (adi)
+-		iounmap(adi);
+ 	return 0;
+ }
+ subsys_initcall(sprd_usb_bringup);
+-- 
+2.47.3
+

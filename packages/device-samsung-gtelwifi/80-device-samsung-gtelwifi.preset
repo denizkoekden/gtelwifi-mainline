@@ -1,0 +1,5 @@
+# GNOME Settings shows the GPU name through switcheroo-control (see
+# 91-samsung-gtelwifi-gpu-name.rules); it has no D-Bus activation file.
+enable switcheroo-control.service
+# CPU limit at the vendor maximum unless cpufreq.conf says otherwise
+enable samsung-gtelwifi-cpufreq-limit.service

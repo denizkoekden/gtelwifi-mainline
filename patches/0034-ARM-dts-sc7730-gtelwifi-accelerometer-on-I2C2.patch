@@ -1,0 +1,76 @@
+From 2d8f91780e1a3ca9baa345ac1581d541c4ddb309 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 1 Nov 2026 22:59:03 +0000
+Subject: [PATCH 34/79] ARM: dts: sc7730: gtelwifi accelerometer on I2C2
+
+The Galaxy Tab E has an ST LIS2HH12 (Samsung's "K2HH") at 0x1d on I2C2
+(0x70700000, gate and reset bit 10). Mainline st_accel drives it; the
+mount matrix follows the vendor axis map (X = -Y, Y = X, Z = -Z of the
+chip). The data-ready line on GPIO 164 is left out for now, so user
+space (iio-sensor-proxy) polls.
+
+Lying face up: chip Z = -16528 at 0.000598 m/s^2 per count, -9.88 m/s^2,
++1 g in the device frame.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ .../boot/dts/unisoc/sc7730-samsung-gtelwifi.dts | 17 +++++++++++++++++
+ arch/arm/boot/dts/unisoc/sc7730.dtsi            | 13 +++++++++++++
+ 2 files changed, 30 insertions(+)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index d27fe345b..7a31a6655 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -303,6 +303,23 @@ &i2c0 {
+ 	status = "okay";
+ };
+ 
++/*
++ * Accelerometer, ST LIS2HH12 (Samsung calls it K2HH). Axes as the vendor
++ * maps them: X = -Y_chip, Y = X_chip, Z = -Z_chip. The data-ready line
++ * (GPIO 164) is left out, user space polls.
++ */
++&i2c2 {
++	status = "okay";
++
++	accelerometer@1d {
++		compatible = "st,lis2hh12";
++		reg = <0x1d>;
++		mount-matrix = "0", "-1", "0",
++			       "1", "0", "0",
++			       "0", "0", "-1";
++	};
++};
++
+ &sdio0 {
+ 	bus-width = <4>;
+ 	cd-gpios = <&gpio 71 GPIO_ACTIVE_LOW>;	/* external pull-up */
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index f35c91c2b..f2af061ca 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -268,6 +268,19 @@ i2c1: i2c@70600000 {
+ 			status = "disabled";
+ 		};
+ 
++		/* I2C2, sensors on the gtelwifi. Gate and reset: bit 10. */
++		i2c2: i2c@70700000 {
++			compatible = "sprd,sc8830-i2c";
++			reg = <0x70700000 0x1000>, <0x71300000 0x8>;
++			reg-names = "i2c", "ap-apb";
++			sprd,ap-apb-bit = <10>;
++			clocks = <&ext_26m>;
++			clock-frequency = <100000>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
+ 		/*
+ 		 * Keypad matrix (vendor: sprd,sci-keypad). Clock gates (AON_APB
+ 		 * EB0 bit 8, RTC_EB bit 1) and soft reset (RST0 bit 8) are set
+-- 
+2.47.3
+

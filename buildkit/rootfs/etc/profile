@@ -1,0 +1,4 @@
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PS1='gtelwifi:\w# '
+alias ll='ls -l'
+echo "gtelwifi mainline $(uname -r), uptime $(cut -d' ' -f1 /proc/uptime) s"

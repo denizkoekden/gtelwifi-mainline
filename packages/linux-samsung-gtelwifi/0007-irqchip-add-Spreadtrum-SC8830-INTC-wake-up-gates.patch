@@ -1,0 +1,266 @@
+From 5a2ce80dfd737949132fe957b449b5cb7c6c07e8 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 1 Nov 2026 15:53:21 +0000
+Subject: [PATCH 07/79] irqchip: add Spreadtrum SC8830 INTC wake-up gates
+
+Once all cores are in WFI the GIC clock on SC8830/SC7730 stops and only
+interrupts enabled in one of the four INTC blocks wake the CPU. They still
+reach the GIC without it, but each waits for the next timer tick: eMMC
+reads were stuck at 0.6 MB/s (4 KiB) and 6 MB/s (64 KiB), USB network
+latency at ~110 ms.
+
+Stack a small hierarchical irqchip on the GIC that opens the INTC bit on
+unmask, and route every SPI through it. eMMC reads now reach 18 / 31 MB/s,
+USB latency drops to 0.8 ms.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ arch/arm/Kconfig.platforms             |   1 +
+ arch/arm/boot/dts/unisoc/sc7730.dtsi   |  16 ++-
+ drivers/irqchip/Kconfig                |   8 ++
+ drivers/irqchip/Makefile               |   1 +
+ drivers/irqchip/irq-sprd-sc8830-intc.c | 150 +++++++++++++++++++++++++
+ 5 files changed, 175 insertions(+), 1 deletion(-)
+ create mode 100644 drivers/irqchip/irq-sprd-sc8830-intc.c
+
+diff --git a/arch/arm/Kconfig.platforms b/arch/arm/Kconfig.platforms
+index 4cec93c89..cc273644d 100644
+--- a/arch/arm/Kconfig.platforms
++++ b/arch/arm/Kconfig.platforms
+@@ -164,6 +164,7 @@ config ARCH_SPRD
+ 	depends on ARCH_MULTI_V7
+ 	select ARM_GIC
+ 	select HAVE_ARM_ARCH_TIMER
++	select SPRD_SC8830_INTC
+ 	select SPRD_SC8830_TIMER
+ 	help
+ 	  Support for the 32-bit Spreadtrum SC7730/SC8830 ("scx35"/"shark")
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index 5a5260fd6..68e359579 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -15,7 +15,7 @@
+ / {
+ 	#address-cells = <1>;
+ 	#size-cells = <1>;
+-	interrupt-parent = <&gic>;
++	interrupt-parent = <&intc>;
+ 
+ 	cpus {
+ 		#address-cells = <1>;
+@@ -46,10 +46,24 @@ gic: interrupt-controller@12001000 {
+ 			compatible = "arm,cortex-a7-gic";
+ 			#interrupt-cells = <3>;
+ 			interrupt-controller;
++			interrupt-parent = <&gic>;
+ 			reg = <0x12001000 0x1000>,
+ 			      <0x12002000 0x2000>;
+ 		};
+ 
++		/*
++		 * Wake-up gates in front of the GIC: an idle CPU only wakes
++		 * for interrupts enabled here. All SPIs go through it.
++		 */
++		intc: interrupt-controller@71400000 {
++			compatible = "sprd,sc8830-intc";
++			#interrupt-cells = <3>;
++			interrupt-controller;
++			interrupt-parent = <&gic>;
++			reg = <0x71400000 0x1000>, <0x71500000 0x1000>,
++			      <0x71600000 0x1000>, <0x71700000 0x1000>;
++		};
++
+ 		timer@40050000 {
+ 			compatible = "sprd,sc8830-timer";
+ 			reg = <0x40050000 0x60>,	/* AON timer block */
+diff --git a/drivers/irqchip/Kconfig b/drivers/irqchip/Kconfig
+index 20b77fbc5..35f22e95f 100644
+--- a/drivers/irqchip/Kconfig
++++ b/drivers/irqchip/Kconfig
+@@ -435,6 +435,14 @@ config IMX_GPCV2
+ 	help
+ 	  Enables the wakeup IRQs for IMX platforms with GPCv2 block
+ 
++config SPRD_SC8830_INTC
++	bool
++	select IRQ_DOMAIN_HIERARCHY
++	help
++	  Wake-up gates (INTC0-3) in front of the GIC on Spreadtrum
++	  SC8830/SC7730 SoCs. Without them an idle CPU only notices
++	  interrupts at the next timer tick.
++
+ config IRQ_MXS
+ 	def_bool y if MACH_ASM9260 || ARCH_MXS
+ 	select IRQ_DOMAIN
+diff --git a/drivers/irqchip/Makefile b/drivers/irqchip/Makefile
+index ab33cccd8..3613ba101 100644
+--- a/drivers/irqchip/Makefile
++++ b/drivers/irqchip/Makefile
+@@ -78,6 +78,7 @@ obj-$(CONFIG_ARCH_SA1100)		+= irq-sa11x0.o
+ obj-$(CONFIG_INGENIC_IRQ)		+= irq-ingenic.o
+ obj-$(CONFIG_INGENIC_TCU_IRQ)		+= irq-ingenic-tcu.o
+ obj-$(CONFIG_IMX_GPCV2)			+= irq-imx-gpcv2.o
++obj-$(CONFIG_SPRD_SC8830_INTC)		+= irq-sprd-sc8830-intc.o
+ obj-$(CONFIG_PIC32_EVIC)		+= irq-pic32-evic.o
+ obj-$(CONFIG_MSCC_OCELOT_IRQ)		+= irq-mscc-ocelot.o
+ obj-$(CONFIG_MVEBU_GICP)		+= irq-mvebu-gicp.o
+diff --git a/drivers/irqchip/irq-sprd-sc8830-intc.c b/drivers/irqchip/irq-sprd-sc8830-intc.c
+new file mode 100644
+index 000000000..8bca8a2db
+--- /dev/null
++++ b/drivers/irqchip/irq-sprd-sc8830-intc.c
+@@ -0,0 +1,150 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Spreadtrum SC8830/SC7730 ("shark") INTC: wake-up gates in front of the GIC.
++ *
++ * Once every core sits in WFI the GIC clock stops, and only interrupts
++ * enabled in one of the four INTC blocks wake the CPU again (vendor 3.10
++ * kernel, arch/arm/mach-sc/irq.c, gic_arch_extn). Interrupts still reach
++ * the GIC without this, so nothing breaks, but each one waits for the
++ * next timer tick: eMMC reads went from 0.6 to 15 MB/s at 4 KiB and USB
++ * network latency from ~110 ms to 0.7 ms once the gates were open.
++ *
++ * Stacked on the GIC: unmask opens the INTC bit and then the GIC, mask goes
++ * the other way. INTC n covers SPI 32n..32n+31 with bit = SPI % 32; bits 0
++ * and 1 of every block are not wired. The AON wake-up mux, which only
++ * matters for deep sleep, is not handled.
++ */
++
++#include <linux/bits.h>
++#include <linux/io.h>
++#include <linux/irq.h>
++#include <linux/irqchip.h>
++#include <linux/irqdomain.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++
++#include <dt-bindings/interrupt-controller/arm-gic.h>
++
++#define INTC_BLOCKS		4
++#define INTC_IRQ_EN		0x08
++#define INTC_IRQ_DIS		0x0c
++#define INTC_FIQ_DIS		0x2c
++
++static void __iomem *intc_base[INTC_BLOCKS];
++
++static void sc8830_intc_gate(struct irq_data *d, u32 reg)
++{
++	unsigned int spi = irqd_to_hwirq(d);
++
++	if (spi / 32 < INTC_BLOCKS && spi % 32 >= 2)
++		writel_relaxed(BIT(spi % 32), intc_base[spi / 32] + reg);
++}
++
++static void sc8830_intc_unmask(struct irq_data *d)
++{
++	sc8830_intc_gate(d, INTC_IRQ_EN);
++	irq_chip_unmask_parent(d);
++}
++
++static void sc8830_intc_mask(struct irq_data *d)
++{
++	irq_chip_mask_parent(d);
++	sc8830_intc_gate(d, INTC_IRQ_DIS);
++}
++
++static struct irq_chip sc8830_intc_chip = {
++	.name			= "SC8830-INTC",
++	.irq_eoi		= irq_chip_eoi_parent,
++	.irq_mask		= sc8830_intc_mask,
++	.irq_unmask		= sc8830_intc_unmask,
++	.irq_retrigger		= irq_chip_retrigger_hierarchy,
++	.irq_set_type		= irq_chip_set_type_parent,
++#ifdef CONFIG_SMP
++	.irq_set_affinity	= irq_chip_set_affinity_parent,
++#endif
++	.flags			= IRQCHIP_SKIP_SET_WAKE,
++};
++
++static int sc8830_intc_translate(struct irq_domain *d,
++				 struct irq_fwspec *fwspec,
++				 unsigned long *hwirq, unsigned int *type)
++{
++	if (!is_of_node(fwspec->fwnode) || fwspec->param_count != 3)
++		return -EINVAL;
++	/* PPIs and SGIs are per-CPU and never pass the INTC */
++	if (fwspec->param[0] != GIC_SPI)
++		return -EINVAL;
++
++	*hwirq = fwspec->param[1];
++	*type = fwspec->param[2] & IRQ_TYPE_SENSE_MASK;
++	return 0;
++}
++
++static int sc8830_intc_alloc(struct irq_domain *domain, unsigned int irq,
++			     unsigned int nr_irqs, void *data)
++{
++	struct irq_fwspec *fwspec = data;
++	struct irq_fwspec parent_fwspec;
++	irq_hw_number_t hwirq;
++	unsigned int type;
++	int err, i;
++
++	err = sc8830_intc_translate(domain, fwspec, &hwirq, &type);
++	if (err)
++		return err;
++
++	for (i = 0; i < nr_irqs; i++)
++		irq_domain_set_hwirq_and_chip(domain, irq + i, hwirq + i,
++					      &sc8830_intc_chip, NULL);
++
++	parent_fwspec = *fwspec;
++	parent_fwspec.fwnode = domain->parent->fwnode;
++	return irq_domain_alloc_irqs_parent(domain, irq, nr_irqs,
++					    &parent_fwspec);
++}
++
++static const struct irq_domain_ops sc8830_intc_domain_ops = {
++	.translate	= sc8830_intc_translate,
++	.alloc		= sc8830_intc_alloc,
++	.free		= irq_domain_free_irqs_common,
++};
++
++static int __init sc8830_intc_init(struct device_node *node,
++				   struct device_node *parent)
++{
++	struct irq_domain *parent_domain, *domain;
++	int i;
++
++	parent_domain = parent ? irq_find_host(parent) : NULL;
++	if (!parent_domain) {
++		pr_err("%pOF: no parent interrupt controller\n", node);
++		return -ENXIO;
++	}
++
++	for (i = 0; i < INTC_BLOCKS; i++) {
++		intc_base[i] = of_iomap(node, i);
++		if (!intc_base[i]) {
++			pr_err("%pOF: cannot map INTC%d\n", node, i);
++			goto err_unmap;
++		}
++		/* Gate everything; unmask opens what is actually in use */
++		writel_relaxed(~0U, intc_base[i] + INTC_IRQ_DIS);
++		writel_relaxed(~0U, intc_base[i] + INTC_FIQ_DIS);
++	}
++
++	domain = irq_domain_create_hierarchy(parent_domain, 0, 0,
++					     of_fwnode_handle(node),
++					     &sc8830_intc_domain_ops, NULL);
++	if (!domain)
++		goto err_unmap;
++
++	pr_info("%pOF: %d INTC blocks stacked on %pOF\n", node, INTC_BLOCKS, parent);
++	return 0;
++
++err_unmap:
++	while (i--)
++		iounmap(intc_base[i]);
++	return -ENOMEM;
++}
++IRQCHIP_DECLARE(sc8830_intc, "sprd,sc8830-intc", sc8830_intc_init);
+-- 
+2.47.3
+

@@ -1,0 +1,279 @@
+From 8757a3494861d455d3c1ff3453b119e769d3b61e Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 1 Nov 2026 20:51:31 +0000
+Subject: [PATCH 20/79] ARM: sprd: start the SC7730 system counter, use the
+ architected timer
+
+The architected timers of the Cortex-A7 cluster count the CoreSight
+timestamp generator TS1 (TS0 runs too but does not reach the cores),
+which nobody enables: gate AON_APB EB0 bit 29, clock mux AON_CLK
+CA7_TS_CFG = 26 MHz, CNTCR.EN, and the timestamp ports requested active
+in the TS_CFG low-power handshake. A machine descriptor does that in
+.init_time before timer_probe() and sets CNTFRQ, which is ours to set:
+the bootloader leaves the kernel in the Secure world.
+
+The PPIs are wired (secure physical timer = PPI 13). With the SoC's
+automatic core clock gating the timer comparators of a core in WFI stop
+too, so an idle CPU slept through its timers (100 sleeps of 10 ms took
+124 s); keep the core clocks running in WFI, as the vendor does on some
+scx35 revisions. Now 100 x 10 ms take 1.08 s.
+
+DT: arm,armv7-timer with arm,cpu-registers-not-fw-configured (secure
+physical timer, garbage CNTVOFF). It becomes clocksource, sched_clock
+(26 MHz) and delay timer, so the PMCCNTR delay timer steps aside when
+it is present; the jitter entropy collector gets the CRNG ready 1.4 s
+after a blocking read without any seed. This is also what SMP needs:
+per-CPU timers from standard hardware.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ arch/arm/boot/dts/unisoc/sc7730.dtsi    |  19 ++++-
+ arch/arm/mach-sprd/Makefile             |   1 +
+ arch/arm/mach-sprd/sc7730.c             | 103 ++++++++++++++++++++++++
+ arch/arm/mach-sprd/sc7730.h             |  10 +++
+ drivers/clocksource/timer-sprd-sc8830.c |  38 +++------
+ 5 files changed, 145 insertions(+), 26 deletions(-)
+ create mode 100644 arch/arm/mach-sprd/sc7730.c
+ create mode 100644 arch/arm/mach-sprd/sc7730.h
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index 00b0a875f..b4f06c2b6 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -39,6 +39,22 @@ pmic_eic: gpio-controller {
+ 		#gpio-cells = <2>;
+ 	};
+ 
++	/*
++	 * Counts the CoreSight timestamp generator TS1 at 26 MHz, which
++	 * mach-sprd/sc7730.c starts (and sets CNTFRQ for). The kernel runs in
++	 * the Secure world with a random CNTVOFF: secure physical timer, and
++	 * no virtual counter for user space.
++	 */
++	timer {
++		compatible = "arm,armv7-timer";
++		interrupt-parent = <&gic>;
++		interrupts = <GIC_PPI 13 (GIC_CPU_MASK_SIMPLE(4) | IRQ_TYPE_LEVEL_LOW)>,
++			     <GIC_PPI 14 (GIC_CPU_MASK_SIMPLE(4) | IRQ_TYPE_LEVEL_LOW)>,
++			     <GIC_PPI 11 (GIC_CPU_MASK_SIMPLE(4) | IRQ_TYPE_LEVEL_LOW)>,
++			     <GIC_PPI 10 (GIC_CPU_MASK_SIMPLE(4) | IRQ_TYPE_LEVEL_LOW)>;
++		arm,cpu-registers-not-fw-configured;
++	};
++
+ 	ext_32k: clock-32k {
+ 		compatible = "fixed-clock";
+ 		#clock-cells = <0>;
+@@ -78,7 +94,8 @@ intc: interrupt-controller@71400000 {
+ 			interrupt-controller;
+ 			interrupt-parent = <&gic>;
+ 			reg = <0x71400000 0x1000>, <0x71500000 0x1000>,
+-			      <0x71600000 0x1000>, <0x71700000 0x1000>;
++			      <0x71600000 0x1000>, <0x71700000 0x1000>,
++			      <0x71300000 0x4>;		/* AP APB clock gates */
+ 		};
+ 
+ 		timer@40050000 {
+diff --git a/arch/arm/mach-sprd/Makefile b/arch/arm/mach-sprd/Makefile
+index 3cbe4905e..10d20d594 100644
+--- a/arch/arm/mach-sprd/Makefile
++++ b/arch/arm/mach-sprd/Makefile
+@@ -1,4 +1,5 @@
+ # SPDX-License-Identifier: GPL-2.0-only
++obj-y				+= sc7730.o
+ obj-$(CONFIG_SPRD_BOOTSTRIPES)	+= bootstripes.o
+ obj-$(CONFIG_SPRD_USB_BRINGUP)	+= usb-bringup.o
+ obj-$(CONFIG_SPRD_ADI)		+= adi.o
+diff --git a/arch/arm/mach-sprd/sc7730.c b/arch/arm/mach-sprd/sc7730.c
+new file mode 100644
+index 000000000..d6fa184b5
+--- /dev/null
++++ b/arch/arm/mach-sprd/sc7730.c
+@@ -0,0 +1,103 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Spreadtrum SC7730: start the system counter before the timers probe.
++ *
++ * The ARM architected timers of the Cortex-A7 cluster count the CoreSight
++ * timestamp generator TS1 (TS0 also runs, but does not reach the cores),
++ * which is off after reset: AON_APB EB0 bit 29 gates it, AON_CLK
++ * CA7_TS_CFG bits 1:0 select its clock (1 = 26 MHz), CNTCR bit 0 starts
++ * it, and the timestamp ports have a low-power handshake that has to
++ * request them active (AON_APB TS_CFG CSYSREQ bits 8/10/12). Neither
++ * bootloader stage touches any of this; the vendor kernel never used the
++ * architected timer at all.
++ *
++ * The bootloader also leaves the kernel in the Secure world (NSACR reads 0
++ * with VFP working), so CNTFRQ is ours to set, on every CPU.
++ *
++ * With the SoC's automatic core clock gating (AP_AHB AP_SYS_AUTO_SLEEP_CFG
++ * bit 0, on after reset) the clock of a core in WFI stops, and with it the
++ * comparators of its architected timers: neither the PPI nor the SPI copy
++ * fires, and an idle CPU only wakes for some other interrupt (100 sleeps
++ * of 10 ms took 124 s). Keep the core clocks running in WFI; the vendor
++ * kernel does the same on some scx35 revisions.
++ */
++
++#include <linux/bits.h>
++#include <linux/clk-provider.h>
++#include <linux/clocksource.h>
++#include <linux/init.h>
++#include <linux/io.h>
++#include <linux/printk.h>
++
++#include <asm/mach/arch.h>
++
++#include "sc7730.h"
++
++#define AON_APB_PHYS		0x402e0000
++#define AON_APB_EB0		0x00
++#define AON_EB0_CA7_TS1		BIT(29)
++#define AON_APB_TS_CFG		0x28
++#define TS_CFG_CSYSREQ		(BIT(8) | BIT(10) | BIT(12))
++#define AON_CLK_CA7_TS_CFG	0x402d004c
++#define CA7_TS_SEL_26M		1
++#define CA7_TS1_PHYS		0x40410000
++#define TS_CNTCR_EN		BIT(0)
++#define AP_AHB_PHYS		0x20d00000
++#define AP_SYS_AUTO_SLEEP_CFG	0x10
++#define CA7_CORE_AUTO_GATE_EN	BIT(0)
++
++void sc7730_set_cntfrq(void)
++{
++	asm volatile("mcr p15, 0, %0, c14, c0, 0" : : "r" (SC7730_CNTFRQ));
++	isb();
++}
++
++static void __init sc7730_counter_init(void)
++{
++	void __iomem *aon = ioremap(AON_APB_PHYS, 0x30);
++	void __iomem *clk = ioremap(AON_CLK_CA7_TS_CFG, 4);
++	void __iomem *ts1 = ioremap(CA7_TS1_PHYS, 0x10);
++	void __iomem *ahb = ioremap(AP_AHB_PHYS, 0x20);
++
++	if (ahb) {
++		writel_relaxed(readl_relaxed(ahb + AP_SYS_AUTO_SLEEP_CFG) &
++			       ~CA7_CORE_AUTO_GATE_EN, ahb + AP_SYS_AUTO_SLEEP_CFG);
++		iounmap(ahb);
++	}
++
++	if (aon && clk && ts1) {
++		writel_relaxed(readl_relaxed(aon + AON_APB_EB0) | AON_EB0_CA7_TS1,
++			       aon + AON_APB_EB0);
++		writel_relaxed((readl_relaxed(clk) & ~3) | CA7_TS_SEL_26M, clk);
++		writel_relaxed(readl_relaxed(aon + AON_APB_TS_CFG) | TS_CFG_CSYSREQ,
++			       aon + AON_APB_TS_CFG);
++		writel(readl_relaxed(ts1) | TS_CNTCR_EN, ts1);
++		sc7730_set_cntfrq();
++	} else {
++		pr_err("sc7730: cannot map the system counter\n");
++	}
++
++	if (ts1)
++		iounmap(ts1);
++	if (clk)
++		iounmap(clk);
++	if (aon)
++		iounmap(aon);
++}
++
++static void __init sc7730_init_time(void)
++{
++	sc7730_counter_init();
++	of_clk_init(NULL);
++	timer_probe();
++}
++
++static const char *const sc7730_dt_compat[] __initconst = {
++	"sprd,sc7730",
++	NULL
++};
++
++DT_MACHINE_START(SPRD_SC7730, "Spreadtrum SC7730")
++	.dt_compat	= sc7730_dt_compat,
++	.init_time	= sc7730_init_time,
++MACHINE_END
+diff --git a/arch/arm/mach-sprd/sc7730.h b/arch/arm/mach-sprd/sc7730.h
+new file mode 100644
+index 000000000..04aaccc04
+--- /dev/null
++++ b/arch/arm/mach-sprd/sc7730.h
+@@ -0,0 +1,10 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __MACH_SPRD_SC7730_H
++#define __MACH_SPRD_SC7730_H
++
++/* system counter (CoreSight TS1) as set up in sc7730.c */
++#define SC7730_CNTFRQ		26000000
++
++void sc7730_set_cntfrq(void);
++
++#endif
+diff --git a/drivers/clocksource/timer-sprd-sc8830.c b/drivers/clocksource/timer-sprd-sc8830.c
+index 24a9b6142..61813334b 100644
+--- a/drivers/clocksource/timer-sprd-sc8830.c
++++ b/drivers/clocksource/timer-sprd-sc8830.c
+@@ -171,30 +171,6 @@ static void __init sc8830_set_bits(struct device_node *np, const char *name,
+ 	iounmap(base);
+ }
+ 
+-/*
+- * The vendor kernel never uses the ARM architected timer on this SoC.
+- * Log what it looks like so we know whether it is usable later on.
+- */
+-static void __init sc8830_probe_arch_timer(void)
+-{
+-	u32 frq, lo1, hi1, lo2, hi2, t0, loops = 0;
+-
+-	/* CNTFRQ and the virtual counter are always accessible at PL1 */
+-	asm volatile("mrc p15, 0, %0, c14, c0, 0" : "=r" (frq));
+-	asm volatile("mrrc p15, 1, %0, %1, c14" : "=r" (lo1), "=r" (hi1));
+-
+-	/* wait ~1 ms on our own clocksource, bounded in case it is dead */
+-	t0 = sc8830_cs_read(NULL);
+-	while ((u32)(sc8830_cs_read(NULL) - t0) < 33 && ++loops < 20000000)
+-		cpu_relax();
+-
+-	asm volatile("mrrc p15, 1, %0, %1, c14" : "=r" (lo2), "=r" (hi2));
+-	pr_info("sc8830-timer: own counter %s (%u loops)\n",
+-		loops < 20000000 ? "ticks" : "STUCK", loops);
+-	pr_info("sc8830-timer: arch timer CNTFRQ=%u CNTVCT %08x%08x -> %08x%08x\n",
+-		frq, hi1, lo1, hi2, lo2);
+-}
+-
+ #ifdef CONFIG_ARM
+ /*
+  * The CPU cycle counter (PMCCNTR) as delay timer. What matters most is
+@@ -221,8 +197,21 @@ static void __init sc8830_cycle_counter_init(void)
+ {
+ 	const u32 ticks = 656;	/* ~20 ms of the 32 kHz clock */
+ 	u32 pmcr, t0, c0, c1, loops = 0;
++	struct device_node *np;
+ 	u64 freq;
+ 
++	/*
++	 * The architected timer is the better delay timer and get_cycles()
++	 * source, and PMCCNTR only counts on CPU0 (not synchronised across
++	 * cores either): with one in the device tree, stay out of its way.
++	 */
++	np = of_find_compatible_node(NULL, NULL, "arm,armv7-timer");
++	if (of_device_is_available(np)) {
++		of_node_put(np);
++		return;
++	}
++	of_node_put(np);
++
+ 	/* E: enable, C: reset the cycle counter, D = 0: count every cycle */
+ 	asm volatile("mrc p15, 0, %0, c9, c12, 0" : "=r" (pmcr));
+ 	pmcr = (pmcr & ~BIT(3)) | BIT(2) | BIT(0);
+@@ -320,7 +309,6 @@ static int __init sc8830_timer_init(struct device_node *np)
+ 					2, 0xf0000000);
+ 
+ 	pr_info("sc8830-timer: %u Hz, clockevent irq %d\n", sc8830_rate, irq);
+-	sc8830_probe_arch_timer();
+ 	sc8830_cycle_counter_init();
+ 	return 0;
+ }
+-- 
+2.47.3
+

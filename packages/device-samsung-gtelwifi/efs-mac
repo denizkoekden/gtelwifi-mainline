@@ -1,0 +1,93 @@
+#!/bin/sh
+# Set this tablet's factory WLAN or Bluetooth address from its EFS partition
+# (wifi/.mac.info, bluetooth/bt_addr). EFS is mounted read-only without
+# journal replay for the moment it takes, nothing is written to it. Without
+# a valid address there the drivers keep their default.
+#
+#   efs-mac wlan|bluetooth
+set -e
+
+WLAN_IF=wlan0
+BT_IF=hci0
+EFS=/dev/disk/by-partlabel/efs
+TRIES=5
+
+case "$1" in
+wlan)		file=wifi/.mac.info ;;
+bluetooth)	file=bluetooth/bt_addr ;;
+*)		echo "usage: $0 wlan|bluetooth" >&2; exit 2 ;;
+esac
+
+dir=$(mktemp -d /run/efs-mac.XXXXXX)
+cleanup() {
+	umount "$dir" 2>/dev/null || true
+	rmdir "$dir"
+}
+trap cleanup EXIT
+
+mount -t ext4 -o ro,noload,nodev,nosuid,noexec "$EFS" "$dir"
+mac=$(head -c 17 "$dir/$file")
+umount "$dir"
+
+# unicast and not all zero
+if ! echo "$mac" | grep -Eq '^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$' ||
+   [ $((0x${mac%%:*} & 1)) -ne 0 ] || [ "$mac" = "00:00:00:00:00:00" ]; then
+	echo "no valid address in EFS $file" >&2
+	exit 1
+fi
+
+retry() {
+	n=0
+	until "$@"; do
+		n=$((n + 1))
+		[ $n -ge $TRIES ] && return 1
+		sleep 1
+	done
+}
+
+set_wlan() {
+	ip link set dev "$WLAN_IF" down && ip link set dev "$WLAN_IF" address "$mac"
+}
+
+set_bt() {
+	# a public address is only taken while the controller is off
+	# (btmgmt needs its stdin fed, see bootmac)
+	yes 2>/dev/null | btmgmt -i "$BT_IF" power off >/dev/null &&
+		yes 2>/dev/null | btmgmt -i "$BT_IF" public-addr "$mac" >/dev/null
+}
+
+case "$1" in
+wlan)
+	up=0
+	if ip link show dev "$WLAN_IF" | head -n1 | grep -q '[<,]UP[,>]'; then
+		up=1
+	fi
+	retry set_wlan
+	if [ "$up" = 1 ]; then
+		ip link set dev "$WLAN_IF" up
+	fi
+	;;
+bluetooth)
+	# Changing the address makes the kernel power the controller up again
+	# to program it. Right after setup that races with the kernel's own
+	# auto power-off and leaves the controller unlisted, so wait until
+	# bluetoothd has powered it (or give up waiting after 20 s).
+	n=0
+	until btmgmt -i "$BT_IF" info 2>/dev/null |
+	      grep -q 'current settings:.* powered'; do
+		n=$((n + 1))
+		[ $n -ge 20 ] && break
+		sleep 1
+	done
+	powered=0
+	if btmgmt -i "$BT_IF" info 2>/dev/null |
+	   grep -q 'current settings:.* powered'; then
+		powered=1
+	fi
+	retry set_bt
+	if [ "$powered" = 1 ]; then
+		yes 2>/dev/null | btmgmt -i "$BT_IF" power on >/dev/null
+	fi
+	;;
+esac
+echo "$1 address set from EFS"

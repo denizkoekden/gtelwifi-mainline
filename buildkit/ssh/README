@@ -1,0 +1,7 @@
+SSH keys for the rescue initramfs (buildkit/build.sh). Nothing in here is
+committed.
+
+  authorized_keys            your public key, e.g. a copy of ~/.ssh/id_ed25519.pub
+                             (required: the rescue system allows key logins only)
+  dropbear_ed25519_host_key  created by build.sh on the first build
+  known_hosts                optional, for tools/tabssh: "10.55.0.1 <host key>"

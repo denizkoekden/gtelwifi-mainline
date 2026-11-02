@@ -1,0 +1,34 @@
+#!/bin/sh
+# CPU frequency limit. The kernel caps every cpufreq policy at the
+# vendor's 1300 MHz from the start (sc7730.cpu_max_khz); the OPP table
+# also offers overclocking steps up to 1612 MHz, checked on a single unit
+# only. Set CPU_MAX_KHZ in /etc/samsung-gtelwifi/cpufreq.conf to use
+# them, e.g.
+#   CPU_MAX_KHZ=1612000
+CPU_MAX_KHZ=1300000
+CONF=/etc/samsung-gtelwifi/cpufreq.conf
+POLICY=/sys/devices/system/cpu/cpufreq/policy0
+PARAM=/sys/module/sc7730/parameters/cpu_max_khz
+
+[ -r "$CONF" ] && . "$CONF"
+case "$CPU_MAX_KHZ" in
+''|*[!0-9]*)
+	echo "bad CPU_MAX_KHZ '$CPU_MAX_KHZ' in $CONF" >&2
+	exit 1
+	;;
+esac
+
+if [ -w "$PARAM" ]; then
+	echo "$CPU_MAX_KHZ" > "$PARAM"
+	echo "CPU limit $(cat "$PARAM") kHz (kernel)"
+	exit 0
+fi
+
+# older kernels without the parameter: cpufreq-dt may still be probing
+i=0
+while [ ! -w "$POLICY/scaling_max_freq" ] && [ $i -lt 20 ]; do
+	sleep 0.5
+	i=$((i + 1))
+done
+echo "$CPU_MAX_KHZ" > "$POLICY/scaling_max_freq"
+echo "CPU limit $(cat "$POLICY/scaling_max_freq") kHz"

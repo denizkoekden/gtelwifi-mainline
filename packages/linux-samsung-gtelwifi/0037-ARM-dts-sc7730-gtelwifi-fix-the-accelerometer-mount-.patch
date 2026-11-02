@@ -1,0 +1,48 @@
+From 89dd0e254317c5a84ffa9b37123917debb41c467 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 08:34:00 +0000
+Subject: [PATCH 37/79] ARM: dts: sc7730: gtelwifi: fix the accelerometer mount
+ matrix
+
+The matrix taken from the vendor's axis map has a determinant of -1, a
+reflection no mounting can produce, and the screen turned the wrong way.
+The chip sits face down with X and Y swapped: X = Y_chip, Y = X_chip,
+Z = -Z_chip. Checked with iio-sensor-proxy under Phosh.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts | 10 ++++++----
+ 1 file changed, 6 insertions(+), 4 deletions(-)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index 7a31a6655..c56e17054 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -304,9 +304,11 @@ &i2c0 {
+ };
+ 
+ /*
+- * Accelerometer, ST LIS2HH12 (Samsung calls it K2HH). Axes as the vendor
+- * maps them: X = -Y_chip, Y = X_chip, Z = -Z_chip. The data-ready line
+- * (GPIO 164) is left out, user space polls.
++ * Accelerometer, ST LIS2HH12 (Samsung calls it K2HH), mounted face down:
++ * X = Y_chip, Y = X_chip, Z = -Z_chip. A first matrix taken from the
++ * vendor's axis map (X = -Y_chip) was a reflection and turned the screen
++ * the wrong way. The data-ready line (GPIO 164) is left out, user space
++ * polls.
+  */
+ &i2c2 {
+ 	status = "okay";
+@@ -314,7 +316,7 @@ &i2c2 {
+ 	accelerometer@1d {
+ 		compatible = "st,lis2hh12";
+ 		reg = <0x1d>;
+-		mount-matrix = "0", "-1", "0",
++		mount-matrix = "0", "1", "0",
+ 			       "1", "0", "0",
+ 			       "0", "0", "-1";
+ 	};
+-- 
+2.47.3
+

@@ -1,0 +1,5 @@
+# Keep the speaker path powered between sounds: the SC2723 speaker PA pops
+# whenever it is switched on or off. The path draws less than about 0.5 mA
+# at idle and goes off in system suspend anyway (needs use_pmdown_time in
+# the codec, kernel patch 0059).
+ACTION=="bind", SUBSYSTEM=="platform", KERNEL=="sound", DRIVER=="asoc-simple-card", ATTR{vbc-playback-sc2723-hifi/pmdown_time}="-1"

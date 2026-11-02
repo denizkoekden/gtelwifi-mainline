@@ -1,0 +1,67 @@
+From f92b25ab60d684eab202fca3a266f0d1cfe53025 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 1 Nov 2026 22:28:46 +0000
+Subject: [PATCH 24/79] power: supply: smb347: SMB358 charge termination and
+ automatic recharge
+
+The Samsung bootloader leaves current termination and automatic recharge
+disabled on the SMB358 (CHARGE_CONTROL 0x04 = 0xc0); the vendor kernel
+terminated and recharged in software. With that state the termination
+current from the battery info is never used and the battery sits at the
+float voltage as long as a charger is attached. This driver has no
+software recharge, so with a termination current enable both in the
+charger. Register 0x04 becomes readable for that.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ drivers/power/supply/smb347-charger.c | 19 +++++++++++++++++++
+ 1 file changed, 19 insertions(+)
+
+diff --git a/drivers/power/supply/smb347-charger.c b/drivers/power/supply/smb347-charger.c
+index e70450c8d..47de57304 100644
+--- a/drivers/power/supply/smb347-charger.c
++++ b/drivers/power/supply/smb347-charger.c
+@@ -47,6 +47,9 @@
+ #define CFG_CURRENT_LIMIT_USB_MASK		0x0f
+ #define CFG_AICL				0x02
+ #define CFG_AICL_EN				BIT(4)
++#define CFG_CHARGE_CONTROL			0x04
++#define CFG_CHARGE_CONTROL_RECHARGE_DIS		BIT(7)
++#define CFG_CHARGE_CONTROL_TERM_DIS		BIT(6)
+ #define CFG_FLOAT_VOLTAGE			0x03
+ #define CFG_FLOAT_VOLTAGE_FLOAT_MASK		0x3f
+ #define CFG_FLOAT_VOLTAGE_THRESHOLD_MASK	0xc0
+@@ -467,6 +470,21 @@ static int smb347_set_charge_current(struct smb347_charger *smb)
+ 					 CFG_CHARGE_CURRENT_TC_MASK, ret);
+ 		if (ret < 0)
+ 			return ret;
++
++		/*
++		 * The Samsung bootloader leaves termination and automatic
++		 * recharge off on the SMB358 (the vendor kernel ran both in
++		 * software); without termination the battery sits at the
++		 * float voltage forever. This driver has no software
++		 * recharge, so the charger has to restart by itself.
++		 */
++		if (id == SMB358) {
++			ret = regmap_clear_bits(smb->regmap, CFG_CHARGE_CONTROL,
++						CFG_CHARGE_CONTROL_RECHARGE_DIS |
++						CFG_CHARGE_CONTROL_TERM_DIS);
++			if (ret < 0)
++				return ret;
++		}
+ 	}
+ 
+ 	return 0;
+@@ -1287,6 +1305,7 @@ static bool smb347_readable_reg(struct device *dev, unsigned int reg)
+ 	case CFG_CURRENT_LIMIT:
+ 	case CFG_AICL:
+ 	case CFG_FLOAT_VOLTAGE:
++	case CFG_CHARGE_CONTROL:
+ 	case CFG_STAT:
+ 	case CFG_PIN:
+ 	case CFG_THERM:
+-- 
+2.47.3
+

@@ -1,0 +1,52 @@
+From e187d64235eb44a808b4f1c8da6827a968522a37 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 10:32:29 +0000
+Subject: [PATCH 50/79] ARM: dts: sc7730: gtelwifi: accelerometer matrix,
+ checked in all four orientations
+
+The previous matrix got portrait right but turned the picture the wrong
+way in landscape: the X row had the wrong sign. Found by turning the
+tablet under iio-sensor-proxy and checked in all four orientations:
+X = Y_chip, Y = -X_chip, Z = -Z_chip. The vendor's axis map is exactly
+this rotated by 180 degrees.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ .../arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts | 13 +++++++------
+ 1 file changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index 8be41a286..a7c4d79cb 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -320,11 +320,12 @@ &i2c0 {
+ };
+ 
+ /*
+- * Accelerometer, ST LIS2HH12 (Samsung calls it K2HH), mounted face down:
+- * X = -Y_chip, Y = -X_chip, Z = -Z_chip. The vendor's axis map (X = -Y_chip,
+- * Y = X_chip) is a reflection and turned the screen the wrong way, and
+- * X = Y_chip, Y = X_chip showed it upside down. The data-ready line
+- * (GPIO 164) is left out, user space polls.
++ * Accelerometer, ST LIS2HH12 (Samsung calls it K2HH): X = Y_chip,
++ * Y = -X_chip, Z = -Z_chip, found by turning the tablet under
++ * iio-sensor-proxy. The vendor's axis map (X = -Y_chip, Y = X_chip) is
++ * this turned by 180 degrees, and X = -Y_chip, Y = -X_chip got only
++ * portrait right. The data-ready line (GPIO 164) is left out, user space
++ * polls.
+  */
+ &i2c2 {
+ 	status = "okay";
+@@ -332,7 +333,7 @@ &i2c2 {
+ 	accelerometer@1d {
+ 		compatible = "st,lis2hh12";
+ 		reg = <0x1d>;
+-		mount-matrix = "0", "-1", "0",
++		mount-matrix = "0", "1", "0",
+ 			       "-1", "0", "0",
+ 			       "0", "0", "-1";
+ 	};
+-- 
+2.47.3
+

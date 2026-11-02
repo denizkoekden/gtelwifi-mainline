@@ -1,0 +1,32 @@
+From 440df12f4f47a0f6792d6af024ff1266d14ab666 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 08:34:00 +0000
+Subject: [PATCH 38/79] gpio: pmic-eic-sprd: cache all 16 interrupt bits
+
+The cached IEV, IE and TRIG values are u8, but the controller has 16
+EICs, so BIT(offset) is lost for offsets 8 to 15 and their interrupts
+are never enabled. On the SC2723 the volume down key is EIC 10. Make the
+cache u16.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ drivers/gpio/gpio-pmic-eic-sprd.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/gpio/gpio-pmic-eic-sprd.c b/drivers/gpio/gpio-pmic-eic-sprd.c
+index cb015fb5c..7ec923bb8 100644
+--- a/drivers/gpio/gpio-pmic-eic-sprd.c
++++ b/drivers/gpio/gpio-pmic-eic-sprd.c
+@@ -57,7 +57,7 @@ struct sprd_pmic_eic {
+ 	struct gpio_chip chip;
+ 	struct regmap *map;
+ 	u32 offset;
+-	u8 reg[CACHE_NR_REGS];
++	u16 reg[CACHE_NR_REGS];
+ 	struct mutex buslock;
+ 	int irq;
+ };
+-- 
+2.47.3
+

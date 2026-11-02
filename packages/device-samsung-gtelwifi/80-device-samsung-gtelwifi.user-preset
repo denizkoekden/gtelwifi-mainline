@@ -1,0 +1,3 @@
+# Undim before shutdown so systemd-backlight saves the user's brightness
+# (samsung-gtelwifi-undim-on-exit.service, see /usr/libexec/samsung-gtelwifi/undim-on-shutdown)
+enable samsung-gtelwifi-undim-on-exit.service

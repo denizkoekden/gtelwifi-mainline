@@ -1,0 +1,37 @@
+From d03542c92d667359ee51b30b12e44944efcc2ce2 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 11:29:35 +0000
+Subject: [PATCH 53/79] ASoC: sprd: sprd-pcm-dma: advertise non-interleaved
+ access
+
+hw_params gives every channel its own DMA channel and points it at
+runtime->dma_addr + channel * buffer_bytes / channels, which is the
+non-interleaved layout. The driver advertised interleaved access, so a
+stereo stream played the interleaved left/right samples as two halves:
+each channel at half speed, one after the other.
+
+Advertise SNDRV_PCM_INFO_NONINTERLEAVED; alsa-lib's plug layer and
+PipeWire handle the conversion.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ sound/soc/sprd/sprd-pcm-dma.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/sound/soc/sprd/sprd-pcm-dma.c b/sound/soc/sprd/sprd-pcm-dma.c
+index f509a4601..47e6af5d0 100644
+--- a/sound/soc/sprd/sprd-pcm-dma.c
++++ b/sound/soc/sprd/sprd-pcm-dma.c
+@@ -36,7 +36,7 @@ struct sprd_pcm_dma_private {
+ 
+ static const struct snd_pcm_hardware sprd_pcm_hardware = {
+ 	.info = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
+-		SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_PAUSE |
++		SNDRV_PCM_INFO_NONINTERLEAVED | SNDRV_PCM_INFO_PAUSE |
+ 		SNDRV_PCM_INFO_RESUME | SNDRV_PCM_INFO_NO_PERIOD_WAKEUP,
+ 	.formats = SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_LE,
+ 	.period_bytes_min = 1,
+-- 
+2.47.3
+

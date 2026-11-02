@@ -1,0 +1,30 @@
+#!/bin/bash
+# Install Alpine packages on the tablet, which has no internet of its own:
+# fetch them with all dependencies in an Alpine container on the Mac,
+# copy them over SSH and let apk install them offline. apk still checks the
+# package signatures against the Alpine keys on the tablet.
+#   tools/tabapk <package>...
+set -euo pipefail
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+[ $# -ge 1 ] || { echo "usage: tabapk <package>..." >&2; exit 2; }
+# TABSSH=tools/nurassh for Nura (edge); TAB_APK_REL overrides the release
+TABSSH=${TABSSH:-$ROOT/tools/tabssh}
+rel=${TAB_APK_REL:-$("$TABSSH" 'cut -d. -f1,2 /etc/alpine-release')}
+dir=$ROOT/out/apk
+rm -rf "$dir"
+mkdir -p "$dir"
+
+# Native arm64 container fetching armv7 packages: no QEMU binfmt needed
+# (pmbootstrap removes the Docker VM's qemu-arm entry when it shuts down).
+repo=https://dl-cdn.alpinelinux.org/alpine/v$rel
+[ "$rel" = edge ] && repo=https://dl-cdn.alpinelinux.org/alpine/edge
+docker run --rm --platform linux/arm64 -v "$dir:/out" "alpine:${rel/edge/edge}" \
+	sh -c "apk --arch armv7 -X $repo/main -X $repo/community --allow-untrusted \
+		--no-cache -q fetch -R -o /out $*"
+echo "fetched $(ls "$dir" | wc -l | tr -d ' ') packages for Alpine $rel"
+
+tar -C "$dir" -cf - . | "$TABSSH" '
+	rm -rf /tmp/apk && mkdir /tmp/apk && tar -x -C /tmp/apk
+	apk add --no-network /tmp/apk/*.apk; rc=$?
+	rm -rf /tmp/apk
+	exit $rc'

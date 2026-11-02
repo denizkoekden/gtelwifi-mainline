@@ -1,0 +1,35 @@
+maintainer="Deniz Kokden <koekdendeniz@gmail.com>"
+pkgname=firmware-samsung-gtelwifi
+pkgver=1
+pkgrel=0
+pkgdesc="Firmware for Samsung Galaxy Tab E 9.6 (SM-T560)"
+url="https://github.com/gtelwifi/android_device_samsung_gtelwifi"
+subpackages="$pkgname-wifi"
+arch="armv7"
+license="proprietary"
+options="!check !strip !archcheck !tracedeps pmb:cross-native"
+
+# Board NVRAM of the BCM43430 A1 (the production nvram_net.txt, not the
+# nvram_mfg.txt for factory tests). Its macaddr is Broadcom's placeholder;
+# the unit's real address lives in /efs and is not packaged.
+_commit="63c27055bd8e6688f2595077a8196336cfabb315"
+source="$pkgname-config-$_commit.tar.gz::https://github.com/gtelwifi/android_device_samsung_gtelwifi/archive/$_commit.tar.gz"
+builddir="$srcdir/android_device_samsung_gtelwifi-$_commit"
+
+package() {
+	# parent package is empty
+	mkdir -p "$pkgdir"
+}
+
+wifi() {
+	pkgdesc="Samsung Galaxy Tab E 9.6 - WiFi NVRAM (brcmfmac)"
+	# brcmfmac43430-sdio.{bin,clm_blob} (cypress/cyfmac43430-sdio.*)
+	depends="linux-firmware-brcm"
+
+	install -Dm644 "$builddir"/configs/wifi/nvram_net.txt \
+		"$subpkgdir"/usr/lib/firmware/brcm/brcmfmac43430-sdio.samsung,gtelwifi.txt
+}
+
+sha512sums="
+3d8917e7b6a5d4f2610dc623f4c52917024b055a70908ab86994a4171eddca4580fdca3e13769ae5b77a23c69345062a3e92ca9a9cc3122b49ddf8f9e619238d  firmware-samsung-gtelwifi-config-63c27055bd8e6688f2595077a8196336cfabb315.tar.gz
+"

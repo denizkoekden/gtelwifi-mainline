@@ -1,0 +1,53 @@
+#!/bin/bash
+# Install a linux-samsung-gtelwifi package from a Nura build on the tablet
+# running Nura, and boot it. The steps that were done by hand so far:
+#   1. check the APK against the SHA256SUMS of its build directory
+#   2. upload it and `apk add --no-network --allow-untrusted` (the local
+#      pmbootstrap key is not trusted on the tablet); the mkinitfs and
+#      boot-deploy triggers rebuild /boot/boot.img
+#   3. fetch that boot.img to out/nura-flash/boot-<version>.img and write it
+#      to KERNEL with tools/tabflash (hash checked on both ends)
+#   4. reboot and wait until systemd reports running
+#
+#   tools/nura-kernel-update nura/out/pmos-<time>/apk/linux-samsung-gtelwifi-<ver>.apk
+set -euo pipefail
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+NURASSH=$ROOT/tools/nurassh
+apk=${1:?usage: nura-kernel-update <linux-samsung-gtelwifi-*.apk>}
+dir=$(cd "$(dirname "$apk")" && pwd)
+name=$(basename "$apk")
+ver=${name#linux-samsung-gtelwifi-}
+ver=${ver%.apk}
+
+(cd "$dir" && grep " ./$name\$" SHA256SUMS | shasum -a 256 -c -)
+hash=$(shasum -a 256 "$apk" | cut -d' ' -f1)
+
+"$NURASSH" "mkdir -p /tmp/kupd && cat > /tmp/kupd/$name" < "$apk"
+# shellcheck disable=SC2029  # expanded on the tablet on purpose
+"$NURASSH" "cd /tmp/kupd && echo '$hash  $name' | sha256sum -c - &&
+	apk add --no-network --allow-untrusted ./$name | tail -3 &&
+	sha256sum /boot/boot.img"
+
+img=$ROOT/out/nura-flash/boot-$ver.img
+"$NURASSH" 'cat /boot/boot.img' > "$img"
+echo "boot image: $img, sha256 $(shasum -a 256 "$img" | cut -d' ' -f1)"
+TABSSH=$NURASSH "$ROOT/tools/tabflash" "$img"
+
+old=$("$NURASSH" cat /proc/sys/kernel/random/boot_id)
+"$NURASSH" 'systemd-run --on-active=2 systemctl reboot' >/dev/null
+echo "rebooting into $ver ..."
+for _ in $(seq 1 60); do
+	sleep 5
+	id=$("$NURASSH" cat /proc/sys/kernel/random/boot_id 2>/dev/null) || continue
+	[ "$id" != "$old" ] || continue
+	state=$("$NURASSH" systemctl is-system-running 2>/dev/null || true)
+	case $state in
+	running|degraded)
+		"$NURASSH" 'uname -v; nproc; dmesg | grep -ci "cfi failure"' |
+			paste -sd' ' - | sed 's/^/up: /;s/ \([0-9]*\)$/, CFI failures: \1/'
+		echo "state: $state"
+		exit 0;;
+	esac
+done
+echo "no running system after 5 min (boot_id changed: ${id:-?})" >&2
+exit 1

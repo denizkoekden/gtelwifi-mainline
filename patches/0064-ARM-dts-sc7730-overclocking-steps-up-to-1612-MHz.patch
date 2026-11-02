@@ -1,0 +1,94 @@
+From 1d2fde2aa0f952c2f5accd619a1c4a5ffc6e30ce Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 14:26:37 +0000
+Subject: [PATCH 64/79] ARM: dts: sc7730: overclocking steps up to 1612 MHz
+
+MPLL takes any multiple of 26 MHz up to 1638 MHz (NINT is 6 bits). Add
+1352 to 1612 MHz in 52 MHz steps with 25 mV more each, up to 1.20 V,
+and let DCDC_ARM go there; the clock driver puts AXI at core/4 above
+1.5 GHz.
+
+These are plain OPPs rather than turbo-mode: schedutil scales from the
+capacity reference frequency taken at policy creation and so never
+picks turbo OPPs. User space is expected to cap scaling_max_freq at the
+vendor's 1300 MHz unless overclocking is wanted (the gtelwifi device
+package does so).
+
+Checked on one Galaxy Tab E 9.6 (SM-T560): 30 s of four-core sha256 load
+against a reference at each step without an error (1608 MHz measured at
+the top), then 3 min at 1612 MHz, 74 C at most. The same load ran about
+20 % faster than at 1300 MHz. Thermal throttling from 85 C stays in
+place.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ arch/arm/boot/dts/unisoc/sc7730.dtsi | 45 +++++++++++++++++++++++++++-
+ 1 file changed, 44 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index efb53ae89..8169d4ff1 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -102,6 +102,49 @@ opp-1300000000 {
+ 			opp-microvolt = <1050000>;
+ 			clock-latency-ns = <300000>;
+ 		};
++
++		/*
++		 * Overclocking, beyond the vendor table: MPLL in 52 MHz steps,
++		 * +25 mV each, AXI at core/4 above 1.5 GHz. Checked on one unit
++		 * (four-core sha256 load, 3 min at 1612 MHz, 74 C). Not plain
++		 * "turbo-mode": schedutil would never pick those, so user space
++		 * caps scaling_max_freq at 1300 MHz unless asked otherwise.
++		 */
++		opp-1352000000 {
++			opp-hz = /bits/ 64 <1352000000>;
++			opp-microvolt = <1075000>;
++			clock-latency-ns = <300000>;
++		};
++
++		opp-1404000000 {
++			opp-hz = /bits/ 64 <1404000000>;
++			opp-microvolt = <1100000>;
++			clock-latency-ns = <300000>;
++		};
++
++		opp-1456000000 {
++			opp-hz = /bits/ 64 <1456000000>;
++			opp-microvolt = <1125000>;
++			clock-latency-ns = <300000>;
++		};
++
++		opp-1508000000 {
++			opp-hz = /bits/ 64 <1508000000>;
++			opp-microvolt = <1150000>;
++			clock-latency-ns = <300000>;
++		};
++
++		opp-1560000000 {
++			opp-hz = /bits/ 64 <1560000000>;
++			opp-microvolt = <1175000>;
++			clock-latency-ns = <300000>;
++		};
++
++		opp-1612000000 {
++			opp-hz = /bits/ 64 <1612000000>;
++			opp-microvolt = <1200000>;
++			clock-latency-ns = <300000>;
++		};
+ 	};
+ 
+ 	/* SC2723 DCDC_ARM, the Cortex-A7 cluster supply (mach-sprd/sc2723-dcdc-arm.c) */
+@@ -109,7 +152,7 @@ vddarm: regulator-vddarm {
+ 		compatible = "sprd,sc2723-dcdc-arm";
+ 		regulator-name = "vddarm";
+ 		regulator-min-microvolt = <900000>;
+-		regulator-max-microvolt = <1100000>;
++		regulator-max-microvolt = <1200000>;
+ 		regulator-always-on;
+ 		regulator-boot-on;
+ 	};
+-- 
+2.47.3
+

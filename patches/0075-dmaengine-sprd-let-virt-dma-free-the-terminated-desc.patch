@@ -1,0 +1,82 @@
+From 328ca508da5e396ec2d2260bd0003415619229a6 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 20:31:20 +0000
+Subject: [PATCH 75/79] dmaengine: sprd: let virt-dma free the terminated
+ descriptor
+
+A link-list transfer is cyclic: its interrupt calls vchan_cyclic_callback(),
+which leaves vc->cyclic pointing at the descriptor for the completion
+tasklet. terminate_all() and free_chan_resources() freed the current
+descriptor directly, so a tasklet still pending could read a freed
+descriptor.
+
+Hand the current descriptor to vchan_terminate_vdesc(), which also clears
+vc->cyclic, and add device_synchronize() so that dmaengine_terminate_sync()
+waits for the tasklet. free_chan_resources() synchronizes before freeing.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ drivers/dma/sprd-dma.c | 23 +++++++++++++++++------
+ 1 file changed, 17 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/dma/sprd-dma.c b/drivers/dma/sprd-dma.c
+index ff8685e9e..6abc0691e 100644
+--- a/drivers/dma/sprd-dma.c
++++ b/drivers/dma/sprd-dma.c
+@@ -671,11 +671,11 @@ static void sprd_dma_free_chan_resources(struct dma_chan *chan)
+ 		cur_vd = &schan->cur_desc->vd;
+ 
+ 	sprd_dma_stop(schan);
+-	spin_unlock_irqrestore(&schan->vc.lock, flags);
+-
+ 	if (cur_vd)
+-		sprd_dma_free_desc(cur_vd);
++		vchan_terminate_vdesc(cur_vd);
++	spin_unlock_irqrestore(&schan->vc.lock, flags);
+ 
++	vchan_synchronize(&schan->vc);
+ 	vchan_free_chan_resources(&schan->vc);
+ 	pm_runtime_put(chan->device->dev);
+ }
+@@ -1125,16 +1125,26 @@ static int sprd_dma_terminate_all(struct dma_chan *chan)
+ 
+ 	sprd_dma_stop(schan);
+ 
++	/*
++	 * A link-list descriptor is cyclic: vc->cyclic may still point to
++	 * it for the completion tasklet, which vchan_terminate_vdesc() clears.
++	 */
++	if (cur_vd)
++		vchan_terminate_vdesc(cur_vd);
+ 	vchan_get_all_descriptors(&schan->vc, &head);
+ 	spin_unlock_irqrestore(&schan->vc.lock, flags);
+ 
+-	if (cur_vd)
+-		sprd_dma_free_desc(cur_vd);
+-
+ 	vchan_dma_desc_free_list(&schan->vc, &head);
+ 	return 0;
+ }
+ 
++static void sprd_dma_synchronize(struct dma_chan *chan)
++{
++	struct sprd_dma_chn *schan = to_sprd_dma_chan(chan);
++
++	vchan_synchronize(&schan->vc);
++}
++
+ static void sprd_dma_free_desc(struct virt_dma_desc *vd)
+ {
+ 	struct sprd_dma_desc *sdesc = to_sprd_dma_desc(vd);
+@@ -1254,6 +1264,7 @@ static int sprd_dma_probe(struct platform_device *pdev)
+ 	sdev->dma_dev.device_pause = sprd_dma_pause;
+ 	sdev->dma_dev.device_resume = sprd_dma_resume;
+ 	sdev->dma_dev.device_terminate_all = sprd_dma_terminate_all;
++	sdev->dma_dev.device_synchronize = sprd_dma_synchronize;
+ 
+ 	for (i = 0; i < chn_count; i++) {
+ 		dma_chn = &sdev->channels[i];
+-- 
+2.47.3
+

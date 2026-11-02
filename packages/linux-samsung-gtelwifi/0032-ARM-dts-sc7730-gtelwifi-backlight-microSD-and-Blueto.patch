@@ -1,0 +1,179 @@
+From 08ec49942d1bd8a1ed2d1ab655835638fccf3777 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 1 Nov 2026 22:48:55 +0000
+Subject: [PATCH 32/79] ARM: dts: sc7730: gtelwifi backlight, microSD and
+ Bluetooth
+
+- PWM3 with pwm-backlight (RT8555 stays as the bootloader set it up),
+  switched by simpledrm with the CRTC.
+- SDIO0 with the SC2723 LDO vddsdcore pinned to 3.0 V, card detect
+  GPIO 71: a 64 GB SDXC card runs at 48 MHz high speed, 16 MiB/s.
+- UART0 at 26 MHz with an AP APB gate clock, BCM43430A1 on serdev
+  (BT_REG_ON GPIO 47, LPO from CLK_AUX0): hci0 comes up and loads the
+  Samsung patch "BCM43438A1-37.4MHz TabE SM-T561 BT4.1-0022".
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ .../dts/unisoc/sc7730-samsung-gtelwifi.dts    | 61 +++++++++++++++++++
+ arch/arm/boot/dts/unisoc/sc7730.dtsi          | 51 ++++++++++++++++
+ 2 files changed, 112 insertions(+)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index bb17536da..6ed2aaa5f 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -199,6 +199,8 @@ / {
+ 	aliases {
+ 		mmc0 = &emmc;
+ 		mmc1 = &sdio1;
++		mmc2 = &sdio0;
++		serial0 = &uart0;
+ 		serial1 = &uart1;
+ 	};
+ 
+@@ -255,6 +257,32 @@ framebuffer@9ea44000 {
+ 		height = <1280>;
+ 		stride = <(800 * 4)>;
+ 		format = "x8r8g8b8";	/* verified on the panel, Test 1b */
++		backlight = <&backlight>;
++	};
++
++	/*
++	 * PWM3 into the RT8555 LED driver (i2c-gpio 65/66 @ 0x31, EN GPIO
++	 * 155), which the bootloader sets up and leaves enabled; brightness
++	 * 0 is the vendor's off state. 20.4 kHz like the vendor, duty 143
++	 * as the bootloader leaves it.
++	 */
++	/* SC2723 LDO_SDCORE: microSD VDD and the SD0 pads (3 V mode only) */
++	vddsdcore: regulator-vddsdcore {
++		compatible = "sprd,sc2723-ldo";
++		regulator-name = "vddsdcore";
++		sprd,pd-reg = <0x814 10>;
++		sprd,vsel-reg = <0x830 0xff00>;
++		/* min = max: the core sets 3.0 V at registration */
++		regulator-min-microvolt = <3000000>;
++		regulator-max-microvolt = <3000000>;
++	};
++
++	backlight: backlight {
++		compatible = "pwm-backlight";
++		pwms = <&pwm 3 49039>;
++		brightness-levels = <0 255>;
++		num-interpolated-steps = <255>;
++		default-brightness-level = <143>;
+ 	};
+ };
+ 
+@@ -263,6 +291,39 @@ framebuffer@9ea44000 {
+  * bootloader muxes to the keypad. The vendor tree also lists Volume Down
+  * at row 1/column 0, but never scans column 0.
+  */
++&pwm {
++	status = "okay";
++};
++
++&sdio0 {
++	bus-width = <4>;
++	cd-gpios = <&gpio 71 GPIO_ACTIVE_LOW>;	/* external pull-up */
++	cd-debounce-delay-ms = <200>;
++	disable-wp;
++	cap-sd-highspeed;
++	max-frequency = <50000000>;		/* 384 MHz / 8 = 48 MHz */
++	no-1-8-v;				/* card VDD is the pad supply */
++	sdhci-caps-mask = <0x0 0x05000000>;	/* vendor: 3.0 V only */
++	vmmc-supply = <&vddsdcore>;
++	status = "okay";
++};
++
++/*
++ * BCM43430A1 Bluetooth. Wake lines (BT_WAKE GPIO 45, HOST_WAKE GPIO 46)
++ * come later: without a host wake IRQ hci_bcm never lets the chip sleep.
++ */
++&uart0 {
++	status = "okay";
++
++	bluetooth {
++		compatible = "brcm,bcm43430a1-bt";
++		shutdown-gpios = <&gpio 47 GPIO_ACTIVE_HIGH>;
++		clocks = <&clk_aux0>;
++		clock-names = "lpo";
++		max-speed = <2000000>;
++	};
++};
++
+ &keypad {
+ 	keypad,num-rows = <1>;
+ 	keypad,num-columns = <3>;
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index 7cf24ef60..e23ce14e4 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -193,6 +193,33 @@ sdio1: mmc@20400000 {
+ 			status = "disabled";
+ 		};
+ 
++		/*
++		 * SDIO0, the microSD slot (vendor id 0). Gated by the
++		 * bootloader: AP_AHB EB bit 8, soft reset bit 11. Base clock
++		 * AP_CLK_SDIO0_CFG: mux bits 1:0, divider bits 10:8.
++		 */
++		sdio0: mmc@20300000 {
++			compatible = "sprd,sc7730-sdhci";
++			reg = <0x20300000 0x1000>, <0x71200048 0x4>,
++			      <0x20d00000 0x8>;
++			reg-names = "sdhci", "clk-cfg", "ap-ahb";
++			interrupts = <GIC_SPI 57 IRQ_TYPE_LEVEL_HIGH>;
++			sprd,clk-parent-rates = <26000000 256000000 312000000 384000000>;
++			sprd,clk-sel = <3>;	/* 384 MHz like the vendor */
++			sprd,clk-has-div;
++			sprd,ahb-eb-bit = <8>;
++			sprd,ahb-rst-bit = <11>;
++			status = "disabled";
++		};
++
++		/* AP APB enable bits as gate clocks (mach-sprd/clk-gates.c) */
++		ap_apb_gates: clock-controller@71300000 {
++			compatible = "sprd,sc7730-gates";
++			reg = <0x71300000 0x4>;
++			clocks = <&ext_26m>;
++			#clock-cells = <1>;
++		};
++
+ 		/* CLK_AUX0 pad, 32 kHz (mach-sprd/clk-aux0.c) */
+ 		clk_aux0: clock-controller@402e0000 {
+ 			compatible = "sprd,sc7730-aux0-clk";
+@@ -241,6 +268,30 @@ keypad: keypad@40250000 {
+ 			status = "disabled";
+ 		};
+ 
++		/*
++		 * Always-on PWM, four channels. Gates are AON APB EB0 bits
++		 * 4..7, clock selects one register per channel at 0x402d0038.
++		 */
++		pwm: pwm@40260000 {
++			compatible = "sprd,sc8830-pwm";
++			reg = <0x40260000 0x80>, <0x402e0000 0x4>,
++			      <0x402d0038 0x10>;
++			reg-names = "pwm", "aon-apb", "clk-sel";
++			clocks = <&ext_26m>;
++			#pwm-cells = <2>;
++			status = "disabled";
++		};
++
++		/* Bluetooth on the gtelwifi; 26 MHz (vendor: 48 MHz) */
++		uart0: serial@70000000 {
++			compatible = "sprd,sc9836-uart";
++			reg = <0x70000000 0x100>;
++			interrupts = <GIC_SPI 2 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&ext_26m>, <&ap_apb_gates 13>;
++			clock-names = "uart", "enable";
++			status = "disabled";
++		};
++
+ 		uart1: serial@70100000 {
+ 			compatible = "sprd,sc9836-uart";
+ 			reg = <0x70100000 0x100>;
+-- 
+2.47.3
+

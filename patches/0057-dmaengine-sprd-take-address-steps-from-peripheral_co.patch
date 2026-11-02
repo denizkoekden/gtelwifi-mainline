@@ -1,0 +1,89 @@
+From 3146eeca2b8732fb8783cd36aa1634029eaee62d Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 12:10:52 +0000
+Subject: [PATCH 57/79] dmaengine: sprd: take address steps from
+ peripheral_config
+
+The address step of a channel follows the data width. Interleaved audio
+needs more: one DMA channel per audio channel, each starting at its own
+first sample and stepping over the samples of the other channels, as the
+vendor PCM driver does with src_step 4 for 16-bit stereo.
+
+Clients can now pass a struct sprd_dma_step as peripheral_config in
+their slave config; a non-zero src_step or dst_step replaces the default
+step. The values are copied, the pointer is only valid during the call.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ drivers/dma/sprd-dma.c       | 15 +++++++++++++++
+ include/linux/dma/sprd-dma.h | 15 +++++++++++++++
+ 2 files changed, 30 insertions(+)
+
+diff --git a/drivers/dma/sprd-dma.c b/drivers/dma/sprd-dma.c
+index 514e1a205..ff8685e9e 100644
+--- a/drivers/dma/sprd-dma.c
++++ b/drivers/dma/sprd-dma.c
+@@ -199,6 +199,7 @@ struct sprd_dma_chn {
+ 	void __iomem		*chn_base;
+ 	struct sprd_dma_linklist	linklist;
+ 	struct dma_slave_config	slave_cfg;
++	struct sprd_dma_step	step;
+ 	u32			chn_num;
+ 	u32			dev_id;
+ 	enum sprd_dma_chn_mode	chn_mode;
+@@ -804,6 +805,11 @@ static int sprd_dma_fill_desc(struct dma_chan *chan,
+ 		src_step = SPRD_DMA_NONE_STEP;
+ 	}
+ 
++	if (schan->step.src_step)
++		src_step = schan->step.src_step;
++	if (schan->step.dst_step)
++		dst_step = schan->step.dst_step;
++
+ 	src_datawidth = sprd_dma_get_datawidth(slave_cfg->src_addr_width);
+ 	if (src_datawidth < 0) {
+ 		dev_err(sdev->dma_dev.dev, "invalid source datawidth\n");
+@@ -1070,6 +1076,15 @@ static int sprd_dma_slave_config(struct dma_chan *chan,
+ 	struct dma_slave_config *slave_cfg = &schan->slave_cfg;
+ 
+ 	memcpy(slave_cfg, config, sizeof(*config));
++	/* only valid during the call, so keep a copy */
++	if (config->peripheral_config &&
++	    config->peripheral_size == sizeof(schan->step))
++		memcpy(&schan->step, config->peripheral_config,
++		       sizeof(schan->step));
++	else
++		memset(&schan->step, 0, sizeof(schan->step));
++	slave_cfg->peripheral_config = NULL;
++	slave_cfg->peripheral_size = 0;
+ 	return 0;
+ }
+ 
+diff --git a/include/linux/dma/sprd-dma.h b/include/linux/dma/sprd-dma.h
+index d09c6f6f6..851ce7952 100644
+--- a/include/linux/dma/sprd-dma.h
++++ b/include/linux/dma/sprd-dma.h
+@@ -187,4 +187,19 @@ struct sprd_dma_linklist {
+ 	phys_addr_t wrap_addr;
+ };
+ 
++/**
++ * struct sprd_dma_step - address steps other than the data width, passed
++ * as dma_slave_config.peripheral_config
++ * @src_step: bytes the source address advances per datum, 0 for the default
++ * @dst_step: bytes the destination address advances per datum, 0 for the
++ * default
++ *
++ * Interleaved audio uses one DMA channel per audio channel, each of which
++ * has to skip the samples of the other channels in memory.
++ */
++struct sprd_dma_step {
++	u32 src_step;
++	u32 dst_step;
++};
++
+ #endif
+-- 
+2.47.3
+

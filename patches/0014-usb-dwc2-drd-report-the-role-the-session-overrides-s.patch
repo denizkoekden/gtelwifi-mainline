@@ -1,0 +1,77 @@
+From 9aebdf53da5f2c407d74e5c6704754c39de1dc00 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 1 Nov 2026 19:24:06 +0000
+Subject: [PATCH 14/79] usb: dwc2: drd: report the role the session overrides
+ select
+
+The role switch has no .get callback, so the class reports its cached
+role, which stays "none" until user space writes one, although
+dwc2_ovr_init() already forced the session of role-switch-default-mode.
+User space that trusts the role (usb-signaller) then refuses to work on
+a peripheral-only controller without VBUS sensing.
+
+Report host or device from the GOTGCTL A/B-session overrides, and none
+when no override is set, so nothing changes for boards whose role is
+driven by a connector. Same clock guard as dwc2_drd_role_sw_set().
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ drivers/usb/dwc2/drd.c | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/drivers/usb/dwc2/drd.c b/drivers/usb/dwc2/drd.c
+index 1ad8fa3f8..520ebb63e 100644
+--- a/drivers/usb/dwc2/drd.c
++++ b/drivers/usb/dwc2/drd.c
+@@ -170,6 +170,39 @@ static int dwc2_drd_role_sw_set(struct usb_role_switch *sw, enum usb_role role)
+ 	return 0;
+ }
+ 
++/*
++ * Without a .get callback the class reports its cached role, which stays
++ * "none" until someone writes one, even though dwc2_ovr_init() already
++ * forced the session of role-switch-default-mode. Report what the session
++ * overrides say instead.
++ */
++static enum usb_role dwc2_drd_role_sw_get(struct usb_role_switch *sw)
++{
++	struct dwc2_hsotg *hsotg = usb_role_switch_get_drvdata(sw);
++	enum usb_role role = USB_ROLE_NONE;
++	unsigned long flags;
++	u32 gotgctl;
++
++	/* see dwc2_drd_role_sw_set(): the clock may be off before udc_start */
++	if (!hsotg->ll_hw_enabled && hsotg->clk &&
++	    clk_prepare_enable(hsotg->clk))
++		return USB_ROLE_NONE;
++
++	spin_lock_irqsave(&hsotg->lock, flags);
++	gotgctl = dwc2_readl(hsotg, GOTGCTL);
++	spin_unlock_irqrestore(&hsotg->lock, flags);
++
++	if (!hsotg->ll_hw_enabled && hsotg->clk)
++		clk_disable_unprepare(hsotg->clk);
++
++	if ((gotgctl & GOTGCTL_AVALOEN) && (gotgctl & GOTGCTL_AVALOVAL))
++		role = USB_ROLE_HOST;
++	else if ((gotgctl & GOTGCTL_BVALOEN) && (gotgctl & GOTGCTL_BVALOVAL))
++		role = USB_ROLE_DEVICE;
++
++	return role;
++}
++
+ int dwc2_drd_init(struct dwc2_hsotg *hsotg)
+ {
+ 	struct usb_role_switch_desc role_sw_desc = {0};
+@@ -183,6 +216,7 @@ int dwc2_drd_init(struct dwc2_hsotg *hsotg)
+ 	role_sw_desc.driver_data = hsotg;
+ 	role_sw_desc.fwnode = dev_fwnode(hsotg->dev);
+ 	role_sw_desc.set = dwc2_drd_role_sw_set;
++	role_sw_desc.get = dwc2_drd_role_sw_get;
+ 	role_sw_desc.allow_userspace_control = true;
+ 
+ 	role_sw = usb_role_switch_register(hsotg->dev, &role_sw_desc);
+-- 
+2.47.3
+

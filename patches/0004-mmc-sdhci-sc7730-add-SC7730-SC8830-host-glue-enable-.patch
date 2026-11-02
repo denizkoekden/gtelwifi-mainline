@@ -1,0 +1,227 @@
+From 5e25ccc5ef2315fc1e0ad45d8ad4b58b46879c46 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 1 Nov 2026 15:19:58 +0000
+Subject: [PATCH 04/79] mmc: sdhci-sc7730: add SC7730/SC8830 host glue, enable
+ gtelwifi eMMC
+
+The 32-bit Spreadtrum "shark" SD/eMMC hosts are plain SDHCI 3.0 with a
+few quirks (vendor sprd-sdhci-fix-of.c) and a base clock the capability
+register does not report. Read the base clock back from the AP clock mux
+the bootloader programmed until there is a clock driver.
+
+Enable the gtelwifi eMMC conservatively: 8 bit, SDR high speed at
+52 MHz, no 1.8 V modes.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ .../dts/unisoc/sc7730-samsung-gtelwifi.dts    |  15 +++
+ arch/arm/boot/dts/unisoc/sc7730.dtsi          |  15 +++
+ drivers/mmc/host/Kconfig                      |  11 ++
+ drivers/mmc/host/Makefile                     |   1 +
+ drivers/mmc/host/sdhci-sc7730.c               | 110 ++++++++++++++++++
+ 5 files changed, 152 insertions(+)
+ create mode 100644 drivers/mmc/host/sdhci-sc7730.c
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index 9efbee714..8e701a49c 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -83,3 +83,18 @@ framebuffer@9ea44000 {
+ &usb {
+ 	status = "okay";
+ };
++
++/*
++ * First eMMC bring-up: SDR high speed only. The vendor runs DDR52 at
++ * 1.8 V I/O with extra delay-line settings, that comes later.
++ */
++&emmc {
++	bus-width = <8>;
++	non-removable;
++	no-sd;
++	no-sdio;
++	no-1-8-v;
++	cap-mmc-highspeed;
++	max-frequency = <52000000>;
++	status = "okay";
++};
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index e5caae400..5a5260fd6 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -88,6 +88,21 @@ usb: usb@20200000 {
+ 			status = "disabled";
+ 		};
+ 
++		/*
++		 * eMMC host (vendor: sdhci@f511c000, "sprd,sdhci-shark", id 3).
++		 * Base clock: AP_CLK_EMMC_CFG mux, 26/256/312/384 MHz. Gate
++		 * (AP_AHB_EB bit 11), pinmux and card power come from the
++		 * bootloader for now.
++		 */
++		emmc: mmc@20600000 {
++			compatible = "sprd,sc7730-sdhci";
++			reg = <0x20600000 0x1000>, <0x71200054 0x4>;
++			reg-names = "sdhci", "clk-cfg";
++			interrupts = <GIC_SPI 60 IRQ_TYPE_LEVEL_HIGH>;
++			sprd,clk-parent-rates = <26000000 256000000 312000000 384000000>;
++			status = "disabled";
++		};
++
+ 		uart1: serial@70100000 {
+ 			compatible = "sprd,sc9836-uart";
+ 			reg = <0x70100000 0x100>;
+diff --git a/drivers/mmc/host/Kconfig b/drivers/mmc/host/Kconfig
+index 4f060d3e5..73ffcd662 100644
+--- a/drivers/mmc/host/Kconfig
++++ b/drivers/mmc/host/Kconfig
+@@ -714,6 +714,17 @@ config MMC_SDHCI_SPRD
+ 
+ 	  If unsure, say N.
+ 
++config MMC_SDHCI_SC7730
++	tristate "Spreadtrum SC7730/SC8830 SD/eMMC host controller"
++	depends on ARCH_SPRD || COMPILE_TEST
++	depends on MMC_SDHCI_PLTFM
++	help
++	  This selects the SDHCI 3.0 based SD/SDIO/eMMC controllers of the
++	  32-bit Spreadtrum SC7730/SC8830 ("shark") SoCs, e.g. in the
++	  Samsung Galaxy Tab E 9.6 (SM-T560).
++
++	  If unsure, say N.
++
+ config MMC_TMIO_CORE
+ 	tristate
+ 
+diff --git a/drivers/mmc/host/Makefile b/drivers/mmc/host/Makefile
+index ee412e6b8..1d7086983 100644
+--- a/drivers/mmc/host/Makefile
++++ b/drivers/mmc/host/Makefile
+@@ -102,6 +102,7 @@ obj-$(CONFIG_MMC_SDHCI_MICROCHIP_PIC32)	+= sdhci-pic32.o
+ obj-$(CONFIG_MMC_SDHCI_BRCMSTB)		+= sdhci-brcmstb.o
+ obj-$(CONFIG_MMC_SDHCI_OMAP)		+= sdhci-omap.o
+ obj-$(CONFIG_MMC_SDHCI_SPRD)		+= sdhci-sprd.o
++obj-$(CONFIG_MMC_SDHCI_SC7730)		+= sdhci-sc7730.o
+ obj-$(CONFIG_MMC_SUNPLUS)		+= sunplus-mmc.o
+ obj-$(CONFIG_MMC_CQHCI)			+= cqhci.o
+ cqhci-y					+= cqhci-core.o
+diff --git a/drivers/mmc/host/sdhci-sc7730.c b/drivers/mmc/host/sdhci-sc7730.c
+new file mode 100644
+index 000000000..ccba3b5c8
+--- /dev/null
++++ b/drivers/mmc/host/sdhci-sc7730.c
+@@ -0,0 +1,110 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * SDHCI glue for the Spreadtrum SC7730/SC8830 ("shark") SD/SDIO/eMMC hosts.
++ *
++ * The controllers are plain SDHCI 3.0. The vendor driver
++ * (drivers/mmc/host/sprd-sdhci-fix-of.c in the 3.10 tree) only adds the
++ * quirks below and takes the base clock from the device tree, because the
++ * capabilities register does not report it.
++ *
++ * Until this SoC has a clock driver, the base clock is read back from the
++ * AP clock mux the bootloader programmed ("clk-cfg", bits 1:0 select one of
++ * "sprd,clk-parent-rates"), so the card is never clocked faster than the
++ * divider math assumes. Gate, reset, pinmux and card power are left as the
++ * bootloader set them up.
++ */
++
++#include <linux/io.h>
++#include <linux/mmc/host.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++
++#include "sdhci-pltfm.h"
++
++#define SC7730_CLK_SEL_MASK	0x3
++
++struct sc7730_sdhci {
++	unsigned int base_clk;
++};
++
++static unsigned int sc7730_sdhci_get_max_clock(struct sdhci_host *host)
++{
++	struct sc7730_sdhci *priv = sdhci_pltfm_priv(sdhci_priv(host));
++
++	return priv->base_clk;
++}
++
++static const struct sdhci_ops sc7730_sdhci_ops = {
++	.set_clock		= sdhci_set_clock,
++	.get_max_clock		= sc7730_sdhci_get_max_clock,
++	.set_bus_width		= sdhci_set_bus_width,
++	.reset			= sdhci_reset,
++	.set_uhs_signaling	= sdhci_set_uhs_signaling,
++};
++
++static const struct sdhci_pltfm_data sc7730_sdhci_pdata = {
++	.ops = &sc7730_sdhci_ops,
++	.quirks = SDHCI_QUIRK_CLOCK_BEFORE_RESET |
++		  SDHCI_QUIRK_BROKEN_CARD_DETECTION |
++		  SDHCI_QUIRK_DATA_TIMEOUT_USES_SDCLK |
++		  SDHCI_QUIRK_CAP_CLOCK_BASE_BROKEN |
++		  SDHCI_QUIRK_NO_HISPD_BIT,
++	.quirks2 = SDHCI_QUIRK2_PRESET_VALUE_BROKEN,
++};
++
++static int sc7730_sdhci_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct sc7730_sdhci *priv;
++	struct sdhci_host *host;
++	void __iomem *clk_cfg;
++	u32 rates[4], sel;
++	int ret;
++
++	host = sdhci_pltfm_init(pdev, &sc7730_sdhci_pdata, sizeof(*priv));
++	if (IS_ERR(host))
++		return PTR_ERR(host);
++	priv = sdhci_pltfm_priv(sdhci_priv(host));
++
++	clk_cfg = devm_platform_ioremap_resource_byname(pdev, "clk-cfg");
++	if (IS_ERR(clk_cfg))
++		return PTR_ERR(clk_cfg);
++	ret = of_property_read_u32_array(dev->of_node, "sprd,clk-parent-rates",
++					 rates, ARRAY_SIZE(rates));
++	if (ret)
++		return dev_err_probe(dev, ret, "missing sprd,clk-parent-rates\n");
++
++	sel = readl(clk_cfg) & SC7730_CLK_SEL_MASK;
++	priv->base_clk = rates[sel];
++	dev_info(dev, "base clock %u Hz (mux %u), caps %08x %08x\n",
++		 priv->base_clk, sel, sdhci_readl(host, SDHCI_CAPABILITIES),
++		 sdhci_readl(host, SDHCI_CAPABILITIES_1));
++
++	ret = mmc_of_parse(host->mmc);
++	if (ret)
++		return ret;
++	sdhci_get_of_property(pdev);
++
++	return sdhci_add_host(host);
++}
++
++static const struct of_device_id sc7730_sdhci_of_match[] = {
++	{ .compatible = "sprd,sc7730-sdhci" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, sc7730_sdhci_of_match);
++
++static struct platform_driver sc7730_sdhci_driver = {
++	.probe = sc7730_sdhci_probe,
++	.remove = sdhci_pltfm_remove,
++	.driver = {
++		.name = "sdhci-sc7730",
++		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
++		.of_match_table = sc7730_sdhci_of_match,
++	},
++};
++module_platform_driver(sc7730_sdhci_driver);
++
++MODULE_DESCRIPTION("SDHCI glue for Spreadtrum SC7730/SC8830");
++MODULE_LICENSE("GPL");
+-- 
+2.47.3
+

@@ -1,0 +1,16 @@
+#!/bin/sh
+# Runs under a shutdown delay lock (systemd-inhibit --mode=delay). Phosh
+# dims the panel when the session is idle (gsd-power calls
+# org.gnome.Shell.Brightness.SetDimming), and systemd-backlight saves the
+# brightness at shutdown, so a shutdown from an idle session made the
+# next boot start dark. On PrepareForShutdown, while the session still
+# runs, ask Phosh to undim: it puts back the brightness the user chose.
+busctl wait --system org.freedesktop.login1 /org/freedesktop/login1 \
+	org.freedesktop.login1.Manager PrepareForShutdown >/dev/null || exit 1
+BL=/sys/class/backlight/backlight/brightness
+before=$(cat $BL)
+busctl --user call org.gnome.Shell.Brightness /org/gnome/Shell/Brightness \
+	org.gnome.Shell.Brightness SetDimming b false
+# Phosh sets the brightness through logind; give that a moment
+sleep 0.3
+echo "brightness $before at shutdown, $(cat $BL) after undimming"

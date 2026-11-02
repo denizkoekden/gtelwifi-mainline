@@ -1,0 +1,121 @@
+From e5c01e4a63abcde45e5811f3b14eb6361ab01941 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 14:49:53 +0000
+Subject: [PATCH 65/79] ARM: sprd: sc7730: cap cpufreq at 1300 MHz from policy
+ creation
+
+The OPP table now goes up to 1612 MHz, beyond the vendor's 1300 MHz,
+with the overclocking steps checked on a single unit. A cap set by user
+space only takes effect late in boot; until then schedutil already ran
+at 1612 MHz (15 s of boot in time_in_state).
+
+Add a FREQ_QOS_MAX request of 1300 MHz from the CPUFREQ_CREATE_POLICY
+notifier, before the governor starts, and expose it as the parameter
+sc7730.cpu_max_khz (writable at runtime) so that user space can lift it.
+
+Tested on the Galaxy Tab E 9.6 (SM-T560): no time above 1300 MHz after
+boot; 1612000 written to the parameter lets four-core load run at
+1612 MHz, 1300000 brings it back.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ arch/arm/mach-sprd/sc7730.c | 68 +++++++++++++++++++++++++++++++++++++
+ 1 file changed, 68 insertions(+)
+
+diff --git a/arch/arm/mach-sprd/sc7730.c b/arch/arm/mach-sprd/sc7730.c
+index 5e59321ab..16a539943 100644
+--- a/arch/arm/mach-sprd/sc7730.c
++++ b/arch/arm/mach-sprd/sc7730.c
+@@ -26,13 +26,23 @@
+  * WFI for a wakeup interrupt. DDR, the GIC and the counter stay powered.
+  * The vendor's deep sleep (DDR self-refresh, CA7 power-down, resume from
+  * IRAM) is not there yet.
++ *
++ * The CPU OPP table goes beyond the vendor's 1300 MHz (overclocking steps
++ * checked on a single unit), so every new cpufreq policy gets a maximum
++ * of 1300 MHz before its governor starts. User space can move it through
++ * /sys/module/sc7730/parameters/cpu_max_khz.
+  */
+ 
+ #include <linux/bits.h>
+ #include <linux/clk-provider.h>
+ #include <linux/clocksource.h>
++#include <linux/cpufreq.h>
+ #include <linux/init.h>
+ #include <linux/io.h>
++#include <linux/moduleparam.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/pm_qos.h>
+ #include <linux/printk.h>
+ #include <linux/suspend.h>
+ 
+@@ -133,6 +143,64 @@ static void __init sc7730_init_late(void)
+ #define sc7730_init_late	NULL
+ #endif
+ 
++#ifdef CONFIG_CPU_FREQ
++static unsigned int cpu_max_khz = 1300000;
++static struct freq_qos_request cpu_max_req;
++static struct cpufreq_policy *cpu_max_policy;
++static DEFINE_MUTEX(cpu_max_lock);
++
++static int sc7730_cpu_max_set(const char *val, const struct kernel_param *kp)
++{
++	int ret;
++
++	mutex_lock(&cpu_max_lock);
++	ret = param_set_uint(val, kp);
++	if (!ret && cpu_max_policy)
++		ret = freq_qos_update_request(&cpu_max_req, cpu_max_khz);
++	mutex_unlock(&cpu_max_lock);
++	return ret < 0 ? ret : 0;
++}
++
++static const struct kernel_param_ops sc7730_cpu_max_ops = {
++	.set = sc7730_cpu_max_set,
++	.get = param_get_uint,
++};
++module_param_cb(cpu_max_khz, &sc7730_cpu_max_ops, &cpu_max_khz, 0644);
++MODULE_PARM_DESC(cpu_max_khz, "CPU frequency limit in kHz (vendor maximum 1300000)");
++
++static int sc7730_cpufreq_notify(struct notifier_block *nb,
++				 unsigned long event, void *data)
++{
++	struct cpufreq_policy *policy = data;
++
++	mutex_lock(&cpu_max_lock);
++	if (event == CPUFREQ_CREATE_POLICY && !cpu_max_policy) {
++		if (freq_qos_add_request(&policy->constraints, &cpu_max_req,
++					 FREQ_QOS_MAX, cpu_max_khz) >= 0)
++			cpu_max_policy = policy;
++	} else if (event == CPUFREQ_REMOVE_POLICY && policy == cpu_max_policy) {
++		freq_qos_remove_request(&cpu_max_req);
++		cpu_max_policy = NULL;
++	}
++	mutex_unlock(&cpu_max_lock);
++	return NOTIFY_OK;
++}
++
++static struct notifier_block sc7730_cpufreq_nb = {
++	.notifier_call = sc7730_cpufreq_notify,
++};
++
++/* before cpufreq-dt probes at device_initcall */
++static int __init sc7730_cpufreq_limit_init(void)
++{
++	if (!of_machine_is_compatible("sprd,sc7730"))
++		return 0;
++	return cpufreq_register_notifier(&sc7730_cpufreq_nb,
++					 CPUFREQ_POLICY_NOTIFIER);
++}
++arch_initcall(sc7730_cpufreq_limit_init);
++#endif
++
+ static const char *const sc7730_dt_compat[] __initconst = {
+ 	"sprd,sc7730",
+ 	NULL
+-- 
+2.47.3
+

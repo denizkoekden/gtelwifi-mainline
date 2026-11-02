@@ -1,0 +1,43 @@
+From 27824602f06ea7cf91ffe423867c9a5bfd390eb1 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 1 Nov 2026 22:09:55 +0000
+Subject: [PATCH 22/79] ARM: sprd: SC7730 SMP: enter secondary_startup_arm in
+ ARM state
+
+The boot ROM jumps to JMP_ADDR with interworking. In a Thumb-2 kernel
+built with clang, the LLVM assembler marks secondary_startup_arm as a
+Thumb function (its ENDPROC comes after the switch to Thumb), so its
+address carries bit 0: the secondaries started decoding the ARM entry
+code as Thumb, ran wild and froze the system. GNU as leaves bit 0 clear,
+which is why the GCC build worked. Clear it explicitly.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ arch/arm/mach-sprd/platsmp.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/arch/arm/mach-sprd/platsmp.c b/arch/arm/mach-sprd/platsmp.c
+index f6b542667..0235b76eb 100644
+--- a/arch/arm/mach-sprd/platsmp.c
++++ b/arch/arm/mach-sprd/platsmp.c
+@@ -67,7 +67,15 @@ static int sc7730_boot_secondary(unsigned int cpu, struct task_struct *idle)
+ 		return -ENODEV;
+ 
+ 	spin_lock(&sc7730_smp_lock);
+-	writel(__pa_symbol(secondary_startup_arm), ap_ahb + AHB_JMP_ADDR(n));
++	/*
++	 * The ROM jumps with interworking, and secondary_startup_arm must be
++	 * entered in ARM state. The LLVM assembler marks it as a Thumb
++	 * function in a Thumb-2 kernel (its ENDPROC comes after the switch
++	 * to Thumb), so the address would carry bit 0 and the core would
++	 * start decoding ARM code as Thumb.
++	 */
++	writel(__pa_symbol(secondary_startup_arm) & ~1UL,
++	       ap_ahb + AHB_JMP_ADDR(n));
+ 	writel(readl(ap_ahb + AHB_HOLDING_PEN) | BIT(n),
+ 	       ap_ahb + AHB_HOLDING_PEN);
+ 	writel(readl(ap_ahb + AHB_CA7_RST_SET) | BIT(n),
+-- 
+2.47.3
+

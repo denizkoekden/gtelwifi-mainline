@@ -1,0 +1,62 @@
+From 7cd8b712ddaf329cbeab23b7c65da5724478ea9f Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 17:10:00 +0000
+Subject: [PATCH 74/79] media: sc7730 camera: the sensors deliver full-range
+ YUV
+
+The ISPs of the S5K4ECGX and SR200PC20M output JFIF-style YUV: captured
+frames use the whole 0..255 range (many luma samples below 16 and above
+235), as Android camera HALs expect. Report V4L2_QUANTIZATION_FULL_RANGE
+instead of limited range in the sensor formats and on the DCAM video
+node; libcamera already assumes sYCC for these YUV pipelines.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ drivers/media/i2c/s5k4ecgx.c              | 2 +-
+ drivers/media/i2c/sr200pc20m.c            | 2 +-
+ drivers/media/platform/sprd/sc7730-dcam.c | 2 +-
+ 3 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/media/i2c/s5k4ecgx.c b/drivers/media/i2c/s5k4ecgx.c
+index 3af8cb3f8..d176017c5 100644
+--- a/drivers/media/i2c/s5k4ecgx.c
++++ b/drivers/media/i2c/s5k4ecgx.c
+@@ -248,7 +248,7 @@ static void s5k_fill_fmt(const struct s5k_mode *mode,
+ 	fmt->field = V4L2_FIELD_NONE;
+ 	fmt->colorspace = V4L2_COLORSPACE_SRGB;
+ 	fmt->ycbcr_enc = V4L2_YCBCR_ENC_601;
+-	fmt->quantization = V4L2_QUANTIZATION_LIM_RANGE;
++	fmt->quantization = V4L2_QUANTIZATION_FULL_RANGE;
+ 	fmt->xfer_func = V4L2_XFER_FUNC_SRGB;
+ }
+ 
+diff --git a/drivers/media/i2c/sr200pc20m.c b/drivers/media/i2c/sr200pc20m.c
+index 703ad013b..9b7e6cba5 100644
+--- a/drivers/media/i2c/sr200pc20m.c
++++ b/drivers/media/i2c/sr200pc20m.c
+@@ -200,7 +200,7 @@ static void sr200_fill_fmt(const struct sr200_mode *mode,
+ 	fmt->field = V4L2_FIELD_NONE;
+ 	fmt->colorspace = V4L2_COLORSPACE_SRGB;
+ 	fmt->ycbcr_enc = V4L2_YCBCR_ENC_601;
+-	fmt->quantization = V4L2_QUANTIZATION_LIM_RANGE;
++	fmt->quantization = V4L2_QUANTIZATION_FULL_RANGE;
+ 	fmt->xfer_func = V4L2_XFER_FUNC_SRGB;
+ }
+ 
+diff --git a/drivers/media/platform/sprd/sc7730-dcam.c b/drivers/media/platform/sprd/sc7730-dcam.c
+index b348f9d9e..c092079ef 100644
+--- a/drivers/media/platform/sprd/sc7730-dcam.c
++++ b/drivers/media/platform/sprd/sc7730-dcam.c
+@@ -760,7 +760,7 @@ static void dcam_fill_fmt(struct v4l2_pix_format *f)
+ 							       f->sizeimage;
+ 	f->colorspace = V4L2_COLORSPACE_SRGB;
+ 	f->ycbcr_enc = V4L2_YCBCR_ENC_601;
+-	f->quantization = V4L2_QUANTIZATION_LIM_RANGE;
++	f->quantization = V4L2_QUANTIZATION_FULL_RANGE;
+ 	f->xfer_func = V4L2_XFER_FUNC_SRGB;
+ }
+ 
+-- 
+2.47.3
+

@@ -1,0 +1,127 @@
+# Reference: <https://nura.eco/devicepkg>
+maintainer="Deniz Kokden <koekdendeniz@gmail.com>"
+pkgname=device-samsung-gtelwifi
+pkgdesc="Samsung Galaxy Tab E 9.6 (SM-T560)"
+pkgver=3
+pkgrel=12
+url="https://nura.eco"
+license="MIT"
+arch="armv7"
+options="!check !archcheck"
+# boot-deploy only checks for dtbTool-sprd and mkbootimg-osm0sis
+# (deviceinfo_bootimg_qcdt_type="sprd"), the device package pulls them in.
+depends="
+	alsa-ucm-conf
+	bluez-btmgmt
+	dtbtool-sprd
+	linux-samsung-gtelwifi
+	mkbootimg-osm0sis
+	postmarketos-base
+	switcheroo-control
+"
+makedepends="devicepkg-dev"
+subpackages="
+	$pkgname-nonfree-firmware:nonfree_firmware
+	$pkgname-systemd:_systemd
+"
+source="
+	80-device-samsung-gtelwifi.preset
+	80-device-samsung-gtelwifi.user-preset
+	90-samsung-gtelwifi-audio.rules
+	90-samsung-gtelwifi-efs-mac.rules
+	91-samsung-gtelwifi-gpu-name.rules
+	cpufreq-limit
+	cpufreq.conf
+	deviceinfo
+	drirc.conf
+	efs-mac
+	samsung-gtelwifi-cpufreq-limit.service
+	samsung-gtelwifi-efs-mac@.service
+	samsung-gtelwifi-undim-on-exit.service
+	samsung-gtelwifi-undim-on-shutdown
+	ucm2/HiFi.conf
+	ucm2/gtelwifi.conf
+"
+
+build() {
+	devicepkg_build $startdir $pkgname
+}
+
+package() {
+	devicepkg_package $startdir $pkgname
+
+	# EGL on the display node -> lima (see drirc.conf)
+	install -Dm644 "$srcdir"/drirc.conf \
+		"$pkgdir"/usr/share/drirc.d/50-samsung-gtelwifi.conf
+
+	# Speaker: UCM laid out like alsa-ucm-conf (simple-card, long name "gtelwifi")
+	local ucm="$pkgdir"/usr/share/alsa/ucm2
+	install -Dm644 "$srcdir"/gtelwifi.conf "$srcdir"/HiFi.conf \
+		-t "$ucm"/Unisoc/SC7730/gtelwifi/
+	mkdir -p "$ucm"/conf.d/simple-card
+	ln -s ../../Unisoc/SC7730/gtelwifi/gtelwifi.conf \
+		"$ucm"/conf.d/simple-card/gtelwifi.conf
+	# keeps the speaker path powered between sounds (the PA pops)
+	install -Dm644 "$srcdir"/90-samsung-gtelwifi-audio.rules \
+		-t "$pkgdir"/usr/lib/udev/rules.d/
+
+	# GPU name for switcheroo-control (GNOME Settings, "Graphics")
+	install -Dm644 "$srcdir"/91-samsung-gtelwifi-gpu-name.rules \
+		-t "$pkgdir"/usr/lib/udev/rules.d/
+
+	# factory WLAN/BT address from the efs partition, read on the device
+	install -Dm755 "$srcdir"/efs-mac -t "$pkgdir"/usr/libexec/samsung-gtelwifi/
+
+	# CPU limit (vendor 1300 MHz; the kernel offers OC steps up to 1612 MHz),
+	# the /etc file is a config file and keeps local changes
+	install -Dm755 "$srcdir"/cpufreq-limit -t "$pkgdir"/usr/libexec/samsung-gtelwifi/
+	install -Dm644 "$srcdir"/cpufreq.conf -t "$pkgdir"/etc/samsung-gtelwifi/
+}
+
+_systemd() {
+	pkgdesc="$pkgdesc (systemd units)"
+	install_if="$pkgname=$pkgver-r$pkgrel systemd"
+	depends=""
+	install -Dm644 "$srcdir"/80-device-samsung-gtelwifi.preset \
+		-t "$subpkgdir"/usr/lib/systemd/system-preset/
+	install -Dm644 "$srcdir"/samsung-gtelwifi-cpufreq-limit.service \
+		-t "$subpkgdir"/usr/lib/systemd/system/
+	# efs-mac for wlan0/hci0 when they appear (udev SYSTEMD_WANTS)
+	install -Dm644 "$srcdir"/samsung-gtelwifi-efs-mac@.service \
+		-t "$subpkgdir"/usr/lib/systemd/system/
+	install -Dm644 "$srcdir"/90-samsung-gtelwifi-efs-mac.rules \
+		-t "$subpkgdir"/usr/lib/udev/rules.d/
+	# undim before shutdown, so the next boot does not start dark (user
+	# unit, enabled globally by the user preset)
+	install -Dm755 "$srcdir"/samsung-gtelwifi-undim-on-shutdown \
+		"$subpkgdir"/usr/libexec/samsung-gtelwifi/undim-on-shutdown
+	install -Dm644 "$srcdir"/samsung-gtelwifi-undim-on-exit.service \
+		-t "$subpkgdir"/usr/lib/systemd/user/
+	install -Dm644 "$srcdir"/80-device-samsung-gtelwifi.user-preset \
+		"$subpkgdir"/usr/lib/systemd/user-preset/80-device-samsung-gtelwifi.preset
+}
+
+nonfree_firmware() {
+	pkgdesc="WiFi firmware"
+	depends="firmware-samsung-gtelwifi-wifi"
+	mkdir "$subpkgdir"
+}
+
+sha512sums="
+f891d5883ecbca54eccce233d921a74f1545393e9280397addfcab0540481997c8ffe638483dbf538cd22060a26d592119890a701d4a66111471259220428476  80-device-samsung-gtelwifi.preset
+3beddadfc84e435cfb408fa89dc0e358fd2e024b574dbb8215dbc442acf7ff3f1cb95a57ceb81349624e58c82527e0adfa9dee5d52cc793bc63eefa1ccb5d549  80-device-samsung-gtelwifi.user-preset
+8a6122a64d075e8fa7f52bbc53b18e729761fdf34a471dd46547fc25501cd1e6d1d0e0706354a80d67db0a17e30485772d081b55823cbd1c3e09b2f7b1218e06  90-samsung-gtelwifi-audio.rules
+022a113acd2d57811ac695087753ce601c27e8a8d60c1cea154762df6d2e112d7bf7b100b7d6e0c6e9ecd352ab33505603752f8f14dc153600703b10ded8a150  90-samsung-gtelwifi-efs-mac.rules
+0b94f1eddfc526850e75fde62ef000c6c7b06c0a30c63ca57e41e8ca036f43ccb9640767d3696ba5f057b431765c6af03865c6dde8ea0ec0a154d2942f3a7814  91-samsung-gtelwifi-gpu-name.rules
+cc5bdd63c461829570d85ef5726f7b1fbacc093a2ab90052d62b8c80f17f9d955a090abc8049b0cf3a3db98a51fb7ad7db7a351668394ff37f2752d539add1f0  cpufreq-limit
+40d9467913015c4668012043b09197979fb11d15440efb4789910983f23d9e04d4015c30a75dd2e97f9badb85bb199237283d65a159b30299befd330f57e3b6e  cpufreq.conf
+4e269438d5617693435aed13f33079f33ae779010d76b92dd367c0300932df02d6610b65aa65f93f9b0db05786d7d4cc65c57e2e0953dea5eb5721e395f4ff64  deviceinfo
+8e1ec818351f56eb1acdb265b08718812f2f3af2705710cc9ff8510440ece0fb45469ef9744ef4fd92c040eaae929ca653a50f92303d8dbf153e048c0bbde383  drirc.conf
+cdefc052f849acbb7f72cea38f3c787e4cad05af6e79ddc6fb78a0804fdd4f98c1ee302539bf9f698687045c6481488115b8e0c39046f71a483458623b57ac89  efs-mac
+afd74fa47ad1e0953284b5982b6e5fad55852731b0ed4eee7c337934e8f28b587ff37133e337a612d3b3a98d376f38752b63320b678799009dd0f46eaa5d3371  samsung-gtelwifi-cpufreq-limit.service
+273ef7c2627cc7fabdeaef17084a86eddfb796341f0dba75f821c17e1682b121f072fd4f9f3d95442cec9f9e303e8c03fad1fb7f8eef391560989c2c32c245c6  samsung-gtelwifi-efs-mac@.service
+601f11baa1a788d9ea0bac053f6f58eb9186a8276e24d9efb21232602b469270b41002687e6c8379d5dc5345f7d5c6791fb1f90161ea7a93b5544eef94ae65e1  samsung-gtelwifi-undim-on-exit.service
+ff08e0e8b5743f682c032592b99ae5767a057643f2ee1b6b37d7913ea6d4a5b1ff160cf79faef31f9cea6dbb6006a5314faadfa6189cf715fe0a1da049a10ca2  samsung-gtelwifi-undim-on-shutdown
+1f5deb9d317f620473fedc9f0bc625c988395371e1da1c7818a8bf3c3b71d2e285fc93aea5f0edaa5144c0a7add1be3509e54a3f9292028e954787127f876725  HiFi.conf
+333ca8962b11878576cb00ef3ee48dde252da0a949c9872433b9c263bcb4053a41c150f14f02133c2b9de674a9b4febb220f6c0bd6c5309f3a96d48eeb1de5fa  gtelwifi.conf
+"

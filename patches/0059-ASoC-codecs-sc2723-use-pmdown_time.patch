@@ -1,0 +1,37 @@
+From 6b7cc7fb8d42bdc614855126ca807163c33cc1c7 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 12:10:52 +0000
+Subject: [PATCH 59/79] ASoC: codecs: sc2723: use pmdown_time
+
+Without use_pmdown_time in any component of the link, ASoC powers the
+path down as soon as a stream closes, so every new sound switched the
+speaker PA on again. The PA pops at every switch, on and off; the clocks,
+DACs, AOL and the PA supply switch silently (checked step by step), and
+neither the PA soft start bits nor class D mode avoid it.
+
+With the default 5 s delay short gaps no longer pop. Userspace can set
+pmdown_time to -1 to keep the path up until system suspend: the speaker
+path at idle draws less than about 0.5 mA, below what the fuel gauge
+resolves.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ sound/soc/codecs/sc2723-codec.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/sound/soc/codecs/sc2723-codec.c b/sound/soc/codecs/sc2723-codec.c
+index 9b9c491c6..bb9454484 100644
+--- a/sound/soc/codecs/sc2723-codec.c
++++ b/sound/soc/codecs/sc2723-codec.c
+@@ -283,6 +283,7 @@ static const struct snd_soc_component_driver sc2723_codec_driver = {
+ 	.dapm_routes = sc2723_dapm_routes,
+ 	.num_dapm_routes = ARRAY_SIZE(sc2723_dapm_routes),
+ 	.idle_bias_on = false,
++	.use_pmdown_time = true,
+ 	.endianness = 1,
+ };
+ 
+-- 
+2.47.3
+

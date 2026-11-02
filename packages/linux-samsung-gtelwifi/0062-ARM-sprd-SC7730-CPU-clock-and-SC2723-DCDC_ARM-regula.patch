@@ -1,0 +1,482 @@
+From ab7eb680c1b770b743a20020aa1379a0977eacb8 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 14:12:48 +0000
+Subject: [PATCH 62/79] ARM: sprd: SC7730 CPU clock and SC2723 DCDC_ARM
+ regulator
+
+Glue for CPU frequency scaling with cpufreq-dt, after the vendor's
+cpufreq-scx35.c, clk-sc.c and sc2723-regulator_dt.c:
+
+- clk-cpu: the Cortex-A7 cluster clock. CA7_CKG_CFG selects TDPLL
+  (768 MHz) or MPLL; MPLL = 26 MHz * (NINT + KINT / 2^20) in MPLL_CFG1.
+  A rate change parks the core on TDPLL, reprograms MPLL, waits 50 us
+  per 100 MHz (at least 100 us, there is no lock bit) and switches back;
+  768 MHz runs from TDPLL itself. AXI stays at core/3 up to 1.5 GHz and
+  goes to core/4 above. The rate is reported to the kHz so that KINT's
+  odd Hz still match the OPP table.
+- sc2723-dcdc-arm: the cluster supply. In the PMIC's "non-linear" mode
+  (MIXED_CTRL0 bit 14 clear, checked at probe) DCDC_ARM_ADI holds a base
+  voltage index and a 3.125 mV trim; selectors are linear from 650 mV
+  and mapped onto base + trim. It moves in 25 mV steps like the vendor,
+  5 us per step when rising. Doing that in the driver rather than with
+  regulator-max-step-microvolt avoids the core's stepped minimum above
+  the target maximum when lowering, which failed with -EWOULDBLOCK.
+  The rail itself is never switched.
+
+Tested on the Galaxy Tab E 9.6 (SM-T560), chip ID 0x8730C001: every
+change between 768, 1000, 1200 and 1300 MHz lands on the measured core
+clock (busy loop) and, through the PMIC ADC on channel 13, on the
+expected voltage; 13 changes with four-core sha256 load against a
+reference showed no error.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ arch/arm/Kconfig.platforms           |  16 +++
+ arch/arm/mach-sprd/Makefile          |   2 +
+ arch/arm/mach-sprd/clk-cpu.c         | 202 +++++++++++++++++++++++++++
+ arch/arm/mach-sprd/sc2723-dcdc-arm.c | 181 ++++++++++++++++++++++++
+ 4 files changed, 401 insertions(+)
+ create mode 100644 arch/arm/mach-sprd/clk-cpu.c
+ create mode 100644 arch/arm/mach-sprd/sc2723-dcdc-arm.c
+
+diff --git a/arch/arm/Kconfig.platforms b/arch/arm/Kconfig.platforms
+index 89ec18705..3524da64c 100644
+--- a/arch/arm/Kconfig.platforms
++++ b/arch/arm/Kconfig.platforms
+@@ -198,6 +198,22 @@ config SPRD_RESTART
+ 	  bootloader ("reboot recovery" boots the recovery partition) and
+ 	  lets the PMIC watchdog reset the system, as the vendor kernel does.
+ 
++config SPRD_CLK_CPU
++	bool "SC7730 CPU cluster clock (bring-up glue)"
++	depends on ARCH_SPRD && COMMON_CLK
++	help
++	  The Cortex-A7 cluster clock from MPLL with a TDPLL detour while
++	  MPLL relocks, for CPU frequency scaling. Stop-gap until there is a
++	  clock driver for the SC7730.
++
++config SPRD_SC2723_DCDC_ARM
++	bool "SC2723 DCDC_ARM CPU supply as a regulator (bring-up glue)"
++	depends on ARCH_SPRD && REGULATOR
++	select SPRD_ADI
++	help
++	  The Cortex-A7 cluster supply of the SC2723 PMIC, set over the ADI
++	  bus, for CPU frequency scaling.
++
+ config SPRD_CLK_AUX0
+ 	bool "SC7730 CLK_AUX0 32 kHz output (bring-up glue)"
+ 	depends on ARCH_SPRD && COMMON_CLK
+diff --git a/arch/arm/mach-sprd/Makefile b/arch/arm/mach-sprd/Makefile
+index f5226fc52..1cdd3f435 100644
+--- a/arch/arm/mach-sprd/Makefile
++++ b/arch/arm/mach-sprd/Makefile
+@@ -6,8 +6,10 @@ obj-$(CONFIG_SPRD_USB_BRINGUP)	+= usb-bringup.o
+ obj-$(CONFIG_SPRD_ADI)		+= adi.o
+ obj-$(CONFIG_SPRD_RESTART)	+= restart.o
+ obj-$(CONFIG_SPRD_CLK_AUX0)	+= clk-aux0.o
++obj-$(CONFIG_SPRD_CLK_CPU)	+= clk-cpu.o
+ obj-$(CONFIG_SPRD_CLK_GATES)	+= clk-gates.o
+ obj-$(CONFIG_SPRD_SC2723_LDO)	+= sc2723-ldo.o
++obj-$(CONFIG_SPRD_SC2723_DCDC_ARM)	+= sc2723-dcdc-arm.o
+ obj-$(CONFIG_SPRD_SC2723_ADC)	+= sc2723-adc.o
+ obj-$(CONFIG_SPRD_SC2723_FGU)	+= sc2723-fgu.o
+ obj-$(CONFIG_SPRD_SC2723_PMIC)	+= sc2723-pmic.o
+diff --git a/arch/arm/mach-sprd/clk-cpu.c b/arch/arm/mach-sprd/clk-cpu.c
+new file mode 100644
+index 000000000..069f65aaf
+--- /dev/null
++++ b/arch/arm/mach-sprd/clk-cpu.c
+@@ -0,0 +1,202 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Cortex-A7 cluster clock of the SC7730 for CPU frequency scaling.
++ *
++ * CA7_CKG_CFG (AP AHB 0x20d03000) selects the core source (bits 2:0,
++ * 3 = TDPLL 768 MHz, 6 = MPLL) and a core divider (bits 6:4, kept at 0);
++ * the AXI divider (bits 10:8) stays at the SPL's core/3 up to 1.5 GHz and
++ * goes to core/4 above, so AXI never runs faster than the 500 MHz the SPL
++ * itself uses; the debug divider (core/7) is left alone. MPLL_CFG1 (AON
++ * APB 0x402e3070) sets
++ * MPLL = 26 MHz * (NINT + KINT / 2^20) with DIV_S set by the SPL.
++ *
++ * As in the vendor kernel (drivers/clk/clk-sc.c), a rate change parks the
++ * core on TDPLL, reprograms MPLL, waits 50 us per 100 MHz of change (there
++ * is no lock bit) and switches back. 768 MHz runs from TDPLL directly.
++ * MPLL feeds nothing else we use.
++ */
++
++#include <linux/bitfield.h>
++#include <linux/clk-provider.h>
++#include <linux/delay.h>
++#include <linux/io.h>
++#include <linux/kernel.h>
++#include <linux/math64.h>
++#include <linux/mod_devicetable.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++
++#define CA7_CKG_SEL		GENMASK(2, 0)
++#define  CKG_SEL_26M		0
++#define  CKG_SEL_TDPLL		3
++#define  CKG_SEL_MPLL		6
++#define CA7_CKG_DIV		GENMASK(6, 4)
++#define CA7_AXI_DIV		GENMASK(10, 8)
++#define  AXI_DIV_3		2
++#define  AXI_DIV_4		3
++
++#define MPLL_NINT		GENMASK(5, 0)
++#define MPLL_SDM_EN		BIT(6)
++#define MPLL_DIV_S		BIT(10)
++#define MPLL_KINT		GENMASK(31, 12)
++
++#define REF_HZ			26000000UL
++#define TDPLL_HZ		768000000UL
++#define MPLL_MIN_HZ		(REF_HZ * 30)	/* 780 MHz */
++#define MPLL_MAX_HZ		(REF_HZ * 63)	/* NINT is 6 bits: 1638 MHz */
++#define AXI_DIV3_MAX_HZ		1500000000UL
++
++struct sc7730_cpu_clk {
++	struct clk_hw hw;
++	void __iomem *ckg;
++	void __iomem *mpll;
++};
++
++#define to_cpu_clk(_hw) container_of(_hw, struct sc7730_cpu_clk, hw)
++
++static unsigned long sc7730_mpll_rate(u32 cfg1)
++{
++	u64 rate = (u64)REF_HZ * FIELD_GET(MPLL_NINT, cfg1);
++
++	if (cfg1 & MPLL_SDM_EN)
++		rate += div_u64((u64)REF_HZ * FIELD_GET(MPLL_KINT, cfg1),
++				1 << 20);
++	return rate;
++}
++
++/* to the kHz: KINT leaves odd Hz that cpufreq would not find in the table */
++static unsigned long sc7730_cpu_clk_recalc_rate(struct clk_hw *hw,
++						unsigned long parent_rate)
++{
++	struct sc7730_cpu_clk *cc = to_cpu_clk(hw);
++	u32 ckg = readl(cc->ckg);
++	unsigned long rate;
++
++	switch (FIELD_GET(CA7_CKG_SEL, ckg)) {
++	case CKG_SEL_MPLL:
++		rate = sc7730_mpll_rate(readl(cc->mpll));
++		break;
++	case CKG_SEL_TDPLL:
++		rate = TDPLL_HZ;
++		break;
++	case CKG_SEL_26M:
++		rate = REF_HZ;
++		break;
++	default:
++		return 0;
++	}
++	rate /= FIELD_GET(CA7_CKG_DIV, ckg) + 1;
++	return DIV_ROUND_CLOSEST(rate, 1000) * 1000;
++}
++
++static int sc7730_cpu_clk_determine_rate(struct clk_hw *hw,
++					 struct clk_rate_request *req)
++{
++	if (req->rate <= TDPLL_HZ)
++		req->rate = TDPLL_HZ;
++	else
++		req->rate = clamp(req->rate, MPLL_MIN_HZ, MPLL_MAX_HZ);
++	return 0;
++}
++
++static void sc7730_cpu_clk_select(struct sc7730_cpu_clk *cc, u32 sel,
++				  u32 axi_div)
++{
++	u32 ckg = readl(cc->ckg);
++
++	ckg &= ~(CA7_CKG_SEL | CA7_CKG_DIV | CA7_AXI_DIV);
++	writel(ckg | FIELD_PREP(CA7_CKG_SEL, sel) |
++	       FIELD_PREP(CA7_AXI_DIV, axi_div), cc->ckg);
++}
++
++static int sc7730_cpu_clk_set_rate(struct clk_hw *hw, unsigned long rate,
++				   unsigned long parent_rate)
++{
++	struct sc7730_cpu_clk *cc = to_cpu_clk(hw);
++	u32 axi_div = rate > AXI_DIV3_MAX_HZ ? AXI_DIV_4 : AXI_DIV_3;
++	u32 cfg1 = readl(cc->mpll), new;
++	unsigned long old_hz, nint, kint, delta;
++
++	sc7730_cpu_clk_select(cc, CKG_SEL_TDPLL, AXI_DIV_3);
++	if (rate == TDPLL_HZ)
++		return 0;
++
++	nint = rate / REF_HZ;
++	kint = DIV_ROUND_CLOSEST_ULL((u64)(rate - nint * REF_HZ) << 20,
++				     REF_HZ);
++	new = cfg1 & ~(MPLL_NINT | MPLL_KINT | MPLL_SDM_EN);
++	new |= FIELD_PREP(MPLL_NINT, nint) | MPLL_DIV_S;
++	if (kint)
++		new |= FIELD_PREP(MPLL_KINT, kint) | MPLL_SDM_EN;
++
++	if (new != cfg1) {
++		old_hz = sc7730_mpll_rate(cfg1);
++		writel(new, cc->mpll);
++		delta = abs_diff(old_hz, sc7730_mpll_rate(new)) / 1000000;
++		/* vendor: 50 us per 100 MHz; never less than 100 us */
++		fsleep(max(100UL, delta / 2));
++	}
++
++	sc7730_cpu_clk_select(cc, CKG_SEL_MPLL, axi_div);
++	return 0;
++}
++
++static const struct clk_ops sc7730_cpu_clk_ops = {
++	.recalc_rate = sc7730_cpu_clk_recalc_rate,
++	.determine_rate = sc7730_cpu_clk_determine_rate,
++	.set_rate = sc7730_cpu_clk_set_rate,
++};
++
++static int sc7730_cpu_clk_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct clk_init_data init = {};
++	struct sc7730_cpu_clk *cc;
++	struct resource *res;
++	u32 cfg1;
++	int ret;
++
++	cc = devm_kzalloc(dev, sizeof(*cc), GFP_KERNEL);
++	if (!cc)
++		return -ENOMEM;
++
++	/* both registers sit in blocks shared with other drivers */
++	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "ckg");
++	if (res)
++		cc->ckg = devm_ioremap(dev, res->start, resource_size(res));
++	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "mpll");
++	if (res)
++		cc->mpll = devm_ioremap(dev, res->start, resource_size(res));
++	if (!cc->ckg || !cc->mpll)
++		return dev_err_probe(dev, -EINVAL, "missing ckg/mpll\n");
++
++	cfg1 = readl(cc->mpll);
++	if (!(cfg1 & MPLL_DIV_S))
++		return dev_err_probe(dev, -ENODEV,
++				     "MPLL not in NINT/KINT mode (%#x)\n", cfg1);
++
++	init.name = "cpu";
++	init.ops = &sc7730_cpu_clk_ops;
++	init.flags = CLK_IS_CRITICAL | CLK_GET_RATE_NOCACHE;
++	cc->hw.init = &init;
++
++	ret = devm_clk_hw_register(dev, &cc->hw);
++	if (ret)
++		return ret;
++
++	return devm_of_clk_add_hw_provider(dev, of_clk_hw_simple_get, &cc->hw);
++}
++
++static const struct of_device_id sc7730_cpu_clk_of_match[] = {
++	{ .compatible = "sprd,sc7730-cpu-clk" },
++	{ }
++};
++
++static struct platform_driver sc7730_cpu_clk_driver = {
++	.probe = sc7730_cpu_clk_probe,
++	.driver = {
++		.name = "sc7730-cpu-clk",
++		.of_match_table = sc7730_cpu_clk_of_match,
++	},
++};
++builtin_platform_driver(sc7730_cpu_clk_driver);
+diff --git a/arch/arm/mach-sprd/sc2723-dcdc-arm.c b/arch/arm/mach-sprd/sc2723-dcdc-arm.c
+new file mode 100644
+index 000000000..96bfd7819
+--- /dev/null
++++ b/arch/arm/mach-sprd/sc2723-dcdc-arm.c
+@@ -0,0 +1,181 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * DCDC_ARM of the SC2723 PMIC, the Cortex-A7 cluster supply ("vddarm"),
++ * as a regulator for CPU frequency scaling.
++ *
++ * DCDC_ARM_ADI (0xA04) holds the voltage. With MIXED_CTRL0 (0x918) bit 14
++ * clear, which the SPL and sboot assume, bits 7:5 pick a base voltage and
++ * bits 4:0 add 3.125 mV steps on top (vendor sc2723-regulator_dt.c,
++ * "non-linear" mode). Selectors here are linear from 650 mV in 3.125 mV
++ * steps and get mapped onto base + trim. The linear mode (bit 14 set)
++ * would put very different voltages on the same register values, so the
++ * driver refuses to probe then.
++ *
++ * Like the vendor driver it moves in 25 mV steps against overshoot,
++ * waiting 5 us per step when rising (10 us per 50 mV) and not at all when
++ * falling. Doing that here rather than with the core's max_uV_step keeps
++ * the core from asking for a stepped minimum above the target maximum
++ * when it lowers the voltage, which failed with -EWOULDBLOCK.
++ *
++ * The rail is never switched: DCDC_ARM_PD (0x810 bit 10) and the OTP/SW
++ * select bit (0x8C0 bit 2) are left alone. The vendor kernel also writes
++ * 0xA04 with that select bit clear, and the rail follows (measured).
++ */
++
++#include <linux/bitfield.h>
++#include <linux/bits.h>
++#include <linux/delay.h>
++#include <linux/kernel.h>
++#include <linux/mod_devicetable.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/regulator/driver.h>
++#include <linux/regulator/of_regulator.h>
++
++#include "adi.h"
++
++#define DCDC_ARM_ADI		0xa04
++#define  DCDC_ARM_CTL		GENMASK(7, 5)
++#define  DCDC_ARM_CAL		GENMASK(4, 0)
++#define  DCDC_ARM_RSV		GENMASK(9, 8)
++#define MIXED_CTRL0		0x918
++#define  DCDC_V_CTRL_MODE	BIT(14)
++
++#define DCDC_MIN_UV		650000
++#define DCDC_STEP_UV		3125
++#define DCDC_N_VOLTAGES		240	/* up to 1396.875 mV */
++#define DCDC_STEP_MAX_UV	25000
++#define DCDC_RISE_STEP_US	5
++
++/* CTL index -> base voltage in mV (vendor dcdc_vol_select[]) */
++static const u16 sc2723_dcdc_base[8] = {
++	1100, 700, 800, 900, 1000, 650, 1200, 1300,
++};
++
++static int sc2723_dcdc_read_uv(u32 *uv)
++{
++	u32 val;
++	int ret;
++
++	ret = sprd_adi_read(DCDC_ARM_ADI, &val);
++	if (ret)
++		return ret;
++
++	*uv = sc2723_dcdc_base[FIELD_GET(DCDC_ARM_CTL, val)] * 1000 +
++	      FIELD_GET(DCDC_ARM_CAL, val) * DCDC_STEP_UV;
++	return 0;
++}
++
++static int sc2723_dcdc_get_voltage_sel(struct regulator_dev *rdev)
++{
++	u32 uv;
++	int ret;
++
++	ret = sc2723_dcdc_read_uv(&uv);
++	return ret ?: (int)((uv - DCDC_MIN_UV) / DCDC_STEP_UV);
++}
++
++/* the highest base at or below the target, within the 31 trim steps */
++static int sc2723_dcdc_write_uv(u32 uv)
++{
++	u32 best = 0, trim;
++	int i, idx = -1;
++
++	for (i = 0; i < ARRAY_SIZE(sc2723_dcdc_base); i++) {
++		u32 base = sc2723_dcdc_base[i] * 1000;
++
++		if (base <= uv && base >= best) {
++			best = base;
++			idx = i;
++		}
++	}
++	trim = (uv - best) / DCDC_STEP_UV;
++	if (idx < 0 || trim > FIELD_MAX(DCDC_ARM_CAL))
++		return -EINVAL;
++
++	return sprd_adi_update(DCDC_ARM_ADI, DCDC_ARM_CTL | DCDC_ARM_CAL,
++			       FIELD_PREP(DCDC_ARM_CTL, idx) |
++			       FIELD_PREP(DCDC_ARM_CAL, trim));
++}
++
++static int sc2723_dcdc_set_voltage_sel(struct regulator_dev *rdev,
++				       unsigned int sel)
++{
++	u32 target = DCDC_MIN_UV + sel * DCDC_STEP_UV, uv;
++	int ret;
++
++	ret = sc2723_dcdc_read_uv(&uv);
++	while (!ret && uv != target) {
++		if (target > uv) {
++			uv = min(uv + DCDC_STEP_MAX_UV, target);
++			ret = sc2723_dcdc_write_uv(uv);
++			udelay(DCDC_RISE_STEP_US);
++		} else {
++			uv = max(uv - DCDC_STEP_MAX_UV, target);
++			ret = sc2723_dcdc_write_uv(uv);
++		}
++	}
++	return ret;
++}
++
++static const struct regulator_ops sc2723_dcdc_ops = {
++	.list_voltage = regulator_list_voltage_linear,
++	.map_voltage = regulator_map_voltage_linear,
++	.get_voltage_sel = sc2723_dcdc_get_voltage_sel,
++	.set_voltage_sel = sc2723_dcdc_set_voltage_sel,
++};
++
++static const struct regulator_desc sc2723_dcdc_desc = {
++	.name = "vddarm",
++	.type = REGULATOR_VOLTAGE,
++	.owner = THIS_MODULE,
++	.ops = &sc2723_dcdc_ops,
++	.min_uV = DCDC_MIN_UV,
++	.uV_step = DCDC_STEP_UV,
++	.n_voltages = DCDC_N_VOLTAGES,
++};
++
++static int sc2723_dcdc_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct regulator_config cfg = {};
++	struct regulator_dev *rdev;
++	u32 mode, val;
++	int ret;
++
++	ret = sprd_adi_read(MIXED_CTRL0, &mode);
++	if (!ret)
++		ret = sprd_adi_read(DCDC_ARM_ADI, &val);
++	if (ret)
++		return ret;
++	if (mode & DCDC_V_CTRL_MODE)
++		return dev_err_probe(dev, -ENODEV,
++				     "linear voltage mode, not supported\n");
++	if (val & DCDC_ARM_RSV)
++		return dev_err_probe(dev, -ENODEV,
++				     "unexpected DCDC_ARM_ADI %#x\n", val);
++
++	cfg.dev = dev;
++	cfg.of_node = dev->of_node;
++	cfg.init_data = of_get_regulator_init_data(dev, dev->of_node,
++						   &sc2723_dcdc_desc);
++	if (!cfg.init_data)
++		return -ENOMEM;
++
++	rdev = devm_regulator_register(dev, &sc2723_dcdc_desc, &cfg);
++	return PTR_ERR_OR_ZERO(rdev);
++}
++
++static const struct of_device_id sc2723_dcdc_of_match[] = {
++	{ .compatible = "sprd,sc2723-dcdc-arm" },
++	{ }
++};
++
++static struct platform_driver sc2723_dcdc_driver = {
++	.probe = sc2723_dcdc_probe,
++	.driver = {
++		.name = "sc2723-dcdc-arm",
++		.of_match_table = sc2723_dcdc_of_match,
++	},
++};
++builtin_platform_driver(sc2723_dcdc_driver);
+-- 
+2.47.3
+

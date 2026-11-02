@@ -1,0 +1,11 @@
+[Unit]
+Description=CPU frequency limit (overclocking off unless configured)
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/samsung-gtelwifi/cpufreq-limit
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,363 @@
+From 5e2d8a53c076f055afb1e6f6612bc5f46f4356c3 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 08:34:01 +0000
+Subject: [PATCH 41/79] ARM: sprd: SC2723 PMIC regmap and interrupt glue
+
+Expose the SC2723 as a regmap over the ADI helpers, with its interrupt
+controller (offset 0x380, GIC SPI 38) as a regmap-irq chip, and populate
+the child nodes. This is what sprd-sc27xx-spi does for the SC2730/SC2731
+over spi-sprd-adi, so the mainline sc27xx RTC and PMIC EIC drivers bind
+unchanged: their register blocks match the SC2723 (vendor 3.10 drivers,
+read back on the hardware). Allow both drivers with the glue.
+
+The whole PMIC interrupt is a wakeup source in suspend, like in the
+mainline MFD. The polled EIC glue for gpio-keys-polled goes away.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ arch/arm/Kconfig.platforms       |  24 +++---
+ arch/arm/mach-sprd/Makefile      |   2 +-
+ arch/arm/mach-sprd/pmic-eic.c    |  98 ----------------------
+ arch/arm/mach-sprd/sc2723-pmic.c | 139 +++++++++++++++++++++++++++++++
+ drivers/gpio/Kconfig             |   2 +-
+ drivers/rtc/Kconfig              |   2 +-
+ 6 files changed, 155 insertions(+), 112 deletions(-)
+ delete mode 100644 arch/arm/mach-sprd/pmic-eic.c
+ create mode 100644 arch/arm/mach-sprd/sc2723-pmic.c
+
+diff --git a/arch/arm/Kconfig.platforms b/arch/arm/Kconfig.platforms
+index e79904294..96d134fe3 100644
+--- a/arch/arm/Kconfig.platforms
++++ b/arch/arm/Kconfig.platforms
+@@ -198,17 +198,6 @@ config SPRD_RESTART
+ 	  bootloader ("reboot recovery" boots the recovery partition) and
+ 	  lets the PMIC watchdog reset the system, as the vendor kernel does.
+ 
+-config SPRD_PMIC_EIC
+-	bool "SC2723 PMIC EIC inputs as polled GPIOs (bring-up glue)"
+-	depends on ARCH_SPRD && GPIOLIB
+-	select SPRD_ADI
+-	help
+-	  The power and volume down keys of SC7730 tablets hang off the
+-	  EIC block of the SC2723 PMIC behind the ADI bus. This exposes
+-	  its 16 inputs as a GPIO chip without interrupts, for
+-	  gpio-keys-polled, until the mainline sc27xx drivers support
+-	  the SC2723.
+-
+ config SPRD_CLK_AUX0
+ 	bool "SC7730 CLK_AUX0 32 kHz output (bring-up glue)"
+ 	depends on ARCH_SPRD && COMMON_CLK
+@@ -234,6 +223,19 @@ config SPRD_SC2723_LDO
+ 	  set over the ADI bus: the microSD card supply, later the camera
+ 	  rails.
+ 
++config SPRD_SC2723_PMIC
++	bool "SC2723 PMIC regmap and interrupts (bring-up glue)"
++	depends on ARCH_SPRD && OF
++	select SPRD_ADI
++	select REGMAP
++	select REGMAP_IRQ
++	help
++	  The SC2723 PMIC as a regmap over the ADI bus, with its interrupt
++	  controller, for the mainline sc27xx RTC (RTC_DRV_SC27XX) and PMIC
++	  EIC (GPIO_PMIC_EIC_SPRD, power and volume down keys) drivers.
++	  Stand-in for spi-sprd-adi plus the sc27xx MFD, which do not know
++	  the SC7730/SC2723 yet.
++
+ config SPRD_SC2723_ADC
+ 	bool "SC2723 PMIC auxiliary ADC (bring-up glue)"
+ 	depends on ARCH_SPRD && IIO
+diff --git a/arch/arm/mach-sprd/Makefile b/arch/arm/mach-sprd/Makefile
+index 0a1ad0259..9b7113cd0 100644
+--- a/arch/arm/mach-sprd/Makefile
++++ b/arch/arm/mach-sprd/Makefile
+@@ -5,9 +5,9 @@ obj-$(CONFIG_SPRD_BOOTSTRIPES)	+= bootstripes.o
+ obj-$(CONFIG_SPRD_USB_BRINGUP)	+= usb-bringup.o
+ obj-$(CONFIG_SPRD_ADI)		+= adi.o
+ obj-$(CONFIG_SPRD_RESTART)	+= restart.o
+-obj-$(CONFIG_SPRD_PMIC_EIC)	+= pmic-eic.o
+ obj-$(CONFIG_SPRD_CLK_AUX0)	+= clk-aux0.o
+ obj-$(CONFIG_SPRD_CLK_GATES)	+= clk-gates.o
+ obj-$(CONFIG_SPRD_SC2723_LDO)	+= sc2723-ldo.o
+ obj-$(CONFIG_SPRD_SC2723_ADC)	+= sc2723-adc.o
+ obj-$(CONFIG_SPRD_SC2723_FGU)	+= sc2723-fgu.o
++obj-$(CONFIG_SPRD_SC2723_PMIC)	+= sc2723-pmic.o
+diff --git a/arch/arm/mach-sprd/pmic-eic.c b/arch/arm/mach-sprd/pmic-eic.c
+deleted file mode 100644
+index df2475069..000000000
+--- a/arch/arm/mach-sprd/pmic-eic.c
++++ /dev/null
+@@ -1,98 +0,0 @@
+-// SPDX-License-Identifier: GPL-2.0
+-/*
+- * The 16 inputs of the SC2723 PMIC's EIC block as a GPIO chip without
+- * interrupts, for gpio-keys-polled: power key (channel 2, PBINT) and
+- * volume down (channel 10, the EXT_RSTN pin) on the gtelwifi. Inputs are
+- * active high; the hardware debounce stays as the bootloader set it.
+- *
+- * Bring-up glue on top of the ADI helpers. The proper way is mainline
+- * gpio-pmic-eic-sprd on the sc27xx MFD, with interrupts instead of
+- * polling, but that first needs SC7730 support in spi-sprd-adi (other
+- * register offsets) and SC2723 data in sprd-sc27xx-spi.
+- */
+-
+-#include <linux/bits.h>
+-#include <linux/gpio/driver.h>
+-#include <linux/mod_devicetable.h>
+-#include <linux/platform_device.h>
+-
+-#include "adi.h"
+-
+-#define SC2723_EIC(x)		(0x100 + (x))
+-#define EIC_DATA		SC2723_EIC(0x00)
+-#define EIC_DMSK		SC2723_EIC(0x04)	/* DATA shows only these */
+-#define EIC_NR			16
+-
+-#define GLB_ARM_MODULE_EN	SC2723_GLB(0x00)
+-#define GLB_RTC_CLK_EN		SC2723_GLB(0x08)
+-#define GLB_EIC_EN		BIT(3)		/* in both registers */
+-
+-static int sc2723_eic_get(struct gpio_chip *gc, unsigned int offset)
+-{
+-	u32 v;
+-	int ret;
+-
+-	ret = sprd_adi_read(EIC_DATA, &v);
+-	if (ret)
+-		return ret;
+-	return !!(v & BIT(offset));
+-}
+-
+-static int sc2723_eic_request(struct gpio_chip *gc, unsigned int offset)
+-{
+-	return sprd_adi_update(EIC_DMSK, 0, BIT(offset));
+-}
+-
+-static int sc2723_eic_get_direction(struct gpio_chip *gc, unsigned int offset)
+-{
+-	return GPIO_LINE_DIRECTION_IN;
+-}
+-
+-static int sc2723_eic_direction_input(struct gpio_chip *gc,
+-				      unsigned int offset)
+-{
+-	return 0;
+-}
+-
+-static int sc2723_eic_probe(struct platform_device *pdev)
+-{
+-	struct device *dev = &pdev->dev;
+-	struct gpio_chip *gc;
+-	int ret;
+-
+-	ret = sprd_adi_update(GLB_ARM_MODULE_EN, 0, GLB_EIC_EN);
+-	if (!ret)
+-		ret = sprd_adi_update(GLB_RTC_CLK_EN, 0, GLB_EIC_EN);
+-	if (ret)
+-		return dev_err_probe(dev, ret, "cannot enable the EIC\n");
+-
+-	gc = devm_kzalloc(dev, sizeof(*gc), GFP_KERNEL);
+-	if (!gc)
+-		return -ENOMEM;
+-	gc->label = "sc2723-eic";
+-	gc->parent = dev;
+-	gc->owner = THIS_MODULE;
+-	gc->base = -1;
+-	gc->ngpio = EIC_NR;
+-	gc->request = sc2723_eic_request;
+-	gc->get = sc2723_eic_get;
+-	gc->get_direction = sc2723_eic_get_direction;
+-	gc->direction_input = sc2723_eic_direction_input;
+-	gc->can_sleep = false;	/* ADI access spins, briefly */
+-
+-	return devm_gpiochip_add_data(dev, gc, NULL);
+-}
+-
+-static const struct of_device_id sc2723_eic_of_match[] = {
+-	{ .compatible = "sprd,sc2723-eic-polled" },
+-	{ }
+-};
+-
+-static struct platform_driver sc2723_eic_driver = {
+-	.probe = sc2723_eic_probe,
+-	.driver = {
+-		.name = "sc2723-eic-polled",
+-		.of_match_table = sc2723_eic_of_match,
+-	},
+-};
+-builtin_platform_driver(sc2723_eic_driver);
+diff --git a/arch/arm/mach-sprd/sc2723-pmic.c b/arch/arm/mach-sprd/sc2723-pmic.c
+new file mode 100644
+index 000000000..a8d93b219
+--- /dev/null
++++ b/arch/arm/mach-sprd/sc2723-pmic.c
+@@ -0,0 +1,139 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * The SC2723 PMIC as a regmap over the ADI helpers, with its interrupt
++ * controller (ANA_INT at slave offset 0x380, GIC SPI 38) as a regmap-irq
++ * chip, and the child nodes populated on top. This is what mainline
++ * sprd-sc27xx-spi does for the SC2730/SC2731 over spi-sprd-adi, so the
++ * mainline sc27xx RTC and PMIC EIC drivers work unchanged on the SC2723:
++ * their register blocks match (checked against the vendor 3.10 drivers
++ * and on the hardware).
++ *
++ * Interrupt sources (vendor __irqs-sc8830.h): 0 ADC, 1 GPIO, 2 RTC,
++ * 3 watchdog, 4 FGU, 5 EIC, 6 headset button, 7 audio protect,
++ * 8 calibration, 9 TPC/thermal, 10 DCDC overtemperature.
++ *
++ * Bring-up glue: the FGU, ADC and LDO glue still use the ADI helpers
++ * directly, which is fine since every access goes through the same lock.
++ */
++
++#include <linux/bits.h>
++#include <linux/interrupt.h>
++#include <linux/mod_devicetable.h>
++#include <linux/of_platform.h>
++#include <linux/platform_device.h>
++#include <linux/pm_wakeup.h>
++#include <linux/regmap.h>
++
++#include "adi.h"
++
++#define SC2723_INT(x)		(0x380 + (x))
++#define INT_MASK_STATUS		SC2723_INT(0x00)
++#define INT_EN			SC2723_INT(0x08)
++#define SC2723_NR_IRQS		11
++
++struct sc2723_pmic {
++	struct regmap_irq irqs[SC2723_NR_IRQS];
++	struct regmap_irq_chip irq_chip;
++	struct regmap_irq_chip_data *irq_data;
++	int irq;
++};
++
++static int sc2723_pmic_reg_read(void *ctx, unsigned int reg,
++				unsigned int *val)
++{
++	return sprd_adi_read(reg, val);
++}
++
++static int sc2723_pmic_reg_write(void *ctx, unsigned int reg,
++				 unsigned int val)
++{
++	return sprd_adi_write(reg, val);
++}
++
++static const struct regmap_config sc2723_pmic_regmap_config = {
++	.reg_bits = 32,
++	.val_bits = 32,
++	.reg_stride = 4,
++	.max_register = 0xffc,
++	.reg_read = sc2723_pmic_reg_read,
++	.reg_write = sc2723_pmic_reg_write,
++};
++
++static int sc2723_pmic_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct sc2723_pmic *pmic;
++	struct regmap *map;
++	int i, ret;
++
++	pmic = devm_kzalloc(dev, sizeof(*pmic), GFP_KERNEL);
++	if (!pmic)
++		return -ENOMEM;
++	platform_set_drvdata(pdev, pmic);
++
++	pmic->irq = platform_get_irq(pdev, 0);
++	if (pmic->irq < 0)
++		return pmic->irq;
++
++	map = devm_regmap_init(dev, NULL, pmic, &sc2723_pmic_regmap_config);
++	if (IS_ERR(map))
++		return dev_err_probe(dev, PTR_ERR(map), "cannot init regmap\n");
++
++	for (i = 0; i < SC2723_NR_IRQS; i++)
++		pmic->irqs[i].mask = BIT(i);
++	pmic->irq_chip.name = dev_name(dev);
++	pmic->irq_chip.status_base = INT_MASK_STATUS;
++	pmic->irq_chip.unmask_base = INT_EN;
++	pmic->irq_chip.num_regs = 1;
++	pmic->irq_chip.irqs = pmic->irqs;
++	pmic->irq_chip.num_irqs = SC2723_NR_IRQS;
++
++	/* masks everything first: the bootloader leaves all sources enabled */
++	ret = devm_regmap_add_irq_chip(dev, map, pmic->irq, IRQF_ONESHOT, 0,
++				       &pmic->irq_chip, &pmic->irq_data);
++	if (ret)
++		return dev_err_probe(dev, ret, "cannot add the irq chip\n");
++
++	ret = devm_device_init_wakeup(dev);
++	if (ret)
++		return ret;
++
++	return devm_of_platform_populate(dev);
++}
++
++/* power key, volume down and the RTC alarm all come in through here */
++static int sc2723_pmic_suspend(struct device *dev)
++{
++	struct sc2723_pmic *pmic = dev_get_drvdata(dev);
++
++	if (device_may_wakeup(dev))
++		enable_irq_wake(pmic->irq);
++	return 0;
++}
++
++static int sc2723_pmic_resume(struct device *dev)
++{
++	struct sc2723_pmic *pmic = dev_get_drvdata(dev);
++
++	if (device_may_wakeup(dev))
++		disable_irq_wake(pmic->irq);
++	return 0;
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(sc2723_pmic_pm_ops,
++				sc2723_pmic_suspend, sc2723_pmic_resume);
++
++static const struct of_device_id sc2723_pmic_of_match[] = {
++	{ .compatible = "sprd,sc2723-adi-pmic" },
++	{ }
++};
++
++static struct platform_driver sc2723_pmic_driver = {
++	.probe = sc2723_pmic_probe,
++	.driver = {
++		.name = "sc2723-adi-pmic",
++		.of_match_table = sc2723_pmic_of_match,
++		.pm = pm_sleep_ptr(&sc2723_pmic_pm_ops),
++	},
++};
++builtin_platform_driver(sc2723_pmic_driver);
+diff --git a/drivers/gpio/Kconfig b/drivers/gpio/Kconfig
+index a48586bb8..aee9b616c 100644
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -1626,7 +1626,7 @@ config GPIO_PALMAS
+ 
+ config GPIO_PMIC_EIC_SPRD
+ 	tristate "Spreadtrum PMIC EIC support"
+-	depends on MFD_SC27XX_PMIC || COMPILE_TEST
++	depends on MFD_SC27XX_PMIC || SPRD_SC2723_PMIC || COMPILE_TEST
+ 	select GPIOLIB_IRQCHIP
+ 	help
+ 	  Say yes here to support Spreadtrum PMIC EIC device.
+diff --git a/drivers/rtc/Kconfig b/drivers/rtc/Kconfig
+index 05b9233b9..22dce6550 100644
+--- a/drivers/rtc/Kconfig
++++ b/drivers/rtc/Kconfig
+@@ -1353,7 +1353,7 @@ config RTC_DRV_WM8350
+ 
+ config RTC_DRV_SC27XX
+ 	tristate "Spreadtrum SC27xx RTC"
+-	depends on MFD_SC27XX_PMIC || COMPILE_TEST
++	depends on MFD_SC27XX_PMIC || SPRD_SC2723_PMIC || COMPILE_TEST
+ 	help
+ 	  If you say Y here you will get support for the RTC subsystem
+ 	  of the Spreadtrum SC27xx series PMICs. The SC27xx series PMICs
+-- 
+2.47.3
+

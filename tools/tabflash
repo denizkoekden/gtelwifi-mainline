@@ -1,0 +1,74 @@
+#!/bin/bash
+# Write a boot image into the KERNEL partition from our own running kernel
+# (Test 4+, eMMC driver + SSH), instead of going through TWRP.
+#   tools/tabflash out/gtelwifi-mainline-testN.img
+#   TABSSH=tools/nurassh tools/tabflash boot.img     (tablet running Nura)
+#
+# Safety: the partition is looked up by its GPT name on the tablet, the
+# image is checked (Android magic, fits 16 MiB), uploaded and hashed there
+# first. Only the whole disk and the KERNEL partition are made writable for
+# the dd, everything else keeps its own read-only flag. The result is read
+# back past the page cache and compared. TWRP (RECOVERY) is never touched.
+set -euo pipefail
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+TABSSH=${TABSSH:-$ROOT/tools/tabssh}
+img=${1:?usage: tabflash <boot.img>}
+
+size=$(stat -f %z "$img")
+hash=$(shasum -a 256 "$img" | cut -d' ' -f1)
+[ "$(head -c 8 "$img")" = "ANDROID!" ] || { echo "not an Android boot image: $img" >&2; exit 1; }
+[ "$size" -le 16777216 ] || { echo "image larger than the 16 MiB KERNEL partition" >&2; exit 1; }
+echo "image: $img, $size bytes, sha256 $hash"
+
+"$TABSSH" 'cat > /tmp/flash.img' < "$img"
+
+# shellcheck disable=SC2016  # expanded on the tablet
+"$TABSSH" "SIZE=$size HASH=$hash sh -s" <<'EOF'
+set -e
+P=
+for u in /sys/class/block/mmcblk0p*/uevent; do
+	grep -qx 'PARTNAME=KERNEL' "$u" && P=/dev/$(sed -n 's/^DEVNAME=//p' "$u")
+done
+[ -n "$P" ] || { echo "tablet: no KERNEL partition found"; exit 1; }
+[ "$(sha256sum /tmp/flash.img | cut -d' ' -f1)" = "$HASH" ] ||
+	{ echo "tablet: upload corrupted"; exit 1; }
+echo "tablet: $P is KERNEL, upload ok, old content: $(head -c "$SIZE" "$P" | sha256sum | cut -c1-16)"
+
+# init.sh re-applies read-only to every mmcblk* for 30 s after boot; flashing
+# inside that window got EPERM halfway through (partial KERNEL, 01.11.).
+# Only our own initramfs has that guard (not Nura's).
+i=0
+dmesg | grep -q 'init: binding gadget' &&
+until dmesg | grep -q 'init: eMMC guard done'; do
+	i=$((i + 1))
+	[ $i -le 40 ] || { echo "tablet: eMMC guard still running"; exit 1; }
+	sleep 1
+done
+
+# Restore the disk's own flag afterwards: in the rescue system it is
+# read-only, under the Alpine rootfs it must stay writable (a read-only
+# disk would turn the mounted root read-only too).
+disk_ro=$(blockdev --getro /dev/mmcblk0)
+blockdev --setrw /dev/mmcblk0
+blockdev --setrw "$P"
+if ! dd if=/tmp/flash.img of="$P" bs=1M conv=fsync 2>/tmp/dd.err; then
+	cat /tmp/dd.err
+	echo "tablet: WRITE FAILED - KERNEL may be partial, do not reboot, flash again"
+	blockdev --setro "$P"
+	[ "$disk_ro" = 1 ] && blockdev --setro /dev/mmcblk0
+	exit 1
+fi
+blockdev --setro "$P"
+[ "$disk_ro" = 1 ] && blockdev --setro /dev/mmcblk0
+sync
+echo 3 > /proc/sys/vm/drop_caches
+got=$(head -c "$SIZE" "$P" | sha256sum | cut -d' ' -f1)
+rm -f /tmp/flash.img
+if [ "$got" = "$HASH" ]; then
+	echo "tablet: read back ok, KERNEL now holds the new image"
+else
+	echo "tablet: READ BACK MISMATCH ($got) - restore KERNEL from TWRP before rebooting"
+	exit 1
+fi
+EOF
+echo "done. Reboot: tools/tabssh 'setsid sh -c \"sleep 1; rebootcmd\" </dev/null >/dev/null 2>&1 &' (tools/tabdeploy does this)"

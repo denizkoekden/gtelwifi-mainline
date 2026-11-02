@@ -1,0 +1,51 @@
+From 45af43403dcd5f0b366fe18de384dfe8919a7b0c Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 09:14:16 +0000
+Subject: [PATCH 44/79] ARM: dts: sc7730: gtelwifi: accelerometer matrix,
+ second try
+
+The matrix of the previous fix showed the picture upside down in both
+portrait and landscape: X and Y both had the wrong sign. With
+X = -Y_chip, Y = -X_chip, Z = -Z_chip (a proper rotation, determinant 1)
+iio-sensor-proxy now turns the screen the right way in all four
+orientations, checked by hand under Phosh.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index 3157ead79..498f0fd5e 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -308,10 +308,10 @@ &i2c0 {
+ 
+ /*
+  * Accelerometer, ST LIS2HH12 (Samsung calls it K2HH), mounted face down:
+- * X = Y_chip, Y = X_chip, Z = -Z_chip. A first matrix taken from the
+- * vendor's axis map (X = -Y_chip) was a reflection and turned the screen
+- * the wrong way. The data-ready line (GPIO 164) is left out, user space
+- * polls.
++ * X = -Y_chip, Y = -X_chip, Z = -Z_chip. The vendor's axis map (X = -Y_chip,
++ * Y = X_chip) is a reflection and turned the screen the wrong way, and
++ * X = Y_chip, Y = X_chip showed it upside down. The data-ready line
++ * (GPIO 164) is left out, user space polls.
+  */
+ &i2c2 {
+ 	status = "okay";
+@@ -319,8 +319,8 @@ &i2c2 {
+ 	accelerometer@1d {
+ 		compatible = "st,lis2hh12";
+ 		reg = <0x1d>;
+-		mount-matrix = "0", "1", "0",
+-			       "1", "0", "0",
++		mount-matrix = "0", "-1", "0",
++			       "-1", "0", "0",
+ 			       "0", "0", "-1";
+ 	};
+ };
+-- 
+2.47.3
+

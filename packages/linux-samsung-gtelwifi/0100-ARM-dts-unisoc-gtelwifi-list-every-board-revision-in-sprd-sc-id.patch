@@ -1,0 +1,32 @@
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Subject: [PATCH] ARM: dts: unisoc: gtelwifi: list every board revision in sprd,sc-id
+
+postmarketOS builds dt.img with dtbTool-sprd from a single DTB
+(deviceinfo_bootimg_qcdt_type="sprd"). dtbTool-sprd reads any number of
+<chipset platform rev> triplets from sprd,sc-id and writes one table
+entry per triplet, all pointing at the same blob. sboot picks the entry
+whose platform equals hw_revision, so list all eight gtelwifi revisions
+instead of patching one copy of the DTB per revision.
+
+Assisted-by: Claude Opus 5.5
+---
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -212,10 +212,14 @@
+ 	compatible = "samsung,gtelwifi", "sprd,sc7730";
+ 
+ 	/*
+-	 * Board id the Spreadtrum bootloader matches against dt.img.
+-	 * The build script generates one copy per hardware revision.
++	 * Board ids the Spreadtrum bootloader matches against dt.img,
++	 * <chipset board-revision soc-revision>, one per known gtelwifi
++	 * board revision. dtbTool-sprd writes one dt.img entry for each
++	 * triplet, all pointing at this one DTB.
+ 	 */
+-	sprd,sc-id = <8830 11 0x20000>;
++	sprd,sc-id = <8830 2 0x20000>, <8830 3 0x20000>, <8830 4 0x20000>,
++		     <8830 5 0x20000>, <8830 6 0x20000>, <8830 9 0x20000>,
++		     <8830 10 0x20000>, <8830 11 0x20000>;
+ 
+ 	/* fixed host numbers: the eMMC must stay mmcblk0 (init, tabflash) */
+ 	aliases {

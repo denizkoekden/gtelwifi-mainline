@@ -1,0 +1,41 @@
+#!/bin/bash
+# One development iteration: build in Docker, write KERNEL from the running
+# kernel (tabflash), restart (rebootcmd), wait until SSH answers again.
+#   tools/tabdeploy            build + flash + reboot
+#   tools/tabdeploy <img>      flash + reboot an existing image
+set -euo pipefail
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+G='"USB Product Name" = "SM_T560 mainline"'
+present() { ioreg -p IOUSB -l -w0 2>/dev/null | grep -q "$G"; }
+
+if [ $# -ge 1 ]; then
+	img=$1
+else
+	"$ROOT/docker/run.sh" env O=/src/kout OVERLAY=/work/kernel \
+		./buildkit/build.sh /src/linux > "$ROOT/out/build-last.log" 2>&1 ||
+		{ tail -20 "$ROOT/out/build-last.log"; exit 1; }
+	img=$ROOT/out/gtelwifi-mainline-$(date +%Y%m%d-%H%M%S).img
+	cp "$ROOT/buildkit/gtelwifi-mainline.img" "$img"
+	echo "built $img"
+fi
+
+"$ROOT/tools/tabflash" "$img"
+boot=$("$ROOT/tools/tabssh" 'cat /proc/sys/kernel/random/boot_id')
+# setsid: otherwise dropbear takes the reboot down with the session, and a
+# foreground reboot leaves ssh waiting minutes for the dead connection.
+# Under Alpine a clean "reboot" (OpenRC shutdown), in the rescue system
+# the immediate rebootcmd.
+"$ROOT/tools/tabssh" 'r=rebootcmd; [ -f /etc/gtelwifi-rootfs ] && r=reboot
+	setsid sh -c "sleep 1; $r" </dev/null >/dev/null 2>&1 &'
+for i in $(seq 1 15); do present || break; sleep 1; done
+for i in $(seq 1 60); do present && break; sleep 2; done
+for i in $(seq 1 30); do
+	out=$("$ROOT/tools/tabssh" 'cat /proc/sys/kernel/random/boot_id;
+		echo "up: $(uname -rv), $(cut -d" " -f1 /proc/uptime) s"' 2>/dev/null) || { sleep 2; continue; }
+	# OpenRC may still be shutting down and answering with the old system
+	[ "$(head -1 <<< "$out")" = "$boot" ] && { sleep 2; continue; }
+	tail -1 <<< "$out"
+	exit 0
+done
+echo "tablet did not come back (hard reset: Power + Volume down ~10 s)" >&2
+exit 1

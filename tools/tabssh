@@ -1,0 +1,30 @@
+#!/bin/bash
+# SSH to the tablet over USB-NCM (Test 3b+): tools/tabssh [cmd...]
+# Host key is fixed (buildkit/ssh), so no ~/.ssh/config or known_hosts edits.
+#
+# The tablet has no usable entropy source of its own (no HW RNG, 32 kHz
+# clocksource), so dropbear would block until the kernel CRNG is ready.
+# First feed 64 bytes from the Mac's CSPRNG through the ACM shell.
+#
+# Address: 10.55.0.1 once macOS has its DHCP lease; right after a reboot
+# macOS can take a minute or two for that, so until then use IPv6
+# link-local on the interface that carries our fixed host MAC.
+# TAB_HOST overrides the address.
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+seed=$(head -c 64 /dev/urandom | xxd -p | tr -d '\n')
+python3 "$ROOT/tools/tabsh.py" -t 5 "rngseed $seed" >/dev/null ||
+	echo "tabssh: seeding over ACM failed, continuing" >&2
+
+host=${TAB_HOST:-}
+if [ -z "$host" ]; then
+	if ifconfig | grep -q 'inet 10\.55\.0\.2 '; then
+		host=10.55.0.1
+	else
+		ifname=$(ifconfig | awk '/^[a-z]/ { i = $1 } /ether 02:00:00:73:56:02/ { sub(":", "", i); print i }')
+		host=${ifname:+fe80::ff:fe73:5601%$ifname}
+		host=${host:-10.55.0.1}
+	fi
+fi
+exec ssh -o UserKnownHostsFile="$ROOT/buildkit/ssh/known_hosts" \
+	-o HostKeyAlias=10.55.0.1 -o StrictHostKeyChecking=yes \
+	-o ConnectTimeout=5 "root@$host" "$@"

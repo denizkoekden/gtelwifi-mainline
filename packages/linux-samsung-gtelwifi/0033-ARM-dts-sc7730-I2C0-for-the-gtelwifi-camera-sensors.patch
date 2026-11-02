@@ -1,0 +1,63 @@
+From 8794018fe37fb85db51aef239728e35c7a23950b Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 1 Nov 2026 22:56:50 +0000
+Subject: [PATCH 33/79] ARM: dts: sc7730: I2C0 for the gtelwifi camera sensors
+
+I2C0 (gate and reset bit 8 in AP_APB) carries the rear Samsung S5K4ECGX
+(0x56) and the front SiliconFile SR200PC20M (0x20). There are no sensor
+drivers yet; with the vendor power sequences driven from user space both
+answer with their chip IDs (4ec0 rev 0011, b4).
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ .../arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts |  8 ++++++++
+ arch/arm/boot/dts/unisoc/sc7730.dtsi                | 13 +++++++++++++
+ 2 files changed, 21 insertions(+)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index 6ed2aaa5f..d27fe345b 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -295,6 +295,14 @@ &pwm {
+ 	status = "okay";
+ };
+ 
++/*
++ * Camera sensors: rear S5K4ECGX @ 0x56, front SR200PC20M @ 0x20. No
++ * drivers yet, the bus is for bring-up from user space (buildkit/camprobe.c).
++ */
++&i2c0 {
++	status = "okay";
++};
++
+ &sdio0 {
+ 	bus-width = <4>;
+ 	cd-gpios = <&gpio 71 GPIO_ACTIVE_LOW>;	/* external pull-up */
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index e23ce14e4..f35c91c2b 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -239,6 +239,19 @@ gpio: gpio@40280000 {
+ 			#interrupt-cells = <2>;
+ 		};
+ 
++		/* I2C0, the camera sensors. Gate and reset: bit 8 in AP_APB. */
++		i2c0: i2c@70500000 {
++			compatible = "sprd,sc8830-i2c";
++			reg = <0x70500000 0x1000>, <0x71300000 0x8>;
++			reg-names = "i2c", "ap-apb";
++			sprd,ap-apb-bit = <8>;
++			clocks = <&ext_26m>;
++			clock-frequency = <100000>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
+ 		/*
+ 		 * I2C1. Source clock 26 MHz (AP_CLK_I2C1_CFG mux 0, as the
+ 		 * vendor leaves it); gate and reset are bit 9 in AP_APB.
+-- 
+2.47.3
+

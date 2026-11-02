@@ -1,0 +1,144 @@
+From ecfd013779e367ef42d161961a3ffbd495f68122 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 15:26:26 +0000
+Subject: [PATCH 68/79] ARM: dts: sc7730: camera capture and the gtelwifi front
+ camera
+
+Add the DCAM/CSI-2 node to the SC7730 dtsi (registers, interrupt SPI 45,
+MM power domain, ports for D-PHY A and C, clock provider for the sensor
+master clock).
+
+On the Samsung Galaxy Tab E 9.6 (SM-T560) add the SC2723 camera LDOs
+vddcama (2.8 V) and vddcamio (1.8 V) and the front SR200PC20M on I2C0
+at 0x20 (reset GPIO 238, powerdown GPIO 187, both active low) on
+D-PHY C. It does not need the external 1.2 V supply on GPIO 193 that
+the vendor kernel pulses. The rear S5K4ECGX has no driver yet.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ .../dts/unisoc/sc7730-samsung-gtelwifi.dts    | 55 ++++++++++++++++++-
+ arch/arm/boot/dts/unisoc/sc7730.dtsi          | 31 +++++++++++
+ 2 files changed, 84 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index 5d8d09eaa..5b1fe431f 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -312,6 +312,27 @@ vddsdcore: regulator-vddsdcore {
+ 		regulator-max-microvolt = <3000000>;
+ 	};
+ 
++	/* SC2723 camera LDOs: analog 2.8 V and I/O 1.8 V for both sensors */
++	vddcama: regulator-vddcama {
++		compatible = "sprd,sc2723-ldo";
++		regulator-name = "vddcama";
++		sprd,pd-reg = <0x814 4>;
++		sprd,vsel-reg = <0x830 0xff>;
++		regulator-min-microvolt = <2800000>;
++		regulator-max-microvolt = <2800000>;
++	};
++
++	vddcamio: regulator-vddcamio {
++		compatible = "sprd,sc2723-ldo";
++		regulator-name = "vddcamio";
++		sprd,pd-reg = <0x814 6>;
++		sprd,vsel-reg = <0x81c 0x7f00>;
++		sprd,min-microvolt = <1150000>;
++		sprd,step-microvolt = <6250>;
++		regulator-min-microvolt = <1800000>;
++		regulator-max-microvolt = <1800000>;
++	};
++
+ 	backlight: backlight {
+ 		compatible = "pwm-backlight";
+ 		pwms = <&pwm 3 49039>;
+@@ -331,11 +352,41 @@ &pwm {
+ };
+ 
+ /*
+- * Camera sensors: rear S5K4ECGX @ 0x56, front SR200PC20M @ 0x20. No
+- * drivers yet, the bus is for bring-up from user space (buildkit/camprobe.c).
++ * Camera sensors: rear S5K4ECGX @ 0x56 (no driver yet), front SR200PC20M
++ * @ 0x20 on D-PHY C. The front does not need the external 1.2 V DVDD
++ * (GPIO 193) the vendor pulses.
+  */
+ &i2c0 {
+ 	status = "okay";
++
++	camera@20 {
++		compatible = "siliconfile,sr200pc20m";
++		reg = <0x20>;
++		clocks = <&dcam>;
++		avdd-supply = <&vddcama>;
++		dovdd-supply = <&vddcamio>;
++		reset-gpios = <&gpio 238 GPIO_ACTIVE_LOW>;
++		powerdown-gpios = <&gpio 187 GPIO_ACTIVE_LOW>;
++		orientation = <0>;
++
++		port {
++			front_camera_out: endpoint {
++				remote-endpoint = <&dcam_front_in>;
++				data-lanes = <1>;
++			};
++		};
++	};
++};
++
++&dcam {
++	status = "okay";
++};
++
++&dcam_phy_c {
++	dcam_front_in: endpoint {
++		remote-endpoint = <&front_camera_out>;
++		data-lanes = <1>;
++	};
+ };
+ 
+ /*
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index 8169d4ff1..caacb531a 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -409,6 +409,37 @@ gpu: gpu@60000000 {
+ 			status = "disabled";
+ 		};
+ 
++		/*
++		 * Camera: DCAM capture engine and the CSI-2 host (DesignWare
++		 * 1.03). Port 0 is D-PHY A (2 lanes), port 1 D-PHY C (1 lane).
++		 * MM AHB, MM clocks and AON_APB are shared registers; the block
++		 * also provides the sensor master clock (24 MHz).
++		 */
++		dcam: camera@60800000 {
++			compatible = "sprd,sc7730-dcam";
++			reg = <0x60800000 0x1000>, <0x60c00000 0x1000>,
++			      <0x60d00000 0x100>, <0x60e00000 0x100>,
++			      <0x402e0000 0x100>;
++			reg-names = "dcam", "csi", "mm-ahb", "mm-clk", "aon-apb";
++			interrupts = <GIC_SPI 45 IRQ_TYPE_LEVEL_HIGH>;
++			power-domains = <&pmu_domains 1>;
++			#clock-cells = <0>;
++			status = "disabled";
++
++			ports {
++				#address-cells = <1>;
++				#size-cells = <0>;
++
++				dcam_phy_a: port@0 {
++					reg = <0>;
++				};
++
++				dcam_phy_c: port@1 {
++					reg = <1>;
++				};
++			};
++		};
++
+ 		gic: interrupt-controller@12001000 {
+ 			compatible = "arm,cortex-a7-gic";
+ 			#interrupt-cells = <3>;
+-- 
+2.47.3
+

@@ -1,0 +1,40 @@
+#!/bin/bash
+# Share the Mac's internet with the tablet (10.55.0.0/24 on the USB-NCM link)
+# by NAT. Run it yourself with sudo; nothing here survives a Mac reboot.
+#   sudo tools/mac-nat on     IP forwarding on, NAT rules in pf anchor
+#                             com.apple/gtelwifi (Apple's main ruleset stays)
+#   sudo tools/mac-nat off    rules flushed, forwarding off
+#   sudo tools/mac-nat status
+set -euo pipefail
+ANCHOR=com.apple/gtelwifi
+NET=10.55.0.0/24
+
+[ "$(id -u)" = 0 ] || { echo "run with sudo" >&2; exit 1; }
+
+case ${1:-status} in
+on)
+	# every interface with a default route (e.g. dock Ethernet and Wi-Fi)
+	rules=$(netstat -rn -f inet | awk '$1 == "default" { print $NF }' | sort -u |
+		while read -r ifc; do echo "nat on $ifc from $NET to any -> ($ifc)"; done)
+	[ -n "$rules" ] || { echo "no default route" >&2; exit 1; }
+	sysctl -w net.inet.ip.forwarding=1
+	# Apple's /etc/pf.conf references nat-anchor "com.apple/*"; make sure it is loaded
+	pfctl -q -f /etc/pf.conf 2>/dev/null
+	printf '%s\n' "$rules" | pfctl -q -a "$ANCHOR" -f -
+	pfctl -q -E 2>/dev/null || true
+	echo "NAT for $NET:"
+	pfctl -a "$ANCHOR" -s nat 2>/dev/null
+	;;
+off)
+	pfctl -q -a "$ANCHOR" -F all 2>/dev/null || true
+	sysctl -w net.inet.ip.forwarding=0
+	;;
+status)
+	echo "forwarding: $(sysctl -n net.inet.ip.forwarding)"
+	pfctl -a "$ANCHOR" -s nat 2>/dev/null || true
+	;;
+*)
+	echo "usage: sudo $0 on|off|status" >&2
+	exit 2
+	;;
+esac

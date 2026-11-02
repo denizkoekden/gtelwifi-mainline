@@ -1,0 +1,12 @@
+#!/bin/bash
+# SSH to the tablet running Nura (pmOS initramfs and rootfs) over USB-NCM:
+# tablet 172.16.42.1, the Mac gets 172.16.42.2 from unudhcpd.
+#   tools/nurassh [cmd...]                 as root (key put in during setup)
+#   TAB_USER=user tools/nurassh [cmd...]   as the Phosh user
+# sshd generates its host key on the first boot, so it is trusted on first
+# use and kept in out/nura_known_hosts (no ~/.ssh edits). No ACM seeding:
+# the kernel's CRNG is ready on its own since patch 0012.
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+exec ssh -o UserKnownHostsFile="$ROOT/out/nura_known_hosts" \
+	-o HostKeyAlias=nura-gtelwifi -o StrictHostKeyChecking=accept-new \
+	-o ConnectTimeout=5 "${TAB_USER:-root}@${TAB_HOST:-172.16.42.1}" "$@"

@@ -1,0 +1,70 @@
+From bf15a9805afc17adc433e31322ac80609686216d Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 12:46:41 +0000
+Subject: [PATCH 61/79] ARM: dts: sc7730: gtelwifi: Bluetooth and WLAN wake
+ lines
+
+The vendor tree wires BT_WAKE to GPIO 45 and HOST_WAKE to GPIO 46
+(bcm-bt-lpm), and the WLAN host wake to GPIO 148, level high.
+
+With the Bluetooth wake lines hci_bcm enables the controller's UART sleep
+mode and runtime-suspends it when idle. It always tells the controller
+that BT_WAKE is active high and derives HOST_WAKE's polarity from the
+interrupt type, so BT_WAKE is described active high here while HOST_WAKE
+keeps the vendor's falling edge.
+
+With an interrupt in its node brcmfmac uses the out-of-band host wake
+instead of the in-band SDIO interrupt, which lets the SDIO bus idle and
+the chip wake the system.
+
+Tested on the Galaxy Tab E 9.6 (SM-T560) under postmarketOS: hci0 runtime
+suspends when idle and the controller wakes the host through GPIO 46
+(19 host wake interrupts during a 12 s scan that found 13 devices);
+brcmfmac reports through brcmf_oob_intr on GPIO 148, the connection keeps
+working (ping 1.4-4.6 ms); after a 30 s suspend with an RTC wake both
+still work (WLAN connected, Bluetooth scan finds 12 devices).
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index 1a2f74355..5d8d09eaa 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -378,9 +378,17 @@ &sdio0 {
+ &uart0 {
+ 	status = "okay";
+ 
++	/*
++	 * BT_WAKE on GPIO 45, HOST_WAKE on GPIO 46 (vendor bcm-bt-lpm). hci_bcm
++	 * tells the controller BT_WAKE is active high and derives HOST_WAKE's
++	 * polarity from the interrupt type; the vendor ran both active low.
++	 */
+ 	bluetooth {
+ 		compatible = "brcm,bcm43430a1-bt";
+ 		shutdown-gpios = <&gpio 47 GPIO_ACTIVE_HIGH>;
++		device-wakeup-gpios = <&gpio 45 GPIO_ACTIVE_HIGH>;
++		interrupts-extended = <&gpio 46 IRQ_TYPE_EDGE_FALLING>;
++		interrupt-names = "host-wakeup";
+ 		clocks = <&clk_aux0>;
+ 		clock-names = "lpo";
+ 		max-speed = <2000000>;
+@@ -451,9 +459,12 @@ &sdio1 {
+ 	mmc-pwrseq = <&wifi_pwrseq>;
+ 	status = "okay";
+ 
++	/* out-of-band host wake on GPIO 148, level high as in the vendor tree */
+ 	wifi@1 {
+ 		compatible = "brcm,bcm43430a1-fmac", "brcm,bcm4329-fmac";
+ 		reg = <1>;
++		interrupts-extended = <&gpio 148 IRQ_TYPE_LEVEL_HIGH>;
++		interrupt-names = "host-wake";
+ 	};
+ };
+ 
+-- 
+2.47.3
+

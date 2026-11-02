@@ -1,0 +1,322 @@
+From 8dbe5732d72536a03b6e5105d12ecdc735c8c509 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 1 Nov 2026 18:19:22 +0000
+Subject: [PATCH 13/79] mmc: sdhci-sc7730: optional AHB gate; ARM: sprd:
+ CLK_AUX0; gtelwifi: WLAN
+
+The bootloader leaves SDIO1, the WLAN slot, gated. Let the SDHCI glue
+open the AP AHB clock gate and pulse the soft reset when an "ap-ahb"
+region is given, before the first register access.
+
+The BCM43430 A1 takes its 32 kHz low power clock from the CLK_AUX0 pad:
+a gate on the external 32 kHz clock (AON APB EB1 bit 2), modelled as a
+small clock provider in mach-sprd until there is a clock driver.
+
+DT: SDIO1 with mmc-pwrseq-simple (WL_REG_ON = GPIO 230, LPO, 200 ms),
+in-band SDIO interrupts for now; mmc aliases keep the host numbers.
+brcmfmac loads the Cypress 7.45.98.118 firmware with the vendor NVRAM
+and scans.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ arch/arm/Kconfig.platforms                    |  8 +++
+ .../dts/unisoc/sc7730-samsung-gtelwifi.dts    | 36 ++++++++++
+ arch/arm/boot/dts/unisoc/sc7730.dtsi          | 32 +++++++++
+ arch/arm/mach-sprd/Makefile                   |  1 +
+ arch/arm/mach-sprd/clk-aux0.c                 | 71 +++++++++++++++++++
+ drivers/mmc/host/sdhci-sc7730.c               | 37 +++++++++-
+ 6 files changed, 183 insertions(+), 2 deletions(-)
+ create mode 100644 arch/arm/mach-sprd/clk-aux0.c
+
+diff --git a/arch/arm/Kconfig.platforms b/arch/arm/Kconfig.platforms
+index 4db904678..82627fd04 100644
+--- a/arch/arm/Kconfig.platforms
++++ b/arch/arm/Kconfig.platforms
+@@ -209,6 +209,14 @@ config SPRD_PMIC_EIC
+ 	  gpio-keys-polled, until the mainline sc27xx drivers support
+ 	  the SC2723.
+ 
++config SPRD_CLK_AUX0
++	bool "SC7730 CLK_AUX0 32 kHz output (bring-up glue)"
++	depends on ARCH_SPRD && COMMON_CLK
++	help
++	  Gate clock for the CLK_AUX0 pad, the 32 kHz low power clock of
++	  the Broadcom WLAN chip on the Galaxy Tab E. Stop-gap until there
++	  is a clock driver for the SC7730.
++
+ config SPRD_ADI
+ 	bool
+ 
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index b4bcd0964..5b13c7827 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -82,6 +82,19 @@ key-volume-down {
+ 		};
+ 	};
+ 
++	/*
++	 * BCM43430 A1: WL_REG_ON is GPIO 230 (high = on, vendor waits 200 ms),
++	 * its 32 kHz LPO comes from CLK_AUX0. Host wake (GPIO 148, level high)
++	 * is not used yet, interrupts come in-band over SDIO.
++	 */
++	wifi_pwrseq: wifi-pwrseq {
++		compatible = "mmc-pwrseq-simple";
++		reset-gpios = <&gpio 230 GPIO_ACTIVE_LOW>;
++		clocks = <&clk_aux0>;
++		clock-names = "ext_clock";
++		post-power-on-delay-ms = <200>;
++	};
++
+ 	battery: battery {
+ 		compatible = "simple-battery";
+ 		charge-full-design-microamp-hours = <5000000>;
+@@ -123,7 +136,10 @@ / {
+ 	 */
+ 	sprd,sc-id = <8830 11 0x20000>;
+ 
++	/* fixed host numbers: the eMMC must stay mmcblk0 (init, tabflash) */
+ 	aliases {
++		mmc0 = &emmc;
++		mmc1 = &sdio1;
+ 		serial1 = &uart1;
+ 	};
+ 
+@@ -200,6 +216,26 @@ &usb {
+ 	status = "okay";
+ };
+ 
++&sdio1 {
++	#address-cells = <1>;
++	#size-cells = <0>;
++	bus-width = <4>;
++	max-frequency = <50000000>;
++	cap-sd-highspeed;
++	no-1-8-v;		/* the 1.8 V switch fails like on the eMMC host */
++	no-sd;
++	no-mmc;
++	non-removable;
++	keep-power-in-suspend;
++	mmc-pwrseq = <&wifi_pwrseq>;
++	status = "okay";
++
++	wifi@1 {
++		compatible = "brcm,bcm43430a1-fmac", "brcm,bcm4329-fmac";
++		reg = <1>;
++	};
++};
++
+ /*
+  * DDR52 with the vendor's delay-line values. The eMMC I/O rail is a fixed
+  * 1.8 V (no vqmmc supply in the vendor tree), but the 1.8 V signalling bit
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index 5fadfd9a7..00b0a875f 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -39,6 +39,13 @@ pmic_eic: gpio-controller {
+ 		#gpio-cells = <2>;
+ 	};
+ 
++	ext_32k: clock-32k {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <32768>;
++		clock-output-names = "ext-32k";
++	};
++
+ 	ext_26m: clock-26m {
+ 		compatible = "fixed-clock";
+ 		#clock-cells = <0>;
+@@ -127,6 +134,31 @@ emmc: mmc@20600000 {
+ 			status = "disabled";
+ 		};
+ 
++		/*
++		 * SDIO1, the WLAN slot. Unlike the eMMC host it is left gated by
++		 * the bootloader: AP_AHB EB bit 9, soft reset bit 12. Base clock
++		 * mux AP_CLK_SDIO1_CFG (48/76.8/96/128 MHz, bootloader: 48).
++		 */
++		sdio1: mmc@20400000 {
++			compatible = "sprd,sc7730-sdhci";
++			reg = <0x20400000 0x1000>, <0x7120004c 0x4>,
++			      <0x20d00000 0x8>;
++			reg-names = "sdhci", "clk-cfg", "ap-ahb";
++			interrupts = <GIC_SPI 58 IRQ_TYPE_LEVEL_HIGH>;
++			sprd,clk-parent-rates = <48000000 76800000 96000000 128000000>;
++			sprd,ahb-eb-bit = <9>;
++			sprd,ahb-rst-bit = <12>;
++			status = "disabled";
++		};
++
++		/* CLK_AUX0 pad, 32 kHz (mach-sprd/clk-aux0.c) */
++		clk_aux0: clock-controller@402e0000 {
++			compatible = "sprd,sc7730-aux0-clk";
++			reg = <0x402e0000 0x4000>;
++			clocks = <&ext_32k>;
++			#clock-cells = <0>;
++		};
++
+ 		/* Same register layout as the SC9860 "d-gpio" block */
+ 		gpio: gpio@40280000 {
+ 			compatible = "sprd,sc9860-gpio";
+diff --git a/arch/arm/mach-sprd/Makefile b/arch/arm/mach-sprd/Makefile
+index af8efa843..fb2fcc155 100644
+--- a/arch/arm/mach-sprd/Makefile
++++ b/arch/arm/mach-sprd/Makefile
+@@ -4,3 +4,4 @@ obj-$(CONFIG_SPRD_USB_BRINGUP)	+= usb-bringup.o
+ obj-$(CONFIG_SPRD_ADI)		+= adi.o
+ obj-$(CONFIG_SPRD_RESTART)	+= restart.o
+ obj-$(CONFIG_SPRD_PMIC_EIC)	+= pmic-eic.o
++obj-$(CONFIG_SPRD_CLK_AUX0)	+= clk-aux0.o
+diff --git a/arch/arm/mach-sprd/clk-aux0.c b/arch/arm/mach-sprd/clk-aux0.c
+new file mode 100644
+index 000000000..154d3168b
+--- /dev/null
++++ b/arch/arm/mach-sprd/clk-aux0.c
+@@ -0,0 +1,71 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * The CLK_AUX0 output of the SC7730, on the gtelwifi the 32 kHz low power
++ * clock (LPO) of the BCM43430 WLAN chip. A gate (AON APB EB1 bit 2) on the
++ * external 32 kHz clock, with source and divider in AON_CGM_CFG set to
++ * 32 kHz / 1 as in the vendor board file. The bootloader leaves the gate
++ * off and already muxes the pad to CLK_AUX0.
++ *
++ * Bring-up glue until there is a clock driver for this SoC.
++ */
++
++#include <linux/bits.h>
++#include <linux/clk-provider.h>
++#include <linux/io.h>
++#include <linux/mod_devicetable.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++
++#define AON_APB_EB1		0x0004
++#define AON_EB1_AUX0_BIT	2
++#define AON_CGM_CFG		0x3020
++#define AON_CGM_AUX0_SEL	GENMASK(3, 0)	/* 0: 32 kHz */
++#define AON_CGM_AUX0_DIV	GENMASK(19, 16)	/* 0: divide by 1 */
++
++static DEFINE_SPINLOCK(sc7730_aux0_lock);
++
++static int sc7730_aux0_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct resource *res;
++	void __iomem *aon;
++	const char *parent;
++	struct clk_hw *hw;
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!res)
++		return -EINVAL;
++	/* shared with other blocks, so no request_mem_region */
++	aon = devm_ioremap(dev, res->start, resource_size(res));
++	if (!aon)
++		return -ENOMEM;
++
++	parent = of_clk_get_parent_name(dev->of_node, 0);
++	if (!parent)
++		return dev_err_probe(dev, -EINVAL, "no parent clock\n");
++
++	writel(readl(aon + AON_CGM_CFG) &
++	       ~(AON_CGM_AUX0_SEL | AON_CGM_AUX0_DIV), aon + AON_CGM_CFG);
++
++	hw = devm_clk_hw_register_gate(dev, "aux0", parent, 0,
++				       aon + AON_APB_EB1, AON_EB1_AUX0_BIT, 0,
++				       &sc7730_aux0_lock);
++	if (IS_ERR(hw))
++		return PTR_ERR(hw);
++
++	return devm_of_clk_add_hw_provider(dev, of_clk_hw_simple_get, hw);
++}
++
++static const struct of_device_id sc7730_aux0_of_match[] = {
++	{ .compatible = "sprd,sc7730-aux0-clk" },
++	{ }
++};
++
++static struct platform_driver sc7730_aux0_driver = {
++	.probe = sc7730_aux0_probe,
++	.driver = {
++		.name = "sc7730-aux0-clk",
++		.of_match_table = sc7730_aux0_of_match,
++	},
++};
++builtin_platform_driver(sc7730_aux0_driver);
+diff --git a/drivers/mmc/host/sdhci-sc7730.c b/drivers/mmc/host/sdhci-sc7730.c
+index 9c7a9b013..1626b2b03 100644
+--- a/drivers/mmc/host/sdhci-sc7730.c
++++ b/drivers/mmc/host/sdhci-sc7730.c
+@@ -10,10 +10,14 @@
+  * Until this SoC has a clock driver, the base clock is read back from the
+  * AP clock mux the bootloader programmed ("clk-cfg", bits 1:0 select one of
+  * "sprd,clk-parent-rates"), so the card is never clocked faster than the
+- * divider math assumes. Gate, reset, pinmux and card power are left as the
+- * bootloader set them up.
++ * divider math assumes. Pinmux and card power are left as the bootloader set
++ * them up, and so are gate and reset unless an "ap-ahb" region is given
++ * (EB at +0, RST at +4, bits in "sprd,ahb-eb-bit"/"sprd,ahb-rst-bit"): the
++ * bootloader only enables the eMMC host, the WLAN slot SDIO1 stays gated.
+  */
+ 
++#include <linux/bits.h>
++#include <linux/delay.h>
+ #include <linux/io.h>
+ #include <linux/mmc/host.h>
+ #include <linux/module.h>
+@@ -24,6 +28,9 @@
+ 
+ #define SC7730_CLK_SEL_MASK	0x3
+ 
++#define SC7730_AHB_EB		0x0
++#define SC7730_AHB_RST		0x4
++
+ /* Data sampling delay lines, used by the vendor only in DDR mode */
+ #define SC7730_WRITE_DELAY	0x80
+ #define SC7730_READ_POS_DELAY	0x84
+@@ -80,6 +87,29 @@ static const struct sdhci_pltfm_data sc7730_sdhci_pdata = {
+ 		   SDHCI_QUIRK2_BROKEN_HS200,
+ };
+ 
++static void sc7730_sdhci_ahb_init(struct platform_device *pdev)
++{
++	struct device_node *np = pdev->dev.of_node;
++	struct resource *res;
++	void __iomem *ahb;
++	u32 eb, rst;
++
++	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "ap-ahb");
++	if (!res || of_property_read_u32(np, "sprd,ahb-eb-bit", &eb) ||
++	    of_property_read_u32(np, "sprd,ahb-rst-bit", &rst))
++		return;
++	/* shared with other blocks, so no request_mem_region */
++	ahb = devm_ioremap(&pdev->dev, res->start, resource_size(res));
++	if (!ahb)
++		return;
++	/* vendor sequence: gate on, wait, then a reset pulse */
++	writel(readl(ahb + SC7730_AHB_EB) | BIT(eb), ahb + SC7730_AHB_EB);
++	usleep_range(500, 1000);
++	writel(readl(ahb + SC7730_AHB_RST) | BIT(rst), ahb + SC7730_AHB_RST);
++	usleep_range(200, 400);
++	writel(readl(ahb + SC7730_AHB_RST) & ~BIT(rst), ahb + SC7730_AHB_RST);
++}
++
+ static int sc7730_sdhci_probe(struct platform_device *pdev)
+ {
+ 	struct device *dev = &pdev->dev;
+@@ -94,6 +124,9 @@ static int sc7730_sdhci_probe(struct platform_device *pdev)
+ 		return PTR_ERR(host);
+ 	priv = sdhci_pltfm_priv(sdhci_priv(host));
+ 
++	/* before the first register access, a gated host hangs the bus */
++	sc7730_sdhci_ahb_init(pdev);
++
+ 	clk_cfg = devm_platform_ioremap_resource_byname(pdev, "clk-cfg");
+ 	if (IS_ERR(clk_cfg))
+ 		return PTR_ERR(clk_cfg);
+-- 
+2.47.3
+

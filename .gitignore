@@ -1,0 +1,14 @@
+# local keys for the rescue initramfs, see buildkit/ssh/README
+buildkit/ssh/*
+!buildkit/ssh/README
+# build products
+buildkit/config.local
+buildkit/initramfs.local
+buildkit/gtelwifi-mainline*.img
+buildkit/fbstatus
+buildkit/init
+buildkit/rngseed
+buildkit/rebootcmd
+# work products, camera tables extracted from the stock system (never commit)
+out/
+.DS_Store

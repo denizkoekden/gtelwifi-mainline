@@ -1,0 +1,93 @@
+From 42d8a9285f91afece495b7eae0754782fb6ffa8e Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 09:23:24 +0000
+Subject: [PATCH 46/79] ARM: dts: sc7730: PMU power domains and the Mali-400
+ MP2
+
+The GPU sits at 0x60000000 in the standard Mali-400 layout that lima
+expects, with all units on GIC SPI 39 (lima requests them shared). Core
+and bus clock are a fixed 256 MHz until there is a clock driver; the
+power domain switches the GPU's bus enable and programs its clock mux.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ .../dts/unisoc/sc7730-samsung-gtelwifi.dts    |  4 ++
+ arch/arm/boot/dts/unisoc/sc7730.dtsi          | 40 +++++++++++++++++++
+ 2 files changed, 44 insertions(+)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index 498f0fd5e..5bd5e16f0 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -354,6 +354,10 @@ bluetooth {
+ 	};
+ };
+ 
++&gpu {
++	status = "okay";
++};
++
+ &keypad {
+ 	keypad,num-rows = <1>;
+ 	keypad,num-columns = <3>;
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index 9454247f8..b7fa30bca 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -120,12 +120,52 @@ ext_26m: clock-26m {
+ 		clock-output-names = "ext-26m";
+ 	};
+ 
++	/*
++	 * Mali core clock: mach-sprd/pm-domains.c selects 256 MHz (TDPLL / 3)
++	 * in the GPU's own clock mux on every power-up of the GPU domain.
++	 */
++	gpu_clk: clock-gpu {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <256000000>;
++		clock-output-names = "gpu";
++	};
++
+ 	soc {
+ 		compatible = "simple-bus";
+ 		#address-cells = <1>;
+ 		#size-cells = <1>;
+ 		ranges;
+ 
++		/* GPU_TOP and MM_TOP power domains (mach-sprd/pm-domains.c) */
++		pmu_domains: power-controller@402b0000 {
++			compatible = "sprd,sc7730-pmu-domains";
++			reg = <0x402b0000 0x100>, <0x402e0000 0x4>;
++			reg-names = "pmu", "aon-apb";
++			#power-domain-cells = <1>;
++		};
++
++		/*
++		 * Mali-400 MP2, all units on one interrupt line. Its AXI enable
++		 * (AON_APB EB0 bit 27) is switched with the power domain.
++		 */
++		gpu: gpu@60000000 {
++			compatible = "arm,mali-400";
++			reg = <0x60000000 0x10000>;
++			interrupts = <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>;
++			interrupt-names = "gp", "gpmmu", "pp0", "ppmmu0",
++					  "pp1", "ppmmu1";
++			clocks = <&gpu_clk>, <&gpu_clk>;
++			clock-names = "bus", "core";
++			power-domains = <&pmu_domains 0>;
++			status = "disabled";
++		};
++
+ 		gic: interrupt-controller@12001000 {
+ 			compatible = "arm,cortex-a7-gic";
+ 			#interrupt-cells = <3>;
+-- 
+2.47.3
+

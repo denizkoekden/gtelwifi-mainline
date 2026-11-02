@@ -1,0 +1,360 @@
+From 7d81d848d4b6f4aac21756970ccd4d3bfadc4a0f Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 1 Nov 2026 22:48:55 +0000
+Subject: [PATCH 30/79] ARM: sprd: SC2723 LDOs, gate clocks, PMIC registers in
+ debugfs
+
+Three pieces of bring-up glue on top of the ADI helpers:
+- sc2723-ldo: one SC2723 LDO per device tree node as a regulator,
+  power-down bit and voltage field, every write a read-modify-write
+  under the ADI lock (the registers are shared). For the microSD supply,
+  later the camera rails.
+- clk-gates: a 32-bit enable register as gate clocks, for the "enable"
+  clock mainline sprd_serial needs on UART0. All CLK_IGNORE_UNUSED,
+  other drivers still own bits in the same registers.
+- debugfs sprd-adi/{address,value} to read and write PMIC registers
+  under the driver lock; /dev/mem cannot be used for the ADI.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ arch/arm/Kconfig.platforms      |  17 ++++
+ arch/arm/mach-sprd/Makefile     |   2 +
+ arch/arm/mach-sprd/adi.c        |  44 ++++++++++
+ arch/arm/mach-sprd/clk-gates.c  |  74 +++++++++++++++++
+ arch/arm/mach-sprd/sc2723-ldo.c | 143 ++++++++++++++++++++++++++++++++
+ 5 files changed, 280 insertions(+)
+ create mode 100644 arch/arm/mach-sprd/clk-gates.c
+ create mode 100644 arch/arm/mach-sprd/sc2723-ldo.c
+
+diff --git a/arch/arm/Kconfig.platforms b/arch/arm/Kconfig.platforms
+index d3c5fb81a..e79904294 100644
+--- a/arch/arm/Kconfig.platforms
++++ b/arch/arm/Kconfig.platforms
+@@ -217,6 +217,23 @@ config SPRD_CLK_AUX0
+ 	  the Broadcom WLAN chip on the Galaxy Tab E. Stop-gap until there
+ 	  is a clock driver for the SC7730.
+ 
++config SPRD_CLK_GATES
++	bool "SC7730 enable registers as gate clocks (bring-up glue)"
++	depends on ARCH_SPRD && COMMON_CLK
++	help
++	  The 32 enable bits of a gate register as clocks, for drivers that
++	  want an "enable" clock (sprd_serial on UART0 for Bluetooth).
++	  Stop-gap until there is a clock driver for the SC7730.
++
++config SPRD_SC2723_LDO
++	bool "SC2723 PMIC LDOs as regulators (bring-up glue)"
++	depends on ARCH_SPRD && REGULATOR
++	select SPRD_ADI
++	help
++	  LDOs of the SC2723 PMIC, one device tree node each, switched and
++	  set over the ADI bus: the microSD card supply, later the camera
++	  rails.
++
+ config SPRD_SC2723_ADC
+ 	bool "SC2723 PMIC auxiliary ADC (bring-up glue)"
+ 	depends on ARCH_SPRD && IIO
+diff --git a/arch/arm/mach-sprd/Makefile b/arch/arm/mach-sprd/Makefile
+index eeb9e3dfa..0a1ad0259 100644
+--- a/arch/arm/mach-sprd/Makefile
++++ b/arch/arm/mach-sprd/Makefile
+@@ -7,5 +7,7 @@ obj-$(CONFIG_SPRD_ADI)		+= adi.o
+ obj-$(CONFIG_SPRD_RESTART)	+= restart.o
+ obj-$(CONFIG_SPRD_PMIC_EIC)	+= pmic-eic.o
+ obj-$(CONFIG_SPRD_CLK_AUX0)	+= clk-aux0.o
++obj-$(CONFIG_SPRD_CLK_GATES)	+= clk-gates.o
++obj-$(CONFIG_SPRD_SC2723_LDO)	+= sc2723-ldo.o
+ obj-$(CONFIG_SPRD_SC2723_ADC)	+= sc2723-adc.o
+ obj-$(CONFIG_SPRD_SC2723_FGU)	+= sc2723-fgu.o
+diff --git a/arch/arm/mach-sprd/adi.c b/arch/arm/mach-sprd/adi.c
+index 98ca20bf2..fee6c592f 100644
+--- a/arch/arm/mach-sprd/adi.c
++++ b/arch/arm/mach-sprd/adi.c
+@@ -12,6 +12,7 @@
+  */
+ 
+ #include <linux/bits.h>
++#include <linux/debugfs.h>
+ #include <linux/delay.h>
+ #include <linux/errno.h>
+ #include <linux/init.h>
+@@ -121,3 +122,46 @@ static int __init sprd_adi_init(void)
+ 	return 0;
+ }
+ early_initcall(sprd_adi_init);
++
++#ifdef CONFIG_DEBUG_FS
++/*
++ * debugfs sprd-adi/{address,value}: PMIC registers from user space for
++ * bring-up (audio, camera rails), under the same lock as the drivers.
++ * /dev/mem must not be used for the ADI: a read is a command sequence and
++ * would race the fuel gauge polling.
++ */
++static u32 adi_dbg_addr;
++
++static int adi_dbg_get(void *data, u64 *val)
++{
++	u32 v;
++	int ret;
++
++	if (adi_dbg_addr >= ADI_SLAVE_SIZE || adi_dbg_addr & 3)
++		return -EINVAL;
++	ret = sprd_adi_read(adi_dbg_addr, &v);
++	*val = v;
++	return ret;
++}
++
++static int adi_dbg_set(void *data, u64 val)
++{
++	if (adi_dbg_addr >= ADI_SLAVE_SIZE || adi_dbg_addr & 3)
++		return -EINVAL;
++	return sprd_adi_write(adi_dbg_addr, val);
++}
++DEFINE_DEBUGFS_ATTRIBUTE(adi_dbg_fops, adi_dbg_get, adi_dbg_set, "0x%08llx\n");
++
++static int __init sprd_adi_debugfs_init(void)
++{
++	struct dentry *dir;
++
++	if (!adi)
++		return 0;
++	dir = debugfs_create_dir("sprd-adi", NULL);
++	debugfs_create_x32("address", 0600, dir, &adi_dbg_addr);
++	debugfs_create_file_unsafe("value", 0600, dir, NULL, &adi_dbg_fops);
++	return 0;
++}
++late_initcall(sprd_adi_debugfs_init);
++#endif
+diff --git a/arch/arm/mach-sprd/clk-gates.c b/arch/arm/mach-sprd/clk-gates.c
+new file mode 100644
+index 000000000..70663b916
+--- /dev/null
++++ b/arch/arm/mach-sprd/clk-gates.c
+@@ -0,0 +1,74 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * A bank of 32 enable bits of the SC7730 as gate clocks, "#clock-cells =
++ * <1>" with the bit number, e.g. the AP APB gates at 0x71300000 for the
++ * "enable" clock that mainline sprd_serial wants for UART0 (bit 13).
++ *
++ * Other drivers in mach-sprd still set their bits in the same registers
++ * directly (INTC, I2C1), so every gate is CLK_IGNORE_UNUSED: switching
++ * off "unused" gates at late init would cut blocks that are in use.
++ *
++ * Bring-up glue until there is a clock driver for this SoC.
++ */
++
++#include <linux/clk-provider.h>
++#include <linux/io.h>
++#include <linux/mod_devicetable.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++
++#define SC7730_GATES	32
++
++static DEFINE_SPINLOCK(sc7730_gates_lock);
++
++static int sc7730_gates_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct clk_hw_onecell_data *data;
++	const char *parent, *name;
++	struct resource *res;
++	void __iomem *reg;
++	int i;
++
++	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
++	if (!res)
++		return -EINVAL;
++	/* shared with other drivers, so no request_mem_region */
++	reg = devm_ioremap(dev, res->start, resource_size(res));
++	if (!reg)
++		return -ENOMEM;
++
++	parent = of_clk_get_parent_name(dev->of_node, 0);
++	data = devm_kzalloc(dev, struct_size(data, hws, SC7730_GATES),
++			    GFP_KERNEL);
++	if (!data)
++		return -ENOMEM;
++	data->num = SC7730_GATES;
++
++	for (i = 0; i < SC7730_GATES; i++) {
++		name = devm_kasprintf(dev, GFP_KERNEL, "%s-%d", dev_name(dev), i);
++		if (!name)
++			return -ENOMEM;
++		data->hws[i] = devm_clk_hw_register_gate(dev, name, parent,
++							 CLK_IGNORE_UNUSED, reg,
++							 i, 0, &sc7730_gates_lock);
++		if (IS_ERR(data->hws[i]))
++			return PTR_ERR(data->hws[i]);
++	}
++
++	return devm_of_clk_add_hw_provider(dev, of_clk_hw_onecell_get, data);
++}
++
++static const struct of_device_id sc7730_gates_of_match[] = {
++	{ .compatible = "sprd,sc7730-gates" },
++	{ }
++};
++
++static struct platform_driver sc7730_gates_driver = {
++	.probe = sc7730_gates_probe,
++	.driver = {
++		.name = "sc7730-gates",
++		.of_match_table = sc7730_gates_of_match,
++	},
++};
++builtin_platform_driver(sc7730_gates_driver);
+diff --git a/arch/arm/mach-sprd/sc2723-ldo.c b/arch/arm/mach-sprd/sc2723-ldo.c
+new file mode 100644
+index 000000000..734fee320
+--- /dev/null
++++ b/arch/arm/mach-sprd/sc2723-ldo.c
+@@ -0,0 +1,143 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * One LDO of the SC2723 PMIC as a regulator, one device tree node each:
++ * a power-down bit ("sprd,pd-reg" = <offset bit>, 1 = off) and a voltage
++ * field ("sprd,vsel-reg" = <offset mask>), V = min + n * step with the
++ * vendor's defaults of 1.2 V and 10 mV. Registers from the vendor 3.10
++ * driver (drivers/regulator/sc2723-regulator_dt.c) and vendor device tree.
++ *
++ * The power-down and voltage registers are shared between LDOs (and with
++ * mach-sprd/usb-bringup.c), so every write is a read-modify-write under
++ * the ADI lock. The calibration trim the vendor applies is left alone.
++ *
++ * Bring-up glue until mainline sc2731-regulator (same idea, other
++ * offsets) learns the SC2723 on top of an sc27xx MFD.
++ */
++
++#include <linux/bits.h>
++#include <linux/mod_devicetable.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/regulator/driver.h>
++#include <linux/regulator/of_regulator.h>
++
++#include "adi.h"
++
++struct sc2723_ldo {
++	u32 pd_reg, pd_mask;
++	u32 vsel_reg, vsel_mask, vsel_shift;
++	struct regulator_desc desc;
++};
++
++static int sc2723_ldo_enable(struct regulator_dev *rdev)
++{
++	struct sc2723_ldo *ldo = rdev_get_drvdata(rdev);
++
++	return sprd_adi_update(ldo->pd_reg, ldo->pd_mask, 0);
++}
++
++static int sc2723_ldo_disable(struct regulator_dev *rdev)
++{
++	struct sc2723_ldo *ldo = rdev_get_drvdata(rdev);
++
++	return sprd_adi_update(ldo->pd_reg, 0, ldo->pd_mask);
++}
++
++static int sc2723_ldo_is_enabled(struct regulator_dev *rdev)
++{
++	struct sc2723_ldo *ldo = rdev_get_drvdata(rdev);
++	u32 val;
++	int ret;
++
++	ret = sprd_adi_read(ldo->pd_reg, &val);
++	return ret ?: !(val & ldo->pd_mask);
++}
++
++static int sc2723_ldo_get_voltage_sel(struct regulator_dev *rdev)
++{
++	struct sc2723_ldo *ldo = rdev_get_drvdata(rdev);
++	u32 val;
++	int ret;
++
++	ret = sprd_adi_read(ldo->vsel_reg, &val);
++	return ret ?: (int)((val & ldo->vsel_mask) >> ldo->vsel_shift);
++}
++
++static int sc2723_ldo_set_voltage_sel(struct regulator_dev *rdev,
++				      unsigned int sel)
++{
++	struct sc2723_ldo *ldo = rdev_get_drvdata(rdev);
++
++	return sprd_adi_update(ldo->vsel_reg, ldo->vsel_mask,
++			       sel << ldo->vsel_shift);
++}
++
++static const struct regulator_ops sc2723_ldo_ops = {
++	.enable = sc2723_ldo_enable,
++	.disable = sc2723_ldo_disable,
++	.is_enabled = sc2723_ldo_is_enabled,
++	.list_voltage = regulator_list_voltage_linear,
++	.map_voltage = regulator_map_voltage_linear,
++	.get_voltage_sel = sc2723_ldo_get_voltage_sel,
++	.set_voltage_sel = sc2723_ldo_set_voltage_sel,
++};
++
++static int sc2723_ldo_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct device_node *np = dev->of_node;
++	struct regulator_config cfg = {};
++	struct regulator_dev *rdev;
++	struct sc2723_ldo *ldo;
++	u32 pd[2], vsel[2], min_uv = 1200000, step_uv = 10000;
++
++	ldo = devm_kzalloc(dev, sizeof(*ldo), GFP_KERNEL);
++	if (!ldo)
++		return -ENOMEM;
++
++	if (of_property_read_u32_array(np, "sprd,pd-reg", pd, 2) ||
++	    of_property_read_u32_array(np, "sprd,vsel-reg", vsel, 2) ||
++	    pd[1] > 15 || !vsel[1])
++		return dev_err_probe(dev, -EINVAL, "bad sprd,pd-reg/vsel-reg\n");
++	of_property_read_u32(np, "sprd,min-microvolt", &min_uv);
++	of_property_read_u32(np, "sprd,step-microvolt", &step_uv);
++
++	ldo->pd_reg = pd[0];
++	ldo->pd_mask = BIT(pd[1]);
++	ldo->vsel_reg = vsel[0];
++	ldo->vsel_mask = vsel[1];
++	ldo->vsel_shift = __ffs(vsel[1]);
++
++	ldo->desc.name = np->name;
++	ldo->desc.type = REGULATOR_VOLTAGE;
++	ldo->desc.owner = THIS_MODULE;
++	ldo->desc.ops = &sc2723_ldo_ops;
++	ldo->desc.min_uV = min_uv;
++	ldo->desc.uV_step = step_uv;
++	ldo->desc.n_voltages = (vsel[1] >> ldo->vsel_shift) + 1;
++	ldo->desc.enable_time = 1000;
++
++	cfg.dev = dev;
++	cfg.of_node = np;
++	cfg.driver_data = ldo;
++	cfg.init_data = of_get_regulator_init_data(dev, np, &ldo->desc);
++	if (!cfg.init_data)
++		return -ENOMEM;
++
++	rdev = devm_regulator_register(dev, &ldo->desc, &cfg);
++	return PTR_ERR_OR_ZERO(rdev);
++}
++
++static const struct of_device_id sc2723_ldo_of_match[] = {
++	{ .compatible = "sprd,sc2723-ldo" },
++	{ }
++};
++
++static struct platform_driver sc2723_ldo_driver = {
++	.probe = sc2723_ldo_probe,
++	.driver = {
++		.name = "sc2723-ldo",
++		.of_match_table = sc2723_ldo_of_match,
++	},
++};
++builtin_platform_driver(sc2723_ldo_driver);
+-- 
+2.47.3
+

@@ -1,0 +1,91 @@
+From 25703027f6c5c14d9070e23dd4ef077ffcba1aef Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 09:45:49 +0000
+Subject: [PATCH 48/79] ARM: dts: sc7730: DISPC takeover and a CMA pool on the
+ gtelwifi
+
+DISPC has no IOMMU, so its buffers come from a 64 MiB CMA pool in lowmem
+below the vendor carve-outs, where all vendor display buffers lived.
+The backlight moves along with the scan-out from simpledrm, which the
+DISPC driver replaces; the simple-framebuffer node stays as fallback.
+
+Assisted-by: Claude Opus 5.5
+Signed-off-by: Deniz Kokden <koekdendeniz@gmail.com>
+---
+ .../dts/unisoc/sc7730-samsung-gtelwifi.dts    | 25 +++++++++++++++++++
+ arch/arm/boot/dts/unisoc/sc7730.dtsi          | 16 ++++++++++++
+ 2 files changed, 41 insertions(+)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index 5bd5e16f0..8be41a286 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -250,6 +250,19 @@ ramoops@9fc00000 {
+ 			console-size = <0x40000>;
+ 			pmsg-size = <0x20000>;
+ 		};
++
++		/*
++		 * Scan-out and GPU buffers for DISPC, which has no IOMMU. Kept in
++		 * lowmem below the vendor's carve-outs, where all vendor display
++		 * buffers lived.
++		 */
++		linux,cma {
++			compatible = "shared-dma-pool";
++			reusable;
++			size = <0x4000000>;
++			alloc-ranges = <0x90000000 0xe000000>;
++			linux,cma-default;
++		};
+ 	};
+ 
+ 	/* Scan-out buffer left running by the bootloader (lcd_base=9ea44000) */
+@@ -358,6 +371,18 @@ &gpu {
+ 	status = "okay";
+ };
+ 
++/*
++ * Takes over the DSI video-mode pipeline the bootloader leaves running and
++ * sends simpledrm away; the backlight follows the CRTC as with simpledrm.
++ * Panel size from the vendor device tree.
++ */
++&dispc {
++	backlight = <&backlight>;
++	width-mm = <129>;
++	height-mm = <206>;
++	status = "okay";
++};
++
+ &keypad {
+ 	keypad,num-rows = <1>;
+ 	keypad,num-columns = <3>;
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index b7fa30bca..3053ec365 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -145,6 +145,22 @@ pmu_domains: power-controller@402b0000 {
+ 			#power-domain-cells = <1>;
+ 		};
+ 
++		/*
++		 * Display controller. Its clocks and gates (AP_AHB EB bit 1,
++		 * AON_APB EB1 bit 11, AP_APB EB bit 18, AP_CLK 0x2c-0x34) are
++		 * set up by the bootloader and only read by the driver.
++		 */
++		dispc: display-controller@20800000 {
++			compatible = "sprd,sc7730-dispc";
++			reg = <0x20800000 0x1000>, <0x20d00000 0x4>,
++			      <0x402e0000 0x8>, <0x71300000 0x4>,
++			      <0x71200000 0x40>;
++			reg-names = "dispc", "ap-ahb", "aon-apb", "ap-apb",
++				    "ap-clk";
++			interrupts = <GIC_SPI 46 IRQ_TYPE_LEVEL_HIGH>;
++			status = "disabled";
++		};
++
+ 		/*
+ 		 * Mali-400 MP2, all units on one interrupt line. Its AXI enable
+ 		 * (AON_APB EB0 bit 27) is switched with the power domain.
+-- 
+2.47.3
+

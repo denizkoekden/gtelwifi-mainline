@@ -1,0 +1,241 @@
+# Kernel config: allnoconfig + pmos.config (from kconfigcheck.toml) +
+# gtelwifi.config and cfi.config (buildkit) + gtelwifi-pmos.config, see
+# README.md. Built with clang (LLVM=1) for kCFI.
+maintainer="Deniz Kokden <koekdendeniz@gmail.com>"
+pkgname=linux-samsung-gtelwifi
+pkgver=7.3.1
+pkgrel=21
+pkgdesc="Samsung Galaxy Tab E 9.6 (SM-T560) mainline kernel"
+arch="armv7"
+_carch="arm"
+_flavor="samsung-gtelwifi"
+url="https://kernel.org"
+license="GPL-2.0-only"
+options="
+	!check
+	!strip
+	!tracedeps
+	pmb:cross-native
+	pmb:kconfigcheck-community
+"
+makedepends="
+	bash
+	bc
+	bison
+	clang
+	dtc
+	elfutils-dev
+	findutils
+	flex
+	gmp-dev
+	linux-headers
+	lld
+	llvm
+	mpc1-dev
+	mpfr-dev
+	openssl-dev
+	pahole
+	perl
+	postmarketos-installkernel
+	python3
+	xz
+	zstd
+"
+
+_config="config-$_flavor.$arch"
+source="
+	https://cdn.kernel.org/pub/linux/kernel/v${pkgver%%.*}.x/linux-$pkgver.tar.xz
+	$_config
+	0001-ARM-sprd-initial-bring-up-for-Samsung-Galaxy-Tab-E-S.patch
+	0002-ARM-sprd-gtelwifi-dwc2-USB-device-mode-bring-up.patch
+	0003-ARM-sprd-gtelwifi-dwc2-FIFO-sizes-dump-core-config.patch
+	0004-mmc-sdhci-sc7730-add-SC7730-SC8830-host-glue-enable-.patch
+	0005-ARM-sprd-shared-ADI-helpers-restart-via-SC2723-PMIC-.patch
+	0006-ARM-sprd-restart-Samsung-INFORM-area-is-at-0xf80-in-.patch
+	0007-irqchip-add-Spreadtrum-SC8830-INTC-wake-up-gates.patch
+	0008-mmc-sdhci-sc7730-DDR52-with-the-vendor-delay-lines.patch
+	0009-i2c-add-Spreadtrum-SC8830-controller-gtelwifi-GPIO-t.patch
+	0010-ARM-dts-sc7730-gtelwifi-touch-keys-and-SMB358-charge.patch
+	0011-Input-add-Spreadtrum-SC8830-keypad-gtelwifi-hardware.patch
+	0012-clocksource-sprd-sc8830-CPU-cycle-counter-as-delay-t.patch
+	0013-mmc-sdhci-sc7730-optional-AHB-gate-ARM-sprd-CLK_AUX0.patch
+	0014-usb-dwc2-drd-report-the-role-the-session-overrides-s.patch
+	0015-ARM-sprd-SC2723-fuel-gauge-as-battery-supply-gtelwif.patch
+	0016-extcon-sm5502-report-charging-downstream-ports.patch
+	0017-power-supply-smb347-input-mode-from-an-extcon-charge.patch
+	0018-ARM-dts-sc7730-gtelwifi-SM5504-MUIC-charger-input-mo.patch
+	0019-irqchip-sprd-sc8830-intc-enable-the-INTC-clock-gates.patch
+	0020-ARM-sprd-start-the-SC7730-system-counter-use-the-arc.patch
+	0021-ARM-sprd-SC7730-secondary-CPU-bring-up.patch
+	0022-ARM-sprd-SC7730-SMP-enter-secondary_startup_arm-in-A.patch
+	0023-ARM-sprd-SC7730-clean-ups-now-that-the-architected-t.patch
+	0024-power-supply-smb347-SMB358-charge-termination-and-au.patch
+	0025-ARM-sprd-sc2723-fgu-full-from-the-charger-keep-the-c.patch
+	0026-power-supply-smb347-charge_behaviour-to-inhibit-char.patch
+	0027-ARM-sprd-SC2723-auxiliary-ADC-battery-temperature-in.patch
+	0028-pwm-add-a-driver-for-the-Spreadtrum-SC8830-SC7730-PW.patch
+	0029-drm-sysfb-simpledrm-switch-an-optional-backlight-wit.patch
+	0030-ARM-sprd-SC2723-LDOs-gate-clocks-PMIC-registers-in-d.patch
+	0031-mmc-sdhci-sc7730-select-the-base-clock-honour-the-SD.patch
+	0032-ARM-dts-sc7730-gtelwifi-backlight-microSD-and-Blueto.patch
+	0033-ARM-dts-sc7730-I2C0-for-the-gtelwifi-camera-sensors.patch
+	0034-ARM-dts-sc7730-gtelwifi-accelerometer-on-I2C2.patch
+	0035-ARM-sprd-sc2723-fgu-no-Full-while-charging-is-inhibi.patch
+	0036-ARM-sprd-sc2723-fgu-trust-the-OCV-estimate-near-full.patch
+	0037-ARM-dts-sc7730-gtelwifi-fix-the-accelerometer-mount-.patch
+	0038-gpio-pmic-eic-sprd-cache-all-16-interrupt-bits.patch
+	0039-rtc-sc27xx-keep-the-alarm-interrupt-armed-in-suspend.patch
+	0040-Input-sprd-sc8830-keypad-support-wakeup-source.patch
+	0041-ARM-sprd-SC2723-PMIC-regmap-and-interrupt-glue.patch
+	0042-ARM-sprd-sc7730-suspend-to-RAM-as-standby.patch
+	0043-ARM-dts-sc7730-SC2723-PMIC-with-RTC-and-EIC-keys-on-.patch
+	0044-ARM-dts-sc7730-gtelwifi-accelerometer-matrix-second-.patch
+	0045-ARM-sprd-SC7730-PMU-power-domains.patch
+	0046-ARM-dts-sc7730-PMU-power-domains-and-the-Mali-400-MP.patch
+	0047-drm-sprd-add-a-takeover-driver-for-the-SC7730-SC8830.patch
+	0048-ARM-dts-sc7730-DISPC-takeover-and-a-CMA-pool-on-the-.patch
+	0049-ARM-sprd-sc7730-run-the-Mali-400-at-384-MHz.patch
+	0050-ARM-dts-sc7730-gtelwifi-accelerometer-matrix-checked.patch
+	0051-drm-sprd-use-the-DPI-frame-counter-as-hardware-vblan.patch
+	0052-dmaengine-sprd-add-the-SC7730-DMA-r4p0-variant.patch
+	0053-ASoC-sprd-sprd-pcm-dma-advertise-non-interleaved-acc.patch
+	0054-ASoC-sprd-add-a-DAI-driver-for-the-SC7730-VBC-r2p0.patch
+	0055-ASoC-codecs-add-the-SC2723-PMIC-audio-codec-speaker-.patch
+	0056-ARM-dts-sc7730-audio-on-the-gtelwifi-speaker.patch
+	0057-dmaengine-sprd-take-address-steps-from-peripheral_co.patch
+	0058-ASoC-sprd-sprd-pcm-dma-support-interleaved-access.patch
+	0059-ASoC-codecs-sc2723-use-pmdown_time.patch
+	0060-thermal-add-a-driver-for-the-SC7730-on-die-temperatu.patch
+	0061-ARM-dts-sc7730-gtelwifi-Bluetooth-and-WLAN-wake-line.patch
+	0062-ARM-sprd-SC7730-CPU-clock-and-SC2723-DCDC_ARM-regula.patch
+	0063-ARM-dts-sc7730-CPU-frequency-scaling-and-thermal-thr.patch
+	0064-ARM-dts-sc7730-overclocking-steps-up-to-1612-MHz.patch
+	0065-ARM-sprd-sc7730-cap-cpufreq-at-1300-MHz-from-policy-.patch
+	0066-media-i2c-add-SiliconFile-SR200PC20M-sensor-driver.patch
+	0067-media-sprd-add-SC7730-camera-capture-driver-DCAM-CSI.patch
+	0068-ARM-dts-sc7730-camera-capture-and-the-gtelwifi-front.patch
+	0069-media-i2c-add-Samsung-S5K4ECGX-sensor-driver.patch
+	0070-media-sprd-sc7730-dcam-allow-only-one-enabled-sensor.patch
+	0071-ARM-dts-sc7730-samsung-gtelwifi-add-the-rear-camera.patch
+	0072-media-sprd-sc7730-dcam-implement-VIDIOC_ENUM_FRAMESI.patch
+	0073-media-sprd-sc7730-dcam-add-NV12-output.patch
+	0074-media-sc7730-camera-the-sensors-deliver-full-range-Y.patch
+	0075-dmaengine-sprd-let-virt-dma-free-the-terminated-desc.patch
+	0076-ASoC-sprd-sprd-pcm-dma-prepare-a-new-DMA-descriptor-.patch
+	0077-media-i2c-sr200pc20m-add-brightness-contrast-and-sat.patch
+	0078-media-i2c-s5k4ecgx-add-brightness-contrast-and-satur.patch
+	0079-ASoC-sprd-sc7730-VBC-keep-the-digital-DACs-on-betwee.patch
+	0100-ARM-dts-unisoc-gtelwifi-list-every-board-revision-in-sprd-sc-id.patch
+"
+builddir="$srcdir/linux-$pkgver"
+
+prepare() {
+	default_prepare
+	cp "$srcdir/$_config" .config
+}
+
+build() {
+	unset LDFLAGS
+	make ARCH="$_carch" LLVM=1 \
+		KBUILD_BUILD_VERSION="$((pkgrel + 1))-postmarketOS"
+}
+
+package() {
+	make zinstall modules_install dtbs_install \
+		ARCH="$_carch" \
+		LLVM=1 \
+		INSTALL_PATH="$pkgdir"/boot \
+		INSTALL_MOD_PATH="$pkgdir"/usr \
+		INSTALL_MOD_STRIP=1 \
+		INSTALL_DTBS_PATH="$pkgdir"/boot/dtbs
+
+	rm -f "$pkgdir"/usr/lib/modules/*/build "$pkgdir"/usr/lib/modules/*/source
+
+	install -D "$builddir"/include/config/kernel.release \
+		"$pkgdir"/usr/share/kernel/$_flavor/kernel.release
+}
+
+sha512sums="
+eac8912be329999150a71257adc513e6a52891d122641943c3a440f775267705eff0b275b4d90d5298518ca638ab48fc2b7c3ee109d82f0bb34a1ac081e9c3a2  linux-7.3.1.tar.xz
+2d200c224c7842e5c534fa9b6c353d5c592e7bf66f051a65245c32eb847750807dcf4b0bd1518613d5c25016f1e028c83752313d9aff00a3ff0f818ae620b21f  config-samsung-gtelwifi.armv7
+a31f7696662ea120d1bea0f4160631d1b318d7405d9afbae471da69c4397b892c9a15e3f8fe0084090d6d644c18a26bc3a68a78f7955957046f4f35f247d4c89  0001-ARM-sprd-initial-bring-up-for-Samsung-Galaxy-Tab-E-S.patch
+e1bca7cb9ba4cb930f7c99a2208d800492e440f36e7a8de0b28b22f6a08ee7922ebf74d1cf5dd8ef687d085c26fcbb9eef9a5936aae326bd24de90cfcfac045a  0002-ARM-sprd-gtelwifi-dwc2-USB-device-mode-bring-up.patch
+297f59f5b2de3f1b0f9ea3c75bd6787113ed687d27a9c9891ecee46b02664f8c7082d8aeff6a4e3b366d5233b156df380a7aa894c5cf6d91ae5f4f71507528a6  0003-ARM-sprd-gtelwifi-dwc2-FIFO-sizes-dump-core-config.patch
+0218101c0838e7b8cfa386b70283b78e40c094924cb7441dbdb2a27ca8334554941bb97301f1deb68612a875e1a71c04b94934c9dea10ed8f590b8831c660f68  0004-mmc-sdhci-sc7730-add-SC7730-SC8830-host-glue-enable-.patch
+19d706e310e87d64ba493c1b1b27097736b72dac893189d9b2a17468ea733732f8c9cf40550f2da670b2900ace0bbaae523c7660209f075a7f617f05844f00e4  0005-ARM-sprd-shared-ADI-helpers-restart-via-SC2723-PMIC-.patch
+143698a050a5ae342a11ab93b9732c192498de04edd4bbae782516511a257e190fe0cf0c2c90dbb297ec3a1983c557a7bc94b1a1b00132e9e0a8948f0149ed85  0006-ARM-sprd-restart-Samsung-INFORM-area-is-at-0xf80-in-.patch
+51dc6739e8e4d7c1e988b23706a3bed780d7417c0f4f653165c020a4cb16e7728b57e558940fa311469e170b1dddaaf15f1b581e31ac8610b17dced2050286b8  0007-irqchip-add-Spreadtrum-SC8830-INTC-wake-up-gates.patch
+d0018bf58e839dd3c7f2b81a1b013e6fc927fcf2e828ee8fa0a4e6b80c414bc42a03c623291815a20b049dd16b531754b982cedf0dc9bd11c6e763a1b464387a  0008-mmc-sdhci-sc7730-DDR52-with-the-vendor-delay-lines.patch
+6cda85df917c1ff21b503ac792127dbf6f2ae195d29f1897280d071c1357d2f8594f9352d8a7e26b5c48ac0effff2cb87d6c866fc6b3c61d6b5fe2a86eb97728  0009-i2c-add-Spreadtrum-SC8830-controller-gtelwifi-GPIO-t.patch
+44ee4c642a6a3e417c265cc4d44f8b7b12ba167aa4b8978d673a6a0446881e2689fc8a188f861d14c5c196b003b330769bca750eee0481e39902649d2cb07f41  0010-ARM-dts-sc7730-gtelwifi-touch-keys-and-SMB358-charge.patch
+81b67a73e4cac2139b65b03ed2cfe27530e7505c90c68fe3954d1bf4ad97244c813f758d27ed22f6cdf96ab0410c85cdb4f2164d4064e50535e3c5da2c062fee  0011-Input-add-Spreadtrum-SC8830-keypad-gtelwifi-hardware.patch
+f38993441c158e9c4f41c384055d51f272161cdf97f2c9834e93f7f235c58ba994c885e7a38699c20dde4a73a1c5d5b0671456b010b514ce68a3b3ddc835e8b7  0012-clocksource-sprd-sc8830-CPU-cycle-counter-as-delay-t.patch
+95c82b2fe12e9a506dfa2b5e8143b4954ee0b25b932f9c74d624a3bbf309bfbadddf2fcdca7a57ac6e8d9700e2be18ef3dff2702262dad98c49407fe781fceac  0013-mmc-sdhci-sc7730-optional-AHB-gate-ARM-sprd-CLK_AUX0.patch
+08fb5187bff4f1e919db69fb2e05281d0d38f4f57777419ba4767b0c508be9be2f8885c5e6241c7a23ac6661c8840d693a917c84e210904bfa9185a80cb5bc00  0014-usb-dwc2-drd-report-the-role-the-session-overrides-s.patch
+72374e381a3ff6c781b23c8f454885106a380889704604b9e68341c87dfcb0510aa456ddbc6b63afa7d7393317c8c89f04b370361422e49304f4f1cfe3127f3e  0015-ARM-sprd-SC2723-fuel-gauge-as-battery-supply-gtelwif.patch
+7429c01b8d9e20809ad98f78d5897e3a25d0b7fe0f06438ff110bb477c9274c09dc1c789771ca0fb85331c55bfaf07e6e75836d25c890bd3952c950f9c240186  0016-extcon-sm5502-report-charging-downstream-ports.patch
+bb96c7ae6e637dc2d3c0ba80210f32fd860f1c0a04341112f911d1357010ec99c27df75fba4a0a1e663a46aacbd39b9913ed4118c4cad99ceee8553f4e40b66d  0017-power-supply-smb347-input-mode-from-an-extcon-charge.patch
+05f788796109d460946d79cb58b03b1fcff4b94cfe9b04effd6006e38b0c372c4bb988d5d4c75aacca544f96c3d52cfd3fdbb10abb5b68ee7c9270137fe1f7d1  0018-ARM-dts-sc7730-gtelwifi-SM5504-MUIC-charger-input-mo.patch
+a71ed57abfd63a3b1cd655fa5b43bf93d5fba156684671b1edc7209c13271bc13dec485569f40ef40e36624d73f98f8400d8e7f3336d28f58f554623c67a44be  0019-irqchip-sprd-sc8830-intc-enable-the-INTC-clock-gates.patch
+1d50b96c97ad5cd4d31c1ca89516187d4d89a4409fda70eca0e94599da978e2770eee5ed8f59c5a4198602ef4c4913846b817684c7dfa045b0b54a2ffa81b4b0  0020-ARM-sprd-start-the-SC7730-system-counter-use-the-arc.patch
+b5d24e6299c1bd1ea866a25b4a4934ab873f87c9027aed10699daa56c72dfb1aa55939cd5ba1d7495aba2a446ab6fd9cf66b8eb7ef0e82008efc3b6b8810aa01  0021-ARM-sprd-SC7730-secondary-CPU-bring-up.patch
+80c59ab69c52e281fc91fee22e364e303a7079cd3c98df2ddaf4ac77ff5374a85e372c69d602d46bbfba0a354f1f5791e74b7eeef191c81a35ac4a63ca6e9bd5  0022-ARM-sprd-SC7730-SMP-enter-secondary_startup_arm-in-A.patch
+2ced59b24541985a2a8867bf2b4f567ba1e1749f9c49dbedbea35a97f73a15fd15c1ac580a8154c4e0e59a6f46d991088024a780c032035a4d2cd92bc6f2caf0  0023-ARM-sprd-SC7730-clean-ups-now-that-the-architected-t.patch
+73cae05bb1661c45de4cdf8bfc8b3e647fa49c607eaf3598733166d935aed976698f8386e1cfee395908654315706c5a2b796594be472de9917d65a17ad59f57  0024-power-supply-smb347-SMB358-charge-termination-and-au.patch
+700a95794ba8b9cf27a39edb0073a94d82d32d6ae1beac04dae8927a5247ae48acbebfca81e0f2e61661d8ed899acfec43f1b116edda0edc6389706cb53d6179  0025-ARM-sprd-sc2723-fgu-full-from-the-charger-keep-the-c.patch
+63a917a96e5e34c0c1a8d0b4ad9af2b779de82e30ff09581268087680bb24504a7d7743f693e6996c01a0537be29358f9ae8da9b1bd609bce347265eb49ddca9  0026-power-supply-smb347-charge_behaviour-to-inhibit-char.patch
+e086ccfec053c031a5ec119377fc5f413b624afaa8f02ba5c23be080519ad31548a3ada0516667c8a70734ccc154c46570ab9ef3af11bf7b65b9f2ffd5bce6de  0027-ARM-sprd-SC2723-auxiliary-ADC-battery-temperature-in.patch
+ba07dccef6f8c3efa611546c682fd45e6c7ec1f80416f07360b64e0a256dd15280e53953ba1dd13dfae09e67a56c212bd5a2350fdd87c5349837bd7310625eb8  0028-pwm-add-a-driver-for-the-Spreadtrum-SC8830-SC7730-PW.patch
+4a58e7515d3e46929574099c6150f4b05df299b2a2eefd7d70ae5088aea3657edd74ff2bf23b5127dd629c8cd56b124d11fe0c98e7dafbe473d58ca9df6ac1fb  0029-drm-sysfb-simpledrm-switch-an-optional-backlight-wit.patch
+300260437c7689df654ce4d217c83e7eb6b99cb14a3d6328870b975687cea2c1f27a810e3e46591be66fe70e3d21c829761adc5a688e2b05866c978fe8e6873a  0030-ARM-sprd-SC2723-LDOs-gate-clocks-PMIC-registers-in-d.patch
+4726e26dbc8eb8d129658aece67a6f3fe5f0a118e1120ba9f65e8354180f6408585aa15305839c1498bbe2d1d6c8aecb674059f2ad9f4994db9d14482a337b5f  0031-mmc-sdhci-sc7730-select-the-base-clock-honour-the-SD.patch
+8c078ffbbf173ba185c4bc9c0d761c48d61613d5b549b762453f23d5cb0954a8c9f154d753692fe1bd87bd653c1c878f9ca1a5558c65412ba08cfdf8885138fc  0032-ARM-dts-sc7730-gtelwifi-backlight-microSD-and-Blueto.patch
+f8b463772fd1cf7a3eb6e161fb2a2b2d3a334eba631793ec850932c5c815a3eb5b427b1d16593d4f220d2201f6d2784b548a3f85aa7544c7a9d2efac672972a2  0033-ARM-dts-sc7730-I2C0-for-the-gtelwifi-camera-sensors.patch
+5fe3244be080a55b6ac1e62b2bcc93124545b0264609bd303b5073a207bce610756b9a57f3d444b30d917017121325312cf112dfbe61c3042bd3ea015f148c79  0034-ARM-dts-sc7730-gtelwifi-accelerometer-on-I2C2.patch
+68d62759d42dc433c853659a8e94987c6990dc7a524dd10c9c45128b3c947eee620a085899143624e8422f2f46bce19ff9860a666cb1e24dec728a531b483069  0035-ARM-sprd-sc2723-fgu-no-Full-while-charging-is-inhibi.patch
+d2929beb7ea3e2f5aea4aa1c3aff3c3d5d64a1360bd3b179b1e6e939b4e72df97303df5fc10c591b08493cc1a9618193ae603defbf0dafe9b89416a80f8c0c10  0036-ARM-sprd-sc2723-fgu-trust-the-OCV-estimate-near-full.patch
+962d1e7928f32759f41fe2976c21f04b013c74e8d3f91020448a66497f20eef7fda70fdfaf2efb47659bae93bd71017eae243c15dbaa253431d23c8295dc352a  0037-ARM-dts-sc7730-gtelwifi-fix-the-accelerometer-mount-.patch
+607936dcf4f362a352a3f095497c1a4896c420ea9a97e674b52df8bba002223714ebd844f9b7e50649b31c72b4d1976a141a21fd50b5119bde2bebb575706215  0038-gpio-pmic-eic-sprd-cache-all-16-interrupt-bits.patch
+303c690b3baf6eb41cdf7da0e0164d33b65ecb5dbc29f2ea3c604d6d22d6d2167fede8718c277f79cf84f948e9d10ace32700fcb3c492a3f6ede18c11cb6646b  0039-rtc-sc27xx-keep-the-alarm-interrupt-armed-in-suspend.patch
+595ae258b15dda516133fd6b647d27cb43bfe41b58273c88813b9ee9d693565939938737510c393202536bd324b248ceb6d84c2e828337cb942704d6f500d85b  0040-Input-sprd-sc8830-keypad-support-wakeup-source.patch
+f66262918ba755544dc461bfa72b756d43c23fb54ea3d9f6cad0ecccdb87230e347a6fd8fbf48b89b1abed61885f1d9999bef76088c00649e2f254641d460f97  0041-ARM-sprd-SC2723-PMIC-regmap-and-interrupt-glue.patch
+22004301c051892736fef330a0bc81ae0059a6c7cafae25b09fbcd198e991a6b9d36ceecc5e37fdddf6eaa9aba81af877e674aac14306b112fb760078b1d6640  0042-ARM-sprd-sc7730-suspend-to-RAM-as-standby.patch
+eeff1063513678dc688614035fc357510d357f71ad4773456c57d8eaaf40f4181160c76016d3a8ddefb8c904b6855042f2061936e21026cb3b9b9ffb87451cf4  0043-ARM-dts-sc7730-SC2723-PMIC-with-RTC-and-EIC-keys-on-.patch
+931d401cea0b397f69fb985b5f30f59f4b2bdf2e835861c16de1fea97909f9a1064c4e02f4c0233b3e86c1cbcd1fec4055c750eb034021a7d23b19c4b8b6df84  0044-ARM-dts-sc7730-gtelwifi-accelerometer-matrix-second-.patch
+bf318ddb97dfe395efc9f0193ef41b09f9c9d918983c090f96fc3b6fd98bd25b8cbdbcb4bcdc2814716b0b3f787b2fd52b452925d6793e04503c33739daa7d21  0045-ARM-sprd-SC7730-PMU-power-domains.patch
+476e3ee3563a97fdb27525ce47389a69718cf6ad35fa30c93427e1aeac422a18645b75002c80d31de9c4a3574532b6ecc8ae6144cd90e36746946dd564f655ac  0046-ARM-dts-sc7730-PMU-power-domains-and-the-Mali-400-MP.patch
+4a314488e3e5c98e737d1bc3db8750b902af45e26176dfad3c3f493ab7e20e64e78311a2cc80ed36b9d4096874c8fe56970284d5c39e55b3241df9d8785e6e06  0047-drm-sprd-add-a-takeover-driver-for-the-SC7730-SC8830.patch
+af3035a943e228f55a60d65107c923321e1f17a2c6f2603e985bf17ea8b4619a3e5b4291a61818b9bed5687d248aed474452797179c6e1f992cce823dd9ca320  0048-ARM-dts-sc7730-DISPC-takeover-and-a-CMA-pool-on-the-.patch
+be664f23b7866a39eb4e6db5b01cce3526365c47b562d1142628e515c62cc42933c0569917e1eac239462d5b336a33253efbc5f88c86ed9e7612048ad1d7ac55  0049-ARM-sprd-sc7730-run-the-Mali-400-at-384-MHz.patch
+a0318784a0e58ccf6061995c61f082232155655373b57c06fa17d50a32bb8f611dd81d04f395810b15a505e83974672ff01b365f648f80fc509fbeb3b1a072b1  0050-ARM-dts-sc7730-gtelwifi-accelerometer-matrix-checked.patch
+f68202ccb281d5b5a9afbd9430e322d407d997db529ac0bce605407ca2cd30e994043202e2a808969cd4d43c80840c4bc17453d55661c9ff3d2fd73f54eeef63  0051-drm-sprd-use-the-DPI-frame-counter-as-hardware-vblan.patch
+51d8329ed8b2a0ab60454c9244e99101489e0bbe86779cc9cefade8b79d7efc017673974f4568ac0bb645ac3d25e756b8f022ce1ce5d0f51988fbdb91d0164e2  0052-dmaengine-sprd-add-the-SC7730-DMA-r4p0-variant.patch
+856c7acd664e4faa9abce4928ce6f12c50453ef17d8d2f82ab81717b70f7f485e5f01f22e150fd52d3696cd6365317864557be10b0b90bf66710b516175b9c37  0053-ASoC-sprd-sprd-pcm-dma-advertise-non-interleaved-acc.patch
+e81fd280720709679c79b969f6e848e325d00f5867473769f772cc6f5c30ff368e4bf624e649800b602db0fe62fb09d91052c4345d5366339eb4b06c299e0157  0054-ASoC-sprd-add-a-DAI-driver-for-the-SC7730-VBC-r2p0.patch
+d7c52dba7033d9a66ccd94943e228e12289d2d3c2b58940ff552854c47d2f2290e0f8a65e3d8d095384ce0c4f628a43e9f5dca5c6e2812cd0b8416aee71a4e7b  0055-ASoC-codecs-add-the-SC2723-PMIC-audio-codec-speaker-.patch
+a16b882b4ef78592a0ea006b86b370a93ba31181adef1e0c4657548b55ccded4e099652012f95d9c9790d7cb4a204285981bfead9761beb165b2be563a12f80a  0056-ARM-dts-sc7730-audio-on-the-gtelwifi-speaker.patch
+218c5357e035c80a8b3b3c6bbf7e46d9fc8f4bb0098ad20f427c998d18475651e447f1da8a02c810958f2d39748218172acff717b0d649aa12c3b825d927283c  0057-dmaengine-sprd-take-address-steps-from-peripheral_co.patch
+7386ed05abfa7244b327c0ed3766b8f696b47a682bd848bf7c745c21a853217c3077a2acc5c336ad1cf88c4b84d0f664162a18512d17fa87e228b8935a1e1463  0058-ASoC-sprd-sprd-pcm-dma-support-interleaved-access.patch
+31e7b8471f939a14115ba681a6c56117c4143da7494aa87a74b526cbd6ae4480131aa986b10005e0214cc12f4b3ecb3c5258805559512a9c7eb072cd7c19ae64  0059-ASoC-codecs-sc2723-use-pmdown_time.patch
+a9550eef25aa467eaa9bdc76d508a4fe1808860dd34458d5cc206dc8bfe81865352a439aa27ef604b27201fcb553eb067647ab3b4c24078466921d2cf75616bf  0060-thermal-add-a-driver-for-the-SC7730-on-die-temperatu.patch
+e0063a2472d0aeb4f0ce02321025bb8be7de5270552f20d51cbf77d0114aed4fc9c93f69c54136719a65a53e2fa3667b8067a6c57f237ecdfd2ed336320ff0d9  0061-ARM-dts-sc7730-gtelwifi-Bluetooth-and-WLAN-wake-line.patch
+f192596eb46cb072cfa3003b760a747a1d61b05bd012fde15fde9ade0ed1ba85460339451320e91efb0fea0d4abc677b19ce9478ef125bbc849505bfeaca7ae8  0062-ARM-sprd-SC7730-CPU-clock-and-SC2723-DCDC_ARM-regula.patch
+caa8b4c2afea5e5bac6a636bf7fe2a509ac5cb6912c0e8e9d1aa14cbc840814c6ff081da38bdf7a146f60ee8773eff1e54d61d4ab9b7f215246f263fb7cf90fa  0063-ARM-dts-sc7730-CPU-frequency-scaling-and-thermal-thr.patch
+9eec22525e65e444c5613497c56fa53070417b5898488fbf5d87e3949c12f38438c9c2baf2be03a47f6bc009e70a3afb6d549d43c9ea2dae1b0634044bf1fd60  0064-ARM-dts-sc7730-overclocking-steps-up-to-1612-MHz.patch
+e5ea4b2e70df708f2a19bba0194c5158d6ba9ab0c092081feda611bcb0d77af5c37dfc835efa75c1860c508f080a9db3412dc8b3ac513686f71f47f3afed4dbe  0065-ARM-sprd-sc7730-cap-cpufreq-at-1300-MHz-from-policy-.patch
+230b176f0df7c70e616cf7fb16cfca3e31afc061ec2b91fe71056abc8d5b5fe10e50a2f95078e9d10840238706bc75532aa1d76dfecf5b1742f8cf12a89afb81  0066-media-i2c-add-SiliconFile-SR200PC20M-sensor-driver.patch
+b24d3f08021a90bfba4ed0655ab215101d1de02c06f510453dbb844e38a8d1b67793db644e1b0181bf090729937537d22a5ce67194b23a222fea2334ed9731be  0067-media-sprd-add-SC7730-camera-capture-driver-DCAM-CSI.patch
+a0d444cc2a69d22365a94f71ac6957ac4a82e6b8d1a2af866429823a5c968b36016e5c541e1cfee5859245d6e57ae981b78178c4dbe505b0c92cc24d60de68ce  0068-ARM-dts-sc7730-camera-capture-and-the-gtelwifi-front.patch
+5e3bdf7d1211b3eabdc2dfe9933fdfc21394ec4726d7c6c8736d54e4e8b9c8123dcf7f4221c63fa24c42165e3b58f061b6e025c399c5f039e7c09b3d11bde02d  0069-media-i2c-add-Samsung-S5K4ECGX-sensor-driver.patch
+33af0c66648439997437033cd3e093e73cf4db0cb189a87e4bd4957c6efbe55f85ec4a729b9dc7e52265ec16efffaf5c221bd173209520d08a5d1d87fd14d860  0070-media-sprd-sc7730-dcam-allow-only-one-enabled-sensor.patch
+8865e3aa169d7574f7c98b544bf0e28d74ec4e90a63d08d4bcb8f478a95edb7911e164a5c1e064940f0505d6f6f3ea73bad71cd61907ed125865a79b45f6d26e  0071-ARM-dts-sc7730-samsung-gtelwifi-add-the-rear-camera.patch
+09749172eb502e7d25bd14bc4fc1694f035e0444e755605b945a3272bb56c9c22c868373a5fd2d6c18de861907b7d4409ca098b82d1bc9e447fb251fd39887c2  0072-media-sprd-sc7730-dcam-implement-VIDIOC_ENUM_FRAMESI.patch
+5c80fb3f9a9eeff2e84d335e87490b17a32812eb5842ee4212ec0bdc9f8f3e9502b1a28301207bc5de85a6bf51b1b132ee3e1fb4e4862797099f0c4282a38dc1  0073-media-sprd-sc7730-dcam-add-NV12-output.patch
+6f242741411381152172b5160b43f4006cfca8f95b2135a2f32f5cd4ca8db782052e738fe10bc5b3b34d082e9537cb2bdc503cca4a9849d1f6f0f9803f68f92f  0074-media-sc7730-camera-the-sensors-deliver-full-range-Y.patch
+ebdeda7c6eca1d9a481e84dbe41969e6ba4104e03818b8b33d4dfcf28572232c8b82649e79d601ea9892adf54bba2e2049f99fd33d40fd816c1b1e239e1f4601  0075-dmaengine-sprd-let-virt-dma-free-the-terminated-desc.patch
+8ed836ddd9054aba213555324746d9ed5a05dc837439d203c35c29edb3d8558659301335c9c58799e02ade241d2525c8d9a9da620c378c097a804df0997f34bc  0076-ASoC-sprd-sprd-pcm-dma-prepare-a-new-DMA-descriptor-.patch
+12482ff6b0e0bd7693e06cc7e6b8a25820a2422b9ebf11b60b38f721362bde979204ae453c82dd63e2adc42d07bd49153b26cb67f2ae0656f0817a8781bc13d8  0077-media-i2c-sr200pc20m-add-brightness-contrast-and-sat.patch
+77bc6e1477babb678f04783d10fb6650b8ebf1ff47ee5343e4449020323f43fe21e3d46615c8f5dc83ccc993c8bafccb383c34204e069c5c5bb14aa19b95c9b1  0078-media-i2c-s5k4ecgx-add-brightness-contrast-and-satur.patch
+d745ad2ac91566bd44f1fb011f5c176efcffa6260b5a486f5fa7fcbc3e16f94c6d17f1d994eb094400d21fbe74a1eb333e7d2854e5917918a17ff22f5085908b  0079-ASoC-sprd-sc7730-VBC-keep-the-digital-DACs-on-betwee.patch
+c8393a0bb3788edffbd3a44aca89488f036f204afde868171599f752a111c5a04e4b00dbf6f2aeca9374d31a9b913a19b49e5ca428af8a63026ab37c15d83654  0100-ARM-dts-unisoc-gtelwifi-list-every-board-revision-in-sprd-sc-id.patch
+"
