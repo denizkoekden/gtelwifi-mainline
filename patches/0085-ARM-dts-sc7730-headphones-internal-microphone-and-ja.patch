@@ -1,0 +1,60 @@
+From e464946ef43ad8797bd720d5b048c4dbda1e5e1a Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 23:00:48 +0000
+Subject: [PATCH 085/106] ARM: dts: sc7730: headphones, internal microphone and
+ jack detection
+
+Add the capture DMA requests to the PCM platform and route the
+headphone outputs and the internal microphone in the gtelwifi sound
+card. The jack switch is GPIO 237, low with a plug in (vendor headset
+detect node); simple-audio-card turns it into a "Headphones Jack"
+control and input device. Speaker and headphones get pin switches so
+that userspace (UCM) can choose the output.
+
+Assisted-by: Claude Opus 5.5
+---
+ arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts | 12 ++++++++++--
+ arch/arm/boot/dts/unisoc/sc7730.dtsi                 |  4 ++--
+ 2 files changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index fcd431e33..39468bfd2 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -73,8 +73,16 @@ charger: charger@6a {
+ 	sound {
+ 		compatible = "simple-audio-card";
+ 		simple-audio-card,name = "gtelwifi";
+-		simple-audio-card,widgets = "Speaker", "Speaker";
+-		simple-audio-card,routing = "Speaker", "SPK";
++		simple-audio-card,widgets = "Speaker", "Speaker",
++					    "Headphone", "Headphones",
++					    "Microphone", "Internal Mic";
++		simple-audio-card,routing = "Speaker", "SPK",
++					    "Headphones", "HPOL",
++					    "Headphones", "HPOR",
++					    "MIC", "Internal Mic";
++		simple-audio-card,pin-switches = "Speaker", "Headphones";
++		/* jack switch, low with a plug in (vendor headset detect) */
++		simple-audio-card,hp-det-gpios = <&gpio 237 GPIO_ACTIVE_LOW>;
+ 
+ 		simple-audio-card,cpu {
+ 			sound-dai = <&vbc>;
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index 05a48f972..a136cd543 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -203,8 +203,8 @@ pmic_eic: gpio@100 {
+ 	 */
+ 	audio_pcm: audio-platform {
+ 		compatible = "sprd,pcm-platform";
+-		dmas = <&ap_dma 29>, <&ap_dma 30>;
+-		dma-names = "normal_p_l", "normal_p_r";
++		dmas = <&ap_dma 29>, <&ap_dma 30>, <&ap_dma 31>, <&ap_dma 32>;
++		dma-names = "normal_p_l", "normal_p_r", "normal_c_l", "normal_c_r";
+ 		#sound-dai-cells = <0>;
+ 		status = "disabled";
+ 	};
+-- 
+2.47.3
+

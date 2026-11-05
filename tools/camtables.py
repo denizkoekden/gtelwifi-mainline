@@ -19,6 +19,12 @@ exactly as the HAL stores them (8-bit registers of the SR200PC20M sit in
 HAL layout (vendor-ref/research/camera-m2-report.md section 3.1): the
 sensor info struct holds a pointer to the resolution table, whose 24-byte
 entries are {table pointer, count, w | h << 16, xclk, fmt, extra}.
+
+--firmware also writes the S5K tables of the 5 MP still / autofocus draft
+(camera-m4-report.md section 6) from the HAL's settings array, 12-byte
+entries {table pointer, count, name pointer}: 2560x1920.bin (not in the
+resolution table) and af-normal.bin / af-macro.bin, the three range tables
+each followed by a 100 ms delay entry {0xffff, 100}.
 """
 
 import os
@@ -32,6 +38,14 @@ MEMBER = '/lib/hw/camera.sc8830.so'
 
 # sensor info structs in the stock HAL (KTU84P.T560XXU0APL1)
 SENSORS = {'s5k4ecgx': 0xa5818, 'sr200pc20m': 0xa5ea8}
+# S5K settings array (entries 0x00-0x8d) and the tables taken from it
+SETTINGS, NSETTINGS = 0x9ae78, 0x8e
+DELAY_100MS = struct.pack('<HH', 0xffff, 100)
+EXTRA = {
+    's5k4ecgx/2560x1920.bin': ['regs_s5k4ecgx_capture_2560_1920'],
+    's5k4ecgx/af-normal.bin': ['regs_s5k4ecgx_AF_normal_mode_%d' % i for i in (1, 2, 3)],
+    's5k4ecgx/af-macro.bin': ['regs_s5k4ecgx_AF_macro_mode_%d' % i for i in (1, 2, 3)],
+}
 
 
 def load_hal(path):
@@ -66,6 +80,10 @@ class Elf:
         o = self.off(va)
         return self.d[o:o + n]
 
+    def cstr(self, va):
+        o = self.off(va)
+        return self.d[o:self.d.index(b'\0', o)].decode()
+
 
 def main():
     args = [a for a in sys.argv[1:] if a != '--firmware']
@@ -92,6 +110,25 @@ def main():
             first = ' '.join('%04x=%04x' % struct.unpack_from('<HH', elf.raw(ptr + 4 * k, 4))
                              for k in range(min(3, count)))
             print('%-40s %5d regs  %s ...' % (os.path.relpath(fn, ROOT), count, first))
+
+    if not fwlayout:
+        return
+    settings = {}
+    for i in range(NSETTINGS):
+        ptr, count, name = (elf.u32(SETTINGS + 12 * i + 4 * j) for j in range(3))
+        if ptr and count and name:
+            settings[elf.cstr(name)] = (ptr, count)
+    for fn, names in EXTRA.items():
+        data = b''
+        for n in names:
+            ptr, count = settings[n]
+            data += elf.raw(ptr, 4 * count)
+            if len(names) > 1:
+                data += DELAY_100MS
+        fn = os.path.join(outdir, fn)
+        with open(fn, 'wb') as f:
+            f.write(data)
+        print('%-40s %5d bytes from %s' % (os.path.relpath(fn, ROOT), len(data), ', '.join(names)))
 
 
 if __name__ == '__main__':

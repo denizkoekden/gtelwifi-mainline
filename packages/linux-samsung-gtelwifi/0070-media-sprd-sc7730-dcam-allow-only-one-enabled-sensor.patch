@@ -1,7 +1,7 @@
-From a4907b2aa1f447b31dc6cb12ae01074b046afd3b Mon Sep 17 00:00:00 2001
+From 6ee3fbec3027f2cfea78d4476b3143a3bb039797 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 16:04:22 +0000
-Subject: [PATCH 70/79] media: sprd: sc7730-dcam: allow only one enabled sensor
+Subject: [PATCH 70/92] media: sprd: sc7730-dcam: allow only one enabled sensor
  link
 
 Both sensor links end on the single sink pad of the video node, and

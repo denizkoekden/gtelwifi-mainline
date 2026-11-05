@@ -1,0 +1,60 @@
+From bd348fb83d117792b07925414dd573c20dd8909c Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Tue, 3 Nov 2026 11:27:54 +0000
+Subject: [PATCH 90/92] media: i2c: s5k4ecgx: user adjustments at this
+ firmware's addresses
+
+The brightness, contrast and saturation controls wrote 0x7000022c,
+0x7000022e and 0x70000230, the addresses of the old mainline driver.
+With the firmware and tuning of the gtelwifi they are one word off: the
+stock camera HAL's contrast and saturation tables write 0x70000232 and
+0x70000234, and writing 0x70000230 changes the luma, not the chroma.
+Measured while streaming: 0x70000230 from -127 to 127 moved the mean
+luma from 50 to 120 with the chroma unchanged, 0x70000234 at -127, 0
+and 127 gave a 99th-percentile chroma of 3, 7 and 14 with the luma
+unchanged.
+
+Use 0x70000230/232/234 and limit brightness to the signed range the
+other two use.
+
+Assisted-by: Claude Opus 5.5
+---
+ drivers/media/i2c/s5k4ecgx.c | 15 ++++++++++-----
+ 1 file changed, 10 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/media/i2c/s5k4ecgx.c b/drivers/media/i2c/s5k4ecgx.c
+index 551858cf9..991727baf 100644
+--- a/drivers/media/i2c/s5k4ecgx.c
++++ b/drivers/media/i2c/s5k4ecgx.c
+@@ -49,10 +49,15 @@
+ #define S5K_FW_REVISION		0x700001a6
+ #define S5K_G_ENABLE_PREV	0x7000023e
+ #define S5K_G_ENABLE_PREV_CHG	0x70000240
+-/* user adjustments on top of the tuning, signed, 0 = unchanged */
+-#define S5K_USER_BRIGHTNESS	0x7000022c
+-#define S5K_USER_CONTRAST	0x7000022e
+-#define S5K_USER_SATURATION	0x70000230
++/*
++ * User adjustments on top of the tuning, signed, 0 = unchanged. Addresses
++ * as the stock HAL's contrast/saturation tables write them (and measured:
++ * 0x230 moves the luma, 0x234 the chroma); the old mainline driver's
++ * 0x22c/0x22e/0x230 are one word off for this firmware.
++ */
++#define S5K_USER_BRIGHTNESS	0x70000230
++#define S5K_USER_CONTRAST	0x70000232
++#define S5K_USER_SATURATION	0x70000234
+ #define S5K_SATURATION_DEF	0
+ 
+ #define S5K_MCLK_HZ		24000000
+@@ -453,7 +458,7 @@ static int s5k_init_controls(struct s5k4ecgx *s5k)
+ 
+ 	v4l2_ctrl_handler_init(hdl, 7);
+ 	v4l2_ctrl_new_std(hdl, &s5k_ctrl_ops, V4L2_CID_BRIGHTNESS,
+-			  -208, 127, 1, 0);
++			  -127, 127, 1, 0);
+ 	v4l2_ctrl_new_std(hdl, &s5k_ctrl_ops, V4L2_CID_CONTRAST,
+ 			  -127, 127, 1, 0);
+ 	v4l2_ctrl_new_std(hdl, &s5k_ctrl_ops, V4L2_CID_SATURATION,
+-- 
+2.47.3
+

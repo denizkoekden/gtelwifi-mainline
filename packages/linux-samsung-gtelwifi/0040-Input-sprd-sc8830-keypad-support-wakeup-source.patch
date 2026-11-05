@@ -1,7 +1,7 @@
-From 5552f5398cdcb0eb5da86413a3cb54aa91f52630 Mon Sep 17 00:00:00 2001
+From 51c49d6e7c0d4defb3813b9bfb7c1c833f784118 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 08:34:01 +0000
-Subject: [PATCH 40/79] Input: sprd-sc8830-keypad: support wakeup-source
+Subject: [PATCH 40/92] Input: sprd-sc8830-keypad: support wakeup-source
 
 The matrix keeps scanning on the 32 kHz clock in suspend, so with
 "wakeup-source" a key press (Home on the gtelwifi) wakes the system.

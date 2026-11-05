@@ -1,0 +1,100 @@
+From 6ffdf0a5d0a0ef09d48fca2dc5dad7654e5a7525 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 23:00:48 +0000
+Subject: [PATCH 087/106] ARM: dts: sc7730: follow the bindings
+
+- GPU: "sprd,sc7730-mali" in front of "arm,mali-400".
+- AP DMA: drop the "sprd,sc9860-dma" fallback; its programming model
+  (all channels, 8-byte widths) hangs this IP.
+- PWM: three cells, as the PWM core expects for new bindings.
+- UARTs: "enable" clock first as in the binding; UART1 gets its AP APB
+  gate.
+- USB: the AP AHB gate as the "otg" clock, so dwc2 gates the controller
+  in system suspend.
+
+Tested: backlight, lima, audio DMA, USB gadget across suspend/resume.
+
+Assisted-by: Claude Opus 5.5
+---
+ .../boot/dts/unisoc/sc7730-samsung-gtelwifi.dts  |  2 +-
+ arch/arm/boot/dts/unisoc/sc7730.dtsi             | 16 +++++++++-------
+ 2 files changed, 10 insertions(+), 8 deletions(-)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index 39468bfd2..546dd1f4c 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -354,7 +354,7 @@ cam_dvdd: regulator-cam-dvdd {
+ 
+ 	backlight: backlight {
+ 		compatible = "pwm-backlight";
+-		pwms = <&pwm 3 49039>;
++		pwms = <&pwm 3 49039 0>;
+ 		brightness-levels = <0 255>;
+ 		num-interpolated-steps = <255>;
+ 		default-brightness-level = <143>;
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index a136cd543..f0e516a50 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -348,7 +348,7 @@ ap_ahb_gates: clock-controller@20d00000 {
+ 		 * request IDs: VB_DA0/1 = 29/30, VB_AD0-3 = 31-34.
+ 		 */
+ 		ap_dma: dma-controller@20100000 {
+-			compatible = "sprd,sc7730-dma", "sprd,sc9860-dma";
++			compatible = "sprd,sc7730-dma";
+ 			reg = <0x20100000 0x4000>;
+ 			interrupts = <GIC_SPI 50 IRQ_TYPE_LEVEL_HIGH>;
+ 			clocks = <&ap_ahb_gates 5>;
+@@ -393,7 +393,7 @@ dispc: display-controller@20800000 {
+ 		 * (AON_APB EB0 bit 27) is switched with the power domain.
+ 		 */
+ 		gpu: gpu@60000000 {
+-			compatible = "arm,mali-400";
++			compatible = "sprd,sc7730-mali", "arm,mali-400";
+ 			reg = <0x60000000 0x10000>;
+ 			interrupts = <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>,
+ 				     <GIC_SPI 39 IRQ_TYPE_LEVEL_HIGH>,
+@@ -487,6 +487,8 @@ usb: usb@20200000 {
+ 			compatible = "snps,dwc2";
+ 			reg = <0x20200000 0x40000>;
+ 			interrupts = <GIC_SPI 55 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&ap_ahb_gates 4>;
++			clock-names = "otg";
+ 			dr_mode = "peripheral";
+ 			usb-role-switch;
+ 			role-switch-default-mode = "peripheral";
+@@ -640,7 +642,7 @@ pwm: pwm@40260000 {
+ 			      <0x402d0038 0x10>;
+ 			reg-names = "pwm", "aon-apb", "clk-sel";
+ 			clocks = <&ext_26m>;
+-			#pwm-cells = <2>;
++			#pwm-cells = <3>;
+ 			status = "disabled";
+ 		};
+ 
+@@ -649,8 +651,8 @@ uart0: serial@70000000 {
+ 			compatible = "sprd,sc9836-uart";
+ 			reg = <0x70000000 0x100>;
+ 			interrupts = <GIC_SPI 2 IRQ_TYPE_LEVEL_HIGH>;
+-			clocks = <&ext_26m>, <&ap_apb_gates 13>;
+-			clock-names = "uart", "enable";
++			clocks = <&ap_apb_gates 13>, <&ext_26m>;
++			clock-names = "enable", "uart";
+ 			status = "disabled";
+ 		};
+ 
+@@ -658,8 +660,8 @@ uart1: serial@70100000 {
+ 			compatible = "sprd,sc9836-uart";
+ 			reg = <0x70100000 0x100>;
+ 			interrupts = <GIC_SPI 3 IRQ_TYPE_LEVEL_HIGH>;
+-			clocks = <&ext_26m>;
+-			clock-names = "uart";
++			clocks = <&ap_apb_gates 14>, <&ext_26m>;
++			clock-names = "enable", "uart";
+ 			status = "disabled";
+ 		};
+ 	};
+-- 
+2.47.3
+

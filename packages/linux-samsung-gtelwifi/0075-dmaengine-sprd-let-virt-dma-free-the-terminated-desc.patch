@@ -1,7 +1,7 @@
-From 328ca508da5e396ec2d2260bd0003415619229a6 Mon Sep 17 00:00:00 2001
+From 5ea376bd768b5f7dd40d786258db892289732ec9 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 20:31:20 +0000
-Subject: [PATCH 75/79] dmaengine: sprd: let virt-dma free the terminated
+Subject: [PATCH 75/92] dmaengine: sprd: let virt-dma free the terminated
  descriptor
 
 A link-list transfer is cyclic: its interrupt calls vchan_cyclic_callback(),

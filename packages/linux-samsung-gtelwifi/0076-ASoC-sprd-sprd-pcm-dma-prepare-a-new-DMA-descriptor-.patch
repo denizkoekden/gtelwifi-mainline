@@ -1,7 +1,7 @@
-From 19f8abf35b5bfcd1c791531f0ef37bfad2bd9ec2 Mon Sep 17 00:00:00 2001
+From 7adff94fd60e6c96f624280366b922a2ed983dbc Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 20:31:21 +0000
-Subject: [PATCH 76/79] ASoC: sprd: sprd-pcm-dma: prepare a new DMA descriptor
+Subject: [PATCH 76/92] ASoC: sprd: sprd-pcm-dma: prepare a new DMA descriptor
  for every start
 
 The descriptor was prepared once in hw_params and submitted on every

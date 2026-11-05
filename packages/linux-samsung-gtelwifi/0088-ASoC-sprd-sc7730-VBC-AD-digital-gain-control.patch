@@ -1,0 +1,107 @@
+From feeb47113ad609f30be4c32c08073efc0c5b1238 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Tue, 3 Nov 2026 10:29:37 +0000
+Subject: [PATCH 88/92] ASoC: sprd: sc7730 VBC: AD digital gain control
+
+The VBC has a digital gain stage behind each AD FIFO (ADDG01CTL, one
+7-bit value and an enable bit per channel). Measured on the gtelwifi
+with a steady 1 kHz tone through the built-in microphone, stepping the
+register while recording: 0x18 gives the same level as the stage
+switched off, 0x00 +17.5 dB, 0x0b +9 dB and 0x30 -18 dB, i.e. an
+attenuation of 0.75 dB per step around 0x18 = 0 dB.
+
+Switch the stage on at 0 dB in probe and expose 0x00-0x30 as "ADC
+Digital Capture Volume" (-18 to +18 dB). The built-in microphone is
+quiet even with the analog PGA and boost at maximum (speech at 30-40 cm
+around -30 to -40 dBFS RMS), so the UCM profile can add gain here
+without touching the analog path that PipeWire uses as hardware volume.
+
+The controls only reach VBC registers, whose clocks probe enables for
+good, so the component gets plain read/write callbacks.
+
+Assisted-by: Claude Opus 5.5
+---
+ sound/soc/sprd/sprd-vbc-sc7730.c | 43 ++++++++++++++++++++++++++++++++
+ 1 file changed, 43 insertions(+)
+
+diff --git a/sound/soc/sprd/sprd-vbc-sc7730.c b/sound/soc/sprd/sprd-vbc-sc7730.c
+index fe56c9235..156a354d5 100644
+--- a/sound/soc/sprd/sprd-vbc-sc7730.c
++++ b/sound/soc/sprd/sprd-vbc-sc7730.c
+@@ -29,6 +29,7 @@
+ 
+ #include <sound/pcm_params.h>
+ #include <sound/soc.h>
++#include <sound/tlv.h>
+ 
+ #include "sprd-pcm-dma.h"
+ 
+@@ -48,6 +49,16 @@
+ #define  VBENABLE		BIT(15)
+ #define VBIISSEL		0x3c
+ #define  DA_LRCK_POL		BIT(14)
++/*
++ * AD0/AD1 digital gain: 7-bit attenuation in 0.75 dB steps with 0x18 =
++ * 0 dB (measured on the gtelwifi: 0x00 +18 dB, 0x30 -18 dB) and an enable
++ * bit per channel. Only 0x00-0x30 is exposed.
++ */
++#define ADDG01CTL		0x84
++#define  AD0_DG_EN		BIT(7)
++#define  AD1_DG_EN		BIT(15)
++#define  AD_DG_0DB		0x18
++#define  AD_DG_MAX		0x30
+ #define DAHPCTL			0x48
+ /*
+  * Bits 8:0 of DAHPCTL as the vendor's neutral DA profile sets them; with 0
+@@ -301,9 +312,38 @@ static int sprd_vbc_suspend(struct snd_soc_component *component)
+ 	return 0;
+ }
+ 
++/* the controls below only reach VBC registers, which stay clocked */
++static unsigned int sprd_vbc_read(struct snd_soc_component *component,
++				  unsigned int reg)
++{
++	struct sprd_vbc *v = snd_soc_component_get_drvdata(component);
++
++	return readl(v->vbc + reg);
++}
++
++static int sprd_vbc_write(struct snd_soc_component *component,
++			  unsigned int reg, unsigned int val)
++{
++	struct sprd_vbc *v = snd_soc_component_get_drvdata(component);
++
++	writel(val, v->vbc + reg);
++	return 0;
++}
++
++static const DECLARE_TLV_DB_SCALE(sprd_vbc_ad_dg_tlv, -1800, 75, 0);
++
++static const struct snd_kcontrol_new sprd_vbc_controls[] = {
++	SOC_DOUBLE_TLV("ADC Digital Capture Volume", ADDG01CTL, 0, 8,
++		       AD_DG_MAX, 1, sprd_vbc_ad_dg_tlv),
++};
++
+ static const struct snd_soc_component_driver sprd_vbc_component = {
+ 	.name = "sprd-vbc-sc7730",
+ 	.suspend = sprd_vbc_suspend,
++	.read = sprd_vbc_read,
++	.write = sprd_vbc_write,
++	.controls = sprd_vbc_controls,
++	.num_controls = ARRAY_SIZE(sprd_vbc_controls),
+ 	.legacy_dai_naming = 1,
+ };
+ 
+@@ -350,6 +390,9 @@ static int sprd_vbc_probe(struct platform_device *pdev)
+ 	udelay(10);
+ 	sprd_vbc_aon_rmw(v, AON_RST0, RST0_AUD, 0);
+ 	sprd_vbc_clear_da(v);
++	/* AD digital gain on at 0 dB, so the control below sets it directly */
++	writel(AD0_DG_EN | AD1_DG_EN | AD_DG_0DB << 8 | AD_DG_0DB,
++	       v->vbc + ADDG01CTL);
+ 
+ 	for (i = 0; i < 2; i++) {
+ 		v->dma[SNDRV_PCM_STREAM_PLAYBACK].dev_phys[i] =
+-- 
+2.47.3
+

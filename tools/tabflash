@@ -63,7 +63,7 @@ blockdev --setro "$P"
 sync
 echo 3 > /proc/sys/vm/drop_caches
 got=$(head -c "$SIZE" "$P" | sha256sum | cut -d' ' -f1)
-rm -f /tmp/flash.img
+rm -f /tmp/flash.img /tmp/dd.err
 if [ "$got" = "$HASH" ]; then
 	echo "tablet: read back ok, KERNEL now holds the new image"
 else

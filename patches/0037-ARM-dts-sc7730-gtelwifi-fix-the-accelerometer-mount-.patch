@@ -1,8 +1,8 @@
-From 89dd0e254317c5a84ffa9b37123917debb41c467 Mon Sep 17 00:00:00 2001
+From c8aa3fcbf7a1af235c51b041e9aee8db5345f3df Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 08:34:00 +0000
-Subject: [PATCH 37/79] ARM: dts: sc7730: gtelwifi: fix the accelerometer mount
- matrix
+Subject: [PATCH 037/106] ARM: dts: sc7730: gtelwifi: fix the accelerometer
+ mount matrix
 
 The matrix taken from the vendor's axis map has a determinant of -1, a
 reflection no mounting can produce, and the screen turned the wrong way.

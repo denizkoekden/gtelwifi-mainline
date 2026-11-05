@@ -1,8 +1,8 @@
-From dc73e93af4e3c82e1c852cb9f4993920e64310fa Mon Sep 17 00:00:00 2001
+From d1611fe94467507c3f34c69a90b118e3c16f4d7d Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 20:51:31 +0000
-Subject: [PATCH 19/79] irqchip: sprd-sc8830-intc: enable the INTC clock gates
- itself
+Subject: [PATCH 019/106] irqchip: sprd-sc8830-intc: enable the INTC clock
+ gates itself
 
 INTC0-3 are gated by AP APB EB bits 19-22. So far the timer driver
 enabled them, but the irqchip initialises before the timers, and

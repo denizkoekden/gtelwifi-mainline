@@ -1,7 +1,7 @@
 From 0fa712ab514f5d2ada1ec4d831e7b83f1375d2bf Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 16:55:56 +0000
-Subject: [PATCH 09/79] i2c: add Spreadtrum SC8830 controller; gtelwifi: GPIO,
+Subject: [PATCH 09/92] i2c: add Spreadtrum SC8830 controller; gtelwifi: GPIO,
  touchscreen
 
 The 32-bit Spreadtrum SC8830/SC7730 I2C controllers are a byte-at-a-time

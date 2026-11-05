@@ -1,0 +1,53 @@
+From 22477461db35158f9fef6b05e814bcda1d79a60e Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 22:39:35 +0000
+Subject: [PATCH 82/92] ARM: dts: sc7730: DSI host region and panel supplies
+ for the display
+
+The display controller node gets the DSI host registers, and the
+gtelwifi its three NT51017 supply GPIOs (lcd_3v3_en, cabc_01_en,
+cabc_02_en), so the panel can be powered off with the CRTC.
+
+Assisted-by: Claude Opus 5.5
+---
+ arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts | 7 +++++++
+ arch/arm/boot/dts/unisoc/sc7730.dtsi                 | 4 ++--
+ 2 files changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index 33c64ce5c..fcd431e33 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -518,6 +518,13 @@ &sc2723_codec {
+  */
+ &dispc {
+ 	backlight = <&backlight>;
++	/*
++	 * NT51017 supplies (lcd_3v3_en, cabc_01_en, cabc_02_en), switched on
++	 * in this order and off in reverse, as the vendor gen-panel does
++	 */
++	panel-power-gpios = <&gpio 152 GPIO_ACTIVE_HIGH>,
++			    <&gpio 232 GPIO_ACTIVE_HIGH>,
++			    <&gpio 233 GPIO_ACTIVE_HIGH>;
+ 	width-mm = <129>;
+ 	height-mm = <206>;
+ 	status = "okay";
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index caacb531a..05a48f972 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -381,9 +381,9 @@ dispc: display-controller@20800000 {
+ 			compatible = "sprd,sc7730-dispc";
+ 			reg = <0x20800000 0x1000>, <0x20d00000 0x4>,
+ 			      <0x402e0000 0x8>, <0x71300000 0x4>,
+-			      <0x71200000 0x40>;
++			      <0x71200000 0x40>, <0x21800000 0x1000>;
+ 			reg-names = "dispc", "ap-ahb", "aon-apb", "ap-apb",
+-				    "ap-clk";
++				    "ap-clk", "dsi";
+ 			interrupts = <GIC_SPI 46 IRQ_TYPE_LEVEL_HIGH>;
+ 			status = "disabled";
+ 		};
+-- 
+2.47.3
+

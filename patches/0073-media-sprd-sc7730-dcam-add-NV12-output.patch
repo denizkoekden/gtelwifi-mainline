@@ -1,7 +1,7 @@
-From ab3b8baa86e97b6fc4416285ece10540ddbd6fb5 Mon Sep 17 00:00:00 2001
+From d324f6fa5a1d76baa93fb6005b7fc4bb6be69713 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 16:42:54 +0000
-Subject: [PATCH 73/79] media: sprd: sc7730-dcam: add NV12 output
+Subject: [PATCH 073/106] media: sprd: sc7730-dcam: add NV12 output
 
 Path 1 can write its CbCr plane as 4:2:0 (PATH1_CFG bits 7:6 = 1). The
 vendor driver only bypasses the scaler for 4:2:2 and computes vertical

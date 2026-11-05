@@ -1,0 +1,1331 @@
+From d03f16b8a0bd1b2f051e1c8dde64ee3f7e260cef Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 13:05:36 +0000
+Subject: [PATCH 104/106] media: sc7730: S5K4ECGX stills up to 2576x1932 and
+ autofocus
+
+The S5K4ECGX has its own ISP with a separate capture configuration and
+an autofocus engine; the stock HAL drives both through I2C writes to the
+firmware's interface words. Do the same in the sensor driver:
+
+- Still modes 1600x1200, 2048x1536, 2560x1920 and 2576x1932 behind the
+  parameter s5k4ecgx.still_modes (default off, so clients that pick the
+  largest size keep the preview sizes). As the HAL does, the sensor
+  starts a 640x480 preview, lets AE settle (still_settle_ms), runs one
+  autofocus search (still_af), writes the capture size table and
+  switches with EnableCapture / NewConfigSync / EnableCaptureChanged,
+  all before the receiver starts; the DCAM drops still_skip frames.
+- Autofocus controls on the subdev: V4L2_CID_AUTO_FOCUS_RANGE (normal /
+  macro lens tables as firmware files), _START (one search: AfCmd 5, then
+  the coarse status at 0x70002eee and the fine status at 0x70002207),
+  _STOP and _STATUS; preview_af_ms runs one search after a preview start.
+- The AF actuator supply (afvdd) is SC2723 vddcammot, 2.8 V.
+
+DCAM: frames wider than the 2048 pixel line buffer of path 1 go through
+path 2 (4096). The path registers, interrupts, copy and reset bits come
+from a table now; NV12 uses the scaler at 1:1 on either path (its
+coefficient RAM sits at 0x400 for path 1 and 0x1400 for path 2, so the
+register window grows to 0x2000). The pre-skip comes from the sensor.
+
+Device tree: vddcammot as afvdd-supply, I2C0 at 400 kHz (both sensors
+carry SENSOR_I2C_FREQ_400 in the stock HAL; the S5K init drops from 1.8
+to about 0.5 s), CMA 128 MiB for 5 MP buffers.
+
+Tested in the rescue system: preview unchanged (rear 16 fps, front 24
+fps); autofocus reached after 1.4 s, Laplacian variance 245 -> 556;
+1600x1200 and 2048x1536 through path 1, 2560x1920 and 2576x1932 through
+path 2 at 7.7 fps in NV12 with correct colours, no writes past the
+buffers.
+
+Assisted-by: Claude Opus 5.5
+---
+ .../bindings/media/i2c/samsung,s5k4ecgx.yaml  |   4 +
+ .../dts/unisoc/sc7730-samsung-gtelwifi.dts    |  23 +-
+ arch/arm/boot/dts/unisoc/sc7730.dtsi          |   2 +-
+ drivers/media/i2c/s5k4ecgx.c                  | 565 ++++++++++++++++--
+ drivers/media/platform/sprd/sc7730-dcam.c     | 196 ++++--
+ 5 files changed, 674 insertions(+), 116 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/media/i2c/samsung,s5k4ecgx.yaml b/Documentation/devicetree/bindings/media/i2c/samsung,s5k4ecgx.yaml
+index 9d57f1a56..54b430514 100644
+--- a/Documentation/devicetree/bindings/media/i2c/samsung,s5k4ecgx.yaml
++++ b/Documentation/devicetree/bindings/media/i2c/samsung,s5k4ecgx.yaml
+@@ -40,6 +40,9 @@ properties:
+   dvdd-supply:
+     description: Digital core supply, 1.2 V
+ 
++  afvdd-supply:
++    description: Autofocus actuator supply, 2.8 V
++
+   reset-gpios:
+     maxItems: 1
+     description: Reset input, active low
+@@ -103,6 +106,7 @@ examples:
+             avdd-supply = <&vddcama>;
+             dovdd-supply = <&vddcamio>;
+             dvdd-supply = <&cam_dvdd>;
++            afvdd-supply = <&vddcammot>;
+             reset-gpios = <&gpio 186 GPIO_ACTIVE_LOW>;
+             powerdown-gpios = <&gpio 188 GPIO_ACTIVE_LOW>;
+             orientation = <1>;
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index ec79bf25c..63430ddc9 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -280,14 +280,16 @@ ramoops@9fc00000 {
+ 		};
+ 
+ 		/*
+-		 * Scan-out and GPU buffers for DISPC, which has no IOMMU. Kept in
+-		 * lowmem below the vendor's carve-outs, where all vendor display
+-		 * buffers lived.
++		 * Scan-out and GPU buffers for DISPC, which has no IOMMU, and the
++		 * camera buffers (DCAM has none either: a 2576x1932 still is
++		 * 7.5 MB in NV12, libcamera queues four plus the driver's
++		 * scratch frame). Kept in lowmem below the vendor's carve-outs,
++		 * where all vendor display buffers lived.
+ 		 */
+ 		linux,cma {
+ 			compatible = "shared-dma-pool";
+ 			reusable;
+-			size = <0x4000000>;
++			size = <0x8000000>;
+ 			alloc-ranges = <0x90000000 0xe000000>;
+ 			linux,cma-default;
+ 		};
+@@ -342,6 +344,16 @@ vddcamio: regulator-vddcamio {
+ 		regulator-max-microvolt = <1800000>;
+ 	};
+ 
++	/* rear camera autofocus actuator, 2.8 V; 0x834[15:8] is the eMMC core */
++	vddcammot: regulator-vddcammot {
++		compatible = "sprd,sc2723-ldo";
++		regulator-name = "vddcammot";
++		sprd,pd-reg = <0x814 7>;
++		sprd,vsel-reg = <0x834 0xff>;
++		regulator-min-microvolt = <2800000>;
++		regulator-max-microvolt = <2800000>;
++	};
++
+ 	/* external 1.2 V core supply of the rear camera */
+ 	cam_dvdd: regulator-cam-dvdd {
+ 		compatible = "regulator-fixed";
+@@ -423,6 +435,8 @@ &pwm {
+  * on the left of the rear image and on the right of the front image.
+  */
+ &i2c0 {
++	/* the stock HAL switches the bus to 400 kHz for both sensors */
++	clock-frequency = <400000>;
+ 	status = "okay";
+ 
+ 	camera@20 {
+@@ -451,6 +465,7 @@ camera@56 {
+ 		avdd-supply = <&vddcama>;
+ 		dovdd-supply = <&vddcamio>;
+ 		dvdd-supply = <&cam_dvdd>;
++		afvdd-supply = <&vddcammot>;
+ 		reset-gpios = <&gpio 186 GPIO_ACTIVE_LOW>;
+ 		powerdown-gpios = <&gpio 188 GPIO_ACTIVE_LOW>;
+ 		orientation = <1>;
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index a926ef831..afc9d096c 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -417,7 +417,7 @@ gpu: gpu@60000000 {
+ 		 */
+ 		dcam: camera@60800000 {
+ 			compatible = "sprd,sc7730-dcam";
+-			reg = <0x60800000 0x1000>, <0x60c00000 0x1000>,
++			reg = <0x60800000 0x2000>, <0x60c00000 0x1000>,
+ 			      <0x60d00000 0x100>, <0x60e00000 0x100>,
+ 			      <0x402e0000 0x100>;
+ 			reg-names = "dcam", "csi", "mm-ahb", "mm-clk", "aon-apb";
+diff --git a/drivers/media/i2c/s5k4ecgx.c b/drivers/media/i2c/s5k4ecgx.c
+index ec656f69a..78ff7b15f 100644
+--- a/drivers/media/i2c/s5k4ecgx.c
++++ b/drivers/media/i2c/s5k4ecgx.c
+@@ -15,8 +15,28 @@
+  * skipped here, so that the preview size is set first and the stream
+  * starts in enable_streams; until then the lanes idle in LP-11. Stream
+  * on and off use REG_G_ENABLE_PREV and REG_G_ENABLE_PREV_CHG as the
+- * former mainline driver did. Only the preview path is supported; the
+- * capture sizes of the HAL (up to 2576x1932) need its capture sequence.
++ * former mainline driver did.
++ *
++ * Still captures (module parameter still_modes, experimental): the ISP
++ * has a capture configuration next to the preview one. A capture size
++ * table of the HAL sets its input window and output size, the switch is
++ * REG_TC_GP_EnableCapture with its "changed" flag. As in the stock HAL,
++ * AE and AWB (and one autofocus search) settle in a preview first. The
++ * switch happens in pre_streamon, before the receiver starts, so that
++ * the receiver only ever sees capture frames; the lanes are then in HS
++ * when it starts, as they always were with the vendor stack. The output
++ * stays YUV 4:2:2 at 344 Mbit/s per lane (both system clocks of the init
++ * table have the same output rate).
++ *
++ * Autofocus, following the HAL: AUTO_FOCUS_RANGE writes its normal or
++ * macro lens table (s5k4ecgx/af-normal.bin, af-macro.bin, optional),
++ * AUTO_FOCUS_START sends a single search (REG_TC_AF_AfCmd 5) and polls
++ * the coarse search status, then the fine search flag. The S5K HAL has no
++ * continuous AF. libcamera does not use any of these controls.
++ *
++ * The capture switch and AF command/status words are the sensor
++ * firmware's interface variables (also in Samsung's GPL S5K4ECGX
++ * drivers); everything with tuning or lens data stays in firmware files.
+  */
+ 
+ #include <linux/clk.h>
+@@ -28,6 +48,7 @@
+ #include <linux/pm_runtime.h>
+ #include <linux/regmap.h>
+ #include <linux/regulator/consumer.h>
++#include <linux/workqueue.h>
+ 
+ #include <media/v4l2-cci.h>
+ #include <media/v4l2-ctrls.h>
+@@ -49,6 +70,10 @@
+ #define S5K_FW_REVISION		0x700001a6
+ #define S5K_G_ENABLE_PREV	0x7000023e
+ #define S5K_G_ENABLE_PREV_CHG	0x70000240
++/* still capture: as the preview enable, plus a configuration sync */
++#define S5K_G_ENABLE_CAP	0x70000242	/* REG_TC_GP_EnableCapture */
++#define S5K_G_ENABLE_CAP_CHG	0x70000244
++#define S5K_G_NEW_CFG_SYNC	0x7000024e
+ /*
+  * User adjustments on top of the tuning, signed, 0 = unchanged. Addresses
+  * as the stock HAL's contrast/saturation tables write them (and measured:
+@@ -66,13 +91,26 @@
+  */
+ #define S5K_PCFG0_MAX_FR_TIME	0x700002c2
+ #define  S5K_MAX_FR_TIME_15FPS	666
++/* autofocus */
++#define S5K_AF_CMD		0x7000028c	/* REG_TC_AF_AfCmd */
++#define  S5K_AF_CMD_LENS	4		/* lens to S5K_AF_CMD_PARAM */
++#define  S5K_AF_CMD_SINGLE	5		/* one search */
++#define S5K_AF_CMD_PARAM	0x7000028e
++#define S5K_AF_SEARCH_STATUS	0x70002eee	/* 1 searching, 2 found */
++#define S5K_AF_FINE_STATUS	0x70002207	/* 15:8 non-zero while busy */
++#define S5K_AE_STABLE		0x70002c74	/* 1 when AE has settled */
+ 
+ #define S5K_MCLK_HZ		24000000
+ #define S5K_LANES		2
+ 
++#define S5K_AF_POLL_MS		50
++#define S5K_AF_SEARCH_POLLS	100	/* the HAL gives up after ~5 s */
++#define S5K_AF_FINE_POLLS	60
++
+ struct s5k_mode {
+ 	unsigned int width, height;
+ 	const char *fw;
++	bool still;		/* a capture configuration */
+ };
+ 
+ /* 344 Mbit/s per lane, DDR, set up by the init table for all sizes */
+@@ -88,10 +126,46 @@ static const s64 s5k_link_freqs[] = { 172000000 };
+ static const struct s5k_mode s5k_modes[] = {
+ 	{ 640, 480, "s5k4ecgx/640x480.bin" },
+ 	{ 800, 480, "s5k4ecgx/800x480.bin" },
++	/* capture configurations, only with still_modes */
++	{ 1600, 1200, "s5k4ecgx/1600x1200.bin", true },
++	{ 2048, 1536, "s5k4ecgx/2048x1536.bin", true },
++	{ 2560, 1920, "s5k4ecgx/2560x1920.bin", true },
++	{ 2576, 1932, "s5k4ecgx/2576x1932.bin", true },
+ };
+ 
++#define S5K_NUM_PREVIEW_MODES	2
++/* the preview in which AE/AWB/AF settle before a still */
++#define S5K_STILL_PREVIEW	(&s5k_modes[0])
++
++static bool still_modes;
++module_param(still_modes, bool, 0644);
++MODULE_PARM_DESC(still_modes, "Offer the still sizes up to 2576x1932 (experimental)");
++
++static unsigned int still_settle_ms = 1000;
++module_param(still_settle_ms, uint, 0644);
++MODULE_PARM_DESC(still_settle_ms,
++		 "Preview time for AE/AWB before a still, 0 = switch right after the init");
++
++static bool still_af = true;
++module_param(still_af, bool, 0644);
++MODULE_PARM_DESC(still_af, "One autofocus search before a still (needs still_settle_ms)");
++
++static unsigned int still_skip = 1;
++module_param(still_skip, uint, 0644);
++MODULE_PARM_DESC(still_skip, "Frames the receiver drops after the capture switch (HAL: 1)");
++
++static unsigned int preview_af_ms;
++module_param(preview_af_ms, uint, 0644);
++MODULE_PARM_DESC(preview_af_ms, "One autofocus search this long after a preview starts, 0 = off");
++
+ static const char * const s5k_supplies[] = { "dovdd", "avdd", "dvdd" };
+ 
++enum { S5K_AF_IDLE, S5K_AF_START, S5K_AF_SEARCH, S5K_AF_FINE };
++
++/* s5k_write_table() flags */
++#define S5K_TAB_SKIP_ENABLE	BIT(0)	/* leave out the preview enable */
++#define S5K_TAB_OPTIONAL	BIT(1)	/* -ENOENT without an error if missing */
++
+ struct s5k4ecgx {
+ 	struct v4l2_subdev sd;
+ 	struct media_pad pad;
+@@ -101,10 +175,20 @@ struct s5k4ecgx {
+ 	struct gpio_desc *reset_gpio;
+ 	struct gpio_desc *powerdown_gpio;
+ 	struct regulator_bulk_data supplies[ARRAY_SIZE(s5k_supplies)];
++	struct regulator *afvdd;	/* AF actuator, optional */
+ 	struct v4l2_ctrl_handler ctrls;
+ 	const struct s5k_mode *mode;
+ 	const struct s5k_mode *loaded;	/* tables in the ISP, NULL after power off */
++	const struct s5k_mode *still;	/* switched to this capture configuration */
+ 	bool powered;			/* by pre_streamon */
++
++	/* under the control handler lock, as all access to the ISP */
++	bool af_ok;			/* a preview is running */
++	int af_range;			/* lens table in the ISP: 0 normal, 1 macro */
++	unsigned int af_phase, af_polls, af_retries;
++	u32 af_status;			/* V4L2_AUTO_FOCUS_STATUS_* */
++	unsigned long af_started;
++	struct delayed_work af_work;
+ };
+ 
+ static inline struct s5k4ecgx *to_s5k(struct v4l2_subdev *sd)
+@@ -112,6 +196,11 @@ static inline struct s5k4ecgx *to_s5k(struct v4l2_subdev *sd)
+ 	return container_of(sd, struct s5k4ecgx, sd);
+ }
+ 
++static unsigned int s5k_num_modes(void)
++{
++	return still_modes ? ARRAY_SIZE(s5k_modes) : S5K_NUM_PREVIEW_MODES;
++}
++
+ /* one word into the ISP's RAM */
+ static int s5k_write(struct s5k4ecgx *s5k, u32 addr, u16 val)
+ {
+@@ -134,12 +223,25 @@ static int s5k_read(struct s5k4ecgx *s5k, u32 addr, u64 *val)
+ 	return ret;
+ }
+ 
++/* a few words, after selecting the ISP's AHB page */
++static int s5k_write_words(struct s5k4ecgx *s5k, const u32 *addr,
++			   const u16 *val, unsigned int n)
++{
++	unsigned int i;
++	int ret = 0;
++
++	cci_write(s5k->regmap, S5K_REG_AHB_PAGE, S5K_AHB_PAGE, &ret);
++	for (i = 0; i < n && !ret; i++)
++		ret = s5k_write(s5k, addr[i], val[i]);
++	return ret;
++}
++
+ /*
+- * Write a HAL table. With skip_enable, data words that would land on
+- * REG_G_ENABLE_PREV or REG_G_ENABLE_PREV_CHG are left out.
++ * Write a HAL table. With S5K_TAB_SKIP_ENABLE, data words that would land
++ * on REG_G_ENABLE_PREV or REG_G_ENABLE_PREV_CHG are left out.
+  */
+ static int s5k_write_table(struct s5k4ecgx *s5k, const char *name,
+-			   bool skip_enable)
++			   unsigned int flags)
+ {
+ 	const struct firmware *fw;
+ 	const __le16 *p;
+@@ -147,11 +249,18 @@ static int s5k_write_table(struct s5k4ecgx *s5k, const char *name,
+ 	size_t i, n;
+ 	int ret;
+ 
+-	ret = request_firmware(&fw, name, s5k->dev);
+-	if (ret) {
+-		dev_err(s5k->dev, "%s missing (extract it from the stock HAL)\n",
+-			name);
+-		return ret;
++	if (flags & S5K_TAB_OPTIONAL) {
++		ret = firmware_request_nowarn(&fw, name, s5k->dev);
++		if (ret)
++			return -ENOENT;
++	} else {
++		ret = request_firmware(&fw, name, s5k->dev);
++		if (ret) {
++			dev_err(s5k->dev,
++				"%s missing (extract it from the stock HAL)\n",
++				name);
++			return ret;
++		}
+ 	}
+ 	if (!fw->size || fw->size % 4) {
+ 		dev_err(s5k->dev, "%s: bad size %zu\n", name, fw->size);
+@@ -173,7 +282,7 @@ static int s5k_write_table(struct s5k4ecgx *s5k, const char *name,
+ 		else if (reg == 0x002a)
+ 			addr = (addr & 0xffff0000) | val;
+ 		if (reg == 0x0f12) {
+-			bool skip = skip_enable &&
++			bool skip = (flags & S5K_TAB_SKIP_ENABLE) &&
+ 				    (addr == S5K_G_ENABLE_PREV ||
+ 				     addr == S5K_G_ENABLE_PREV_CHG);
+ 
+@@ -195,16 +304,179 @@ static int s5k_write_table(struct s5k4ecgx *s5k, const char *name,
+ 
+ static int s5k_preview(struct s5k4ecgx *s5k, bool on)
+ {
+-	int ret = 0;
++	static const u32 addr[] = { S5K_G_ENABLE_PREV, S5K_G_ENABLE_PREV_CHG };
++	const u16 val[] = { on, 1 };
+ 
+-	cci_write(s5k->regmap, S5K_REG_AHB_PAGE, S5K_AHB_PAGE, &ret);
+-	if (!ret)
+-		ret = s5k_write(s5k, S5K_G_ENABLE_PREV, on);
++	return s5k_write_words(s5k, addr, val, ARRAY_SIZE(addr));
++}
++
++/* the HAL's Capture_Start and Preview_Return */
++static int s5k_capture(struct s5k4ecgx *s5k, bool on)
++{
++	static const u32 addr[] = {
++		S5K_G_ENABLE_CAP, S5K_G_NEW_CFG_SYNC, S5K_G_ENABLE_CAP_CHG,
++	};
++	const u16 val[] = { on, 1, 1 };
++
++	return s5k_write_words(s5k, addr, val, ARRAY_SIZE(addr));
++}
++
++/* --- autofocus --------------------------------------------------------- */
++
++static int s5k_af_lens_home(struct s5k4ecgx *s5k)
++{
++	/* the HAL's AF_off: lens to position 0 of the current range */
++	static const u32 addr[] = { S5K_AF_CMD_PARAM, S5K_AF_CMD };
++	static const u16 val[] = { 0, S5K_AF_CMD_LENS };
++
++	return s5k_write_words(s5k, addr, val, ARRAY_SIZE(addr));
++}
++
++static void s5k_af_done(struct s5k4ecgx *s5k, u32 status)
++{
++	s5k->af_status = status;
++	s5k->af_phase = S5K_AF_IDLE;
++	dev_info(s5k->dev, "autofocus %s after %u ms\n",
++		 status == V4L2_AUTO_FOCUS_STATUS_REACHED ? "reached" : "failed",
++		 jiffies_to_msecs(jiffies - s5k->af_started));
++}
++
++/*
++ * One step of the HAL's single AF (_s5k4ec_AutoFocusDo): start, poll the
++ * coarse search until it reports "found", then the fine search until its
++ * busy byte clears. Returns the delay to the next step in ms, 0 when done.
++ */
++static int s5k_af_step(struct s5k4ecgx *s5k)
++{
++	static const u32 cmd = S5K_AF_CMD;
++	static const u16 single = S5K_AF_CMD_SINGLE;
++	u64 val = 0;
++	int ret;
++
++	switch (s5k->af_phase) {
++	case S5K_AF_START:
++		ret = s5k_write_words(s5k, &cmd, &single, 1);
++		if (ret)
++			break;
++		s5k->af_phase = S5K_AF_SEARCH;
++		s5k->af_polls = 0;
++		return 100;
++
++	case S5K_AF_SEARCH:
++		ret = s5k_read(s5k, S5K_AF_SEARCH_STATUS, &val);
++		if (ret)
++			break;
++		if (val == 2) {
++			s5k->af_phase = S5K_AF_FINE;
++			s5k->af_polls = 0;
++			return S5K_AF_POLL_MS;
++		}
++		if (val == 0 || val == 8) {
++			/* idle or cancelled: the HAL sends the start again */
++			if (!s5k->af_retries++) {
++				s5k->af_phase = S5K_AF_START;
++				return 1;
++			}
++		}
++		if (val != 1 || ++s5k->af_polls >= S5K_AF_SEARCH_POLLS) {
++			dev_dbg(s5k->dev, "AF search status %llu\n", val);
++			s5k_af_lens_home(s5k);
++			s5k_af_done(s5k, V4L2_AUTO_FOCUS_STATUS_FAILED);
++			return 0;
++		}
++		return S5K_AF_POLL_MS;
++
++	case S5K_AF_FINE:
++		ret = s5k_read(s5k, S5K_AF_FINE_STATUS, &val);
++		if (ret)
++			break;
++		/* the HAL also takes a timeout here as success */
++		if (!(val & 0xff00) || ++s5k->af_polls >= S5K_AF_FINE_POLLS) {
++			s5k_af_done(s5k, V4L2_AUTO_FOCUS_STATUS_REACHED);
++			return 0;
++		}
++		return S5K_AF_POLL_MS;
++
++	default:
++		return 0;
++	}
++
++	dev_err(s5k->dev, "autofocus: %d\n", ret);
++	s5k_af_done(s5k, V4L2_AUTO_FOCUS_STATUS_FAILED);
++	return ret;
++}
++
++static void s5k_af_work(struct work_struct *work)
++{
++	struct s5k4ecgx *s5k = container_of(to_delayed_work(work),
++					    struct s5k4ecgx, af_work);
++	int next;
++
++	mutex_lock(s5k->ctrls.lock);
++	/* stopped or streamoff in the meantime */
++	if (s5k->af_ok && s5k->af_phase != S5K_AF_IDLE) {
++		next = s5k_af_step(s5k);
++		if (next > 0)
++			schedule_delayed_work(&s5k->af_work,
++					      msecs_to_jiffies(next));
++	}
++	mutex_unlock(s5k->ctrls.lock);
++}
++
++static void s5k_af_begin(struct s5k4ecgx *s5k, unsigned int delay_ms)
++{
++	s5k->af_status = V4L2_AUTO_FOCUS_STATUS_BUSY;
++	s5k->af_phase = S5K_AF_START;
++	s5k->af_retries = 0;
++	s5k->af_started = jiffies + msecs_to_jiffies(delay_ms);
++	mod_delayed_work(system_percpu_wq, &s5k->af_work,
++			 msecs_to_jiffies(delay_ms));
++}
++
++/* the same, synchronously, under the control lock */
++static void s5k_af_sync(struct s5k4ecgx *s5k)
++{
++	int next;
++
++	s5k->af_status = V4L2_AUTO_FOCUS_STATUS_BUSY;
++	s5k->af_phase = S5K_AF_START;
++	s5k->af_retries = 0;
++	s5k->af_started = jiffies;
++	while ((next = s5k_af_step(s5k)) > 0)
++		msleep(next);
++}
++
++static int s5k_af_stop(struct s5k4ecgx *s5k)
++{
++	cancel_delayed_work(&s5k->af_work);
++	s5k->af_phase = S5K_AF_IDLE;
++	s5k->af_status = V4L2_AUTO_FOCUS_STATUS_IDLE;
++	return s5k->af_ok ? s5k_af_lens_home(s5k) : 0;
++}
++
++/* the HAL's AF_normal_mode_1..3 / AF_macro_mode_1..3, 100 ms apart */
++static int s5k_af_range(struct s5k4ecgx *s5k, int range)
++{
++	int macro = range == V4L2_AUTO_FOCUS_RANGE_MACRO;
++	const char *name = macro ? "s5k4ecgx/af-macro.bin" :
++				   "s5k4ecgx/af-normal.bin";
++	int ret;
++
++	if (!s5k->loaded || s5k->af_range == macro)
++		return 0;
++	ret = s5k_write_table(s5k, name, S5K_TAB_OPTIONAL);
++	if (ret == -ENOENT) {
++		dev_info_once(s5k->dev, "%s missing, AF range unchanged\n",
++			      name);
++		return 0;
++	}
+ 	if (!ret)
+-		ret = s5k_write(s5k, S5K_G_ENABLE_PREV_CHG, 1);
++		s5k->af_range = macro;
+ 	return ret;
+ }
+ 
++/* --- power and streaming ----------------------------------------------- */
++
+ static int s5k_power_on(struct device *dev)
+ {
+ 	struct v4l2_subdev *sd = dev_get_drvdata(dev);
+@@ -213,10 +485,16 @@ static int s5k_power_on(struct device *dev)
+ 
+ 	gpiod_set_value_cansleep(s5k->reset_gpio, 1);
+ 	gpiod_set_value_cansleep(s5k->powerdown_gpio, 1);
+-	/* vendor order: I/O, analog, MCLK, then the external 1.2 V core */
++	/* vendor order: AF actuator, I/O, analog, MCLK, external 1.2 V core */
++	if (s5k->afvdd) {
++		ret = regulator_enable(s5k->afvdd);
++		if (ret)
++			return ret;
++		usleep_range(1000, 2000);
++	}
+ 	ret = regulator_enable(s5k->supplies[0].consumer);
+ 	if (ret)
+-		return ret;
++		goto err_afvdd;
+ 	ret = regulator_enable(s5k->supplies[1].consumer);
+ 	if (ret)
+ 		goto err_dovdd;
+@@ -240,6 +518,9 @@ static int s5k_power_on(struct device *dev)
+ 	regulator_disable(s5k->supplies[1].consumer);
+ err_dovdd:
+ 	regulator_disable(s5k->supplies[0].consumer);
++err_afvdd:
++	if (s5k->afvdd)
++		regulator_disable(s5k->afvdd);
+ 	return ret;
+ }
+ 
+@@ -255,7 +536,10 @@ static int s5k_power_off(struct device *dev)
+ 	clk_disable_unprepare(s5k->mclk);
+ 	regulator_disable(s5k->supplies[1].consumer);
+ 	regulator_disable(s5k->supplies[0].consumer);
++	if (s5k->afvdd)
++		regulator_disable(s5k->afvdd);
+ 	s5k->loaded = NULL;
++	s5k->still = NULL;
+ 	return 0;
+ }
+ 
+@@ -294,7 +578,7 @@ static int s5k_enum_frame_size(struct v4l2_subdev *sd,
+ 			       struct v4l2_subdev_frame_size_enum *fse)
+ {
+ 	if (fse->code != MEDIA_BUS_FMT_UYVY8_1X16 ||
+-	    fse->index >= ARRAY_SIZE(s5k_modes))
++	    fse->index >= s5k_num_modes())
+ 		return -EINVAL;
+ 	fse->min_width = fse->max_width = s5k_modes[fse->index].width;
+ 	fse->min_height = fse->max_height = s5k_modes[fse->index].height;
+@@ -308,7 +592,7 @@ static int s5k_set_fmt(struct v4l2_subdev *sd,
+ 	struct s5k4ecgx *s5k = to_s5k(sd);
+ 	const struct s5k_mode *mode;
+ 
+-	mode = v4l2_find_nearest_size(s5k_modes, ARRAY_SIZE(s5k_modes),
++	mode = v4l2_find_nearest_size(s5k_modes, s5k_num_modes(),
+ 				      width, height, format->format.width,
+ 				      format->format.height);
+ 	s5k_fill_fmt(mode, &format->format);
+@@ -338,10 +622,103 @@ static int s5k_get_selection(struct v4l2_subdev *sd,
+ 	return -EINVAL;
+ }
+ 
+-/* powered, preview off: the lanes idle in LP-11 */
+-static int s5k_pre_streamon(struct v4l2_subdev *sd, u32 flags)
++/* init (resets the ISP) and a size table, then the user controls again */
++static int s5k_load(struct s5k4ecgx *s5k, const struct s5k_mode *mode)
++{
++	int ret;
++
++	if (s5k->loaded == mode)
++		return 0;
++	s5k->loaded = NULL;
++	s5k->still = NULL;
++	s5k->af_range = -1;
++	ret = s5k_write_table(s5k, "s5k4ecgx/init.bin", S5K_TAB_SKIP_ENABLE);
++	/* before the size table, which ends with the config sync */
++	if (!ret)
++		cci_write(s5k->regmap, S5K_REG_AHB_PAGE, S5K_AHB_PAGE, &ret);
++	if (!ret)
++		ret = s5k_write(s5k, S5K_PCFG0_MAX_FR_TIME, S5K_MAX_FR_TIME_15FPS);
++	if (!ret)
++		ret = s5k_write_table(s5k, mode->fw, S5K_TAB_SKIP_ENABLE);
++	if (ret)
++		return ret;
++	s5k->loaded = mode;
++	/* the init resets the adjustments too */
++	return __v4l2_ctrl_handler_setup(&s5k->ctrls);
++}
++
++/*
++ * Switch to the capture configuration of the current still mode, under
++ * the control lock and powered. Like the stock HAL (before_snapshot, then
++ * Capture_Start in stream_on), the capture size table is written while
++ * a preview runs, so that the capture takes over its exposure.
++ */
++static int s5k_still_start(struct s5k4ecgx *s5k)
++{
++	const struct s5k_mode *mode = s5k->mode;
++	unsigned long timeout;
++	u64 stable = 0;
++	int ret;
++
++	if (s5k->still == mode)
++		return 0;
++	s5k->loaded = NULL;	/* whatever ran before, start from the init */
++	ret = s5k_load(s5k, S5K_STILL_PREVIEW);
++	if (ret)
++		return ret;
++
++	if (still_settle_ms) {
++		ret = s5k_preview(s5k, true);
++		if (ret)
++			return ret;
++		msleep(still_settle_ms);
++		timeout = jiffies + msecs_to_jiffies(1000);
++		do {
++			ret = s5k_read(s5k, S5K_AE_STABLE, &stable);
++			if (ret || stable == 1)
++				break;
++			msleep(20);
++		} while (time_before(jiffies, timeout));
++		if (ret)
++			return ret;
++		if (still_af)
++			s5k_af_sync(s5k);
++	}
++
++	ret = s5k_write_table(s5k, mode->fw, 0);
++	if (!ret)
++		ret = s5k_capture(s5k, true);
++	if (ret)
++		return ret;
++	s5k->still = mode;
++	/* test build: say what the capture is based on */
++	dev_info(s5k->dev, "still %ux%u: settle %u ms, AE %s, AF %s\n",
++		 mode->width, mode->height, still_settle_ms,
++		 !still_settle_ms ? "-" : stable == 1 ? "stable" : "not stable",
++		 !still_settle_ms || !still_af ? "off" :
++		 s5k->af_status == V4L2_AUTO_FOCUS_STATUS_REACHED ? "reached" :
++								    "failed");
++	/* the switch takes effect at a frame boundary */
++	msleep(100);
++	return 0;
++}
++
++static int s5k_still_stop(struct s5k4ecgx *s5k)
++{
++	int ret;
++
++	if (!s5k->still)
++		return 0;
++	s5k->still = NULL;
++	s5k->loaded = NULL;	/* the next stream starts from the init */
++	ret = s5k_capture(s5k, false);
++	if (!ret)
++		ret = s5k_preview(s5k, false);
++	return ret;
++}
++
++static int s5k_get_power(struct s5k4ecgx *s5k)
+ {
+-	struct s5k4ecgx *s5k = to_s5k(sd);
+ 	int ret;
+ 
+ 	if (s5k->powered)
+@@ -353,14 +730,44 @@ static int s5k_pre_streamon(struct v4l2_subdev *sd, u32 flags)
+ 	return 0;
+ }
+ 
+-static int s5k_post_streamoff(struct v4l2_subdev *sd)
++static void s5k_put_power(struct s5k4ecgx *s5k)
+ {
+-	struct s5k4ecgx *s5k = to_s5k(sd);
+-
+ 	if (s5k->powered) {
+ 		s5k->powered = false;
+ 		pm_runtime_put_autosuspend(s5k->dev);
+ 	}
++}
++
++/*
++ * Preview modes: powered, preview off, the lanes idle in LP-11. Still
++ * modes: already switched to capture and streaming.
++ */
++static int s5k_pre_streamon(struct v4l2_subdev *sd, u32 flags)
++{
++	struct s5k4ecgx *s5k = to_s5k(sd);
++	int ret;
++
++	ret = s5k_get_power(s5k);
++	if (ret)
++		return ret;
++	mutex_lock(s5k->ctrls.lock);
++	ret = s5k->mode->still ? s5k_still_start(s5k) : 0;
++	mutex_unlock(s5k->ctrls.lock);
++	if (ret)
++		s5k_put_power(s5k);
++	return ret;
++}
++
++static int s5k_post_streamoff(struct v4l2_subdev *sd)
++{
++	struct s5k4ecgx *s5k = to_s5k(sd);
++
++	/* a still started by pre_streamon that never got enable_streams */
++	mutex_lock(s5k->ctrls.lock);
++	if (s5k->still)
++		s5k_still_stop(s5k);
++	mutex_unlock(s5k->ctrls.lock);
++	s5k_put_power(s5k);
+ 	return 0;
+ }
+ 
+@@ -371,37 +778,46 @@ static int s5k_enable_streams(struct v4l2_subdev *sd,
+ 	struct s5k4ecgx *s5k = to_s5k(sd);
+ 	int ret;
+ 
+-	ret = s5k_pre_streamon(sd, 0);
++	ret = s5k_get_power(s5k);
+ 	if (ret)
+ 		return ret;
++	/* normally streaming since pre_streamon */
++	if (s5k->mode->still)
++		return s5k_still_start(s5k);
++
+ 	/* the init resets the ISP; the size tables differ in more than size */
+-	if (s5k->loaded != s5k->mode) {
+-		s5k->loaded = NULL;
+-		ret = s5k_write_table(s5k, "s5k4ecgx/init.bin", true);
+-		/* before the size table, which ends with the config sync */
+-		if (!ret)
+-			cci_write(s5k->regmap, S5K_REG_AHB_PAGE, S5K_AHB_PAGE, &ret);
+-		if (!ret)
+-			ret = s5k_write(s5k, S5K_PCFG0_MAX_FR_TIME,
+-					S5K_MAX_FR_TIME_15FPS);
+-		if (!ret)
+-			ret = s5k_write_table(s5k, s5k->mode->fw, true);
+-		if (ret)
+-			return ret;
+-		s5k->loaded = s5k->mode;
+-		/* the init resets the adjustments too */
+-		ret = __v4l2_ctrl_handler_setup(&s5k->ctrls);
+-		if (ret)
+-			return ret;
+-	}
+-	return s5k_preview(s5k, true);
++	ret = s5k_load(s5k, s5k->mode);
++	if (!ret)
++		ret = s5k_preview(s5k, true);
++	if (ret)
++		return ret;
++	s5k->af_ok = true;
++	if (preview_af_ms)
++		s5k_af_begin(s5k, preview_af_ms);
++	return 0;
+ }
+ 
+ static int s5k_disable_streams(struct v4l2_subdev *sd,
+ 			       struct v4l2_subdev_state *state, u32 pad,
+ 			       u64 streams_mask)
+ {
+-	return s5k_preview(to_s5k(sd), false);
++	struct s5k4ecgx *s5k = to_s5k(sd);
++
++	/* the work sees af_ok cleared under the lock and does nothing */
++	s5k->af_ok = false;
++	s5k->af_phase = S5K_AF_IDLE;
++	s5k->af_status = V4L2_AUTO_FOCUS_STATUS_IDLE;
++	cancel_delayed_work(&s5k->af_work);
++	if (s5k->still)
++		return s5k_still_stop(s5k);
++	return s5k_preview(s5k, false);
++}
++
++/* HAL: two frames after a preview start, one after the capture switch */
++static int s5k_g_skip_frames(struct v4l2_subdev *sd, u32 *frames)
++{
++	*frames = to_s5k(sd)->mode->still ? still_skip : 2;
++	return 0;
+ }
+ 
+ static int s5k_s_ctrl(struct v4l2_ctrl *ctrl)
+@@ -421,6 +837,16 @@ static int s5k_s_ctrl(struct v4l2_ctrl *ctrl)
+ 	case V4L2_CID_SATURATION:
+ 		addr = S5K_USER_SATURATION;
+ 		break;
++	case V4L2_CID_AUTO_FOCUS_RANGE:
++		return s5k_af_range(s5k, ctrl->val);
++	case V4L2_CID_AUTO_FOCUS_START:
++		/* the search works on the preview statistics */
++		if (!s5k->af_ok)
++			return -EBUSY;
++		s5k_af_begin(s5k, 0);
++		return 0;
++	case V4L2_CID_AUTO_FOCUS_STOP:
++		return s5k_af_stop(s5k);
+ 	default:
+ 		/* link frequency and pixel rate follow the mode */
+ 		return 0;
+@@ -436,7 +862,18 @@ static int s5k_s_ctrl(struct v4l2_ctrl *ctrl)
+ 	return ret;
+ }
+ 
++static int s5k_g_volatile_ctrl(struct v4l2_ctrl *ctrl)
++{
++	struct s5k4ecgx *s5k = container_of(ctrl->handler, struct s5k4ecgx,
++					    ctrls);
++
++	if (ctrl->id == V4L2_CID_AUTO_FOCUS_STATUS)
++		ctrl->val = s5k->af_status;
++	return 0;
++}
++
+ static const struct v4l2_ctrl_ops s5k_ctrl_ops = {
++	.g_volatile_ctrl = s5k_g_volatile_ctrl,
+ 	.s_ctrl = s5k_s_ctrl,
+ };
+ 
+@@ -446,6 +883,10 @@ static const struct v4l2_subdev_video_ops s5k_video_ops = {
+ 	.post_streamoff = s5k_post_streamoff,
+ };
+ 
++static const struct v4l2_subdev_sensor_ops s5k_sensor_ops = {
++	.g_skip_frames = s5k_g_skip_frames,
++};
++
+ static const struct v4l2_subdev_pad_ops s5k_pad_ops = {
+ 	.enum_mbus_code = s5k_enum_mbus_code,
+ 	.enum_frame_size = s5k_enum_frame_size,
+@@ -458,6 +899,7 @@ static const struct v4l2_subdev_pad_ops s5k_pad_ops = {
+ 
+ static const struct v4l2_subdev_ops s5k_subdev_ops = {
+ 	.video = &s5k_video_ops,
++	.sensor = &s5k_sensor_ops,
+ 	.pad = &s5k_pad_ops,
+ };
+ 
+@@ -472,13 +914,25 @@ static int s5k_init_controls(struct s5k4ecgx *s5k)
+ 	struct v4l2_ctrl *ctrl;
+ 	int ret;
+ 
+-	v4l2_ctrl_handler_init(hdl, 7);
++	v4l2_ctrl_handler_init(hdl, 11);
+ 	v4l2_ctrl_new_std(hdl, &s5k_ctrl_ops, V4L2_CID_BRIGHTNESS,
+ 			  -127, 127, 1, 0);
+ 	v4l2_ctrl_new_std(hdl, &s5k_ctrl_ops, V4L2_CID_CONTRAST,
+ 			  -127, 127, 1, 0);
+ 	v4l2_ctrl_new_std(hdl, &s5k_ctrl_ops, V4L2_CID_SATURATION,
+ 			  -127, 127, 1, S5K_SATURATION_DEF);
++	v4l2_ctrl_new_std_menu(hdl, &s5k_ctrl_ops, V4L2_CID_AUTO_FOCUS_RANGE,
++			       V4L2_AUTO_FOCUS_RANGE_MACRO, 0,
++			       V4L2_AUTO_FOCUS_RANGE_AUTO);
++	v4l2_ctrl_new_std(hdl, &s5k_ctrl_ops, V4L2_CID_AUTO_FOCUS_START,
++			  0, 0, 0, 0);
++	v4l2_ctrl_new_std(hdl, &s5k_ctrl_ops, V4L2_CID_AUTO_FOCUS_STOP,
++			  0, 0, 0, 0);
++	/* read-only and volatile by definition */
++	v4l2_ctrl_new_std(hdl, &s5k_ctrl_ops, V4L2_CID_AUTO_FOCUS_STATUS,
++			  0, V4L2_AUTO_FOCUS_STATUS_BUSY |
++			  V4L2_AUTO_FOCUS_STATUS_REACHED |
++			  V4L2_AUTO_FOCUS_STATUS_FAILED, 0, 0);
+ 	ctrl = v4l2_ctrl_new_int_menu(hdl, &s5k_ctrl_ops, V4L2_CID_LINK_FREQ,
+ 				      0, 0, s5k_link_freqs);
+ 	if (ctrl)
+@@ -533,6 +987,8 @@ static int s5k_probe(struct i2c_client *client)
+ 		return -ENOMEM;
+ 	s5k->dev = dev;
+ 	s5k->mode = &s5k_modes[0];
++	s5k->af_range = -1;
++	INIT_DELAYED_WORK(&s5k->af_work, s5k_af_work);
+ 	v4l2_i2c_subdev_init(&s5k->sd, client, &s5k_subdev_ops);
+ 	s5k->sd.internal_ops = &s5k_internal_ops;
+ 
+@@ -565,6 +1021,13 @@ static int s5k_probe(struct i2c_client *client)
+ 				      s5k->supplies);
+ 	if (ret)
+ 		return dev_err_probe(dev, ret, "supplies\n");
++	s5k->afvdd = devm_regulator_get_optional(dev, "afvdd");
++	if (IS_ERR(s5k->afvdd)) {
++		if (PTR_ERR(s5k->afvdd) != -ENODEV)
++			return dev_err_probe(dev, PTR_ERR(s5k->afvdd),
++					     "afvdd\n");
++		s5k->afvdd = NULL;
++	}
+ 
+ 	ret = s5k_power_on(dev);
+ 	if (ret)
+@@ -606,7 +1069,8 @@ static int s5k_probe(struct i2c_client *client)
+ 		goto err_pm;
+ 
+ 	pm_runtime_put_autosuspend(dev);
+-	dev_info(dev, "S5K4ECGX id %#llx rev %#llx\n", id, rev);
++	dev_info(dev, "S5K4ECGX id %#llx rev %#llx%s\n", id, rev,
++		 s5k->afvdd ? ", AF supply" : "");
+ 	return 0;
+ 
+ err_pm:
+@@ -629,6 +1093,7 @@ static void s5k_remove(struct i2c_client *client)
+ 	struct s5k4ecgx *s5k = to_s5k(sd);
+ 
+ 	v4l2_async_unregister_subdev(sd);
++	cancel_delayed_work_sync(&s5k->af_work);
+ 	v4l2_subdev_cleanup(sd);
+ 	media_entity_cleanup(&sd->entity);
+ 	v4l2_ctrl_handler_free(&s5k->ctrls);
+diff --git a/drivers/media/platform/sprd/sc7730-dcam.c b/drivers/media/platform/sprd/sc7730-dcam.c
+index 989365872..6594fca80 100644
+--- a/drivers/media/platform/sprd/sc7730-dcam.c
++++ b/drivers/media/platform/sprd/sc7730-dcam.c
+@@ -14,6 +14,13 @@
+  * at the next one (auto copy), as in the vendor driver. A scratch buffer
+  * takes frames for which user space has queued nothing.
+  *
++ * Path 1 has a 2048 pixel line buffer, path 2 one of 4096; frames wider
++ * than 2048 (the 5 MP stills of the rear camera) go through path 2, with
++ * the scaler bypassed as well (module parameter path_sel to override).
++ * The vendor never ran path 2 in bypass: it always trimmed one line and
++ * scaled it back (path2_crop to trim lines without scaling). The number
++ * of frames to drop after the start comes from the sensor.
++ *
+  * Port 0 is D-PHY A (2 lanes, the rear camera), port 1 D-PHY C (1 lane,
+  * the front camera); only one sensor streams at a time, chosen through
+  * the media links. The sensor master clock (MCLK, 24 MHz) lives in the MM
+@@ -47,46 +54,32 @@
+ 
+ /* DCAM */
+ #define DCAM_CFG		0x00
+-#define  CFG_PATH1_EN		BIT(1)
+ #define  CFG_CSI2_IN		BIT(9)
+-#define  CFG_PATH1_SRC		GENMASK(12, 11)
+ #define DCAM_CONTROL		0x04
+ #define  CTL_CAP_FORCE_COPY	BIT(0)
+ #define  CTL_CAP_EN		BIT(2)
+-#define  CTL_PATH1_FORCE_COPY	BIT(10)
+-#define  CTL_PATH1_AUTO_COPY	BIT(11)
+-#define  CTL_PATH1_COEF_FORCE	BIT(14)
+-#define PATH1_CFG		0x10
+-#define  P1_OUT_FMT		GENMASK(7, 6)	/* 0 YUV422, 1 YUV420, 2-plane */
+-#define  P1_UV_TAP		GENMASK(15, 11)
+-#define  P1_Y_TAP		GENMASK(19, 16)
+-#define  P1_SCALER_BYPASS	BIT(20)
+-#define PATH1_SRC_SIZE		0x14
+-#define PATH1_DST_SIZE		0x18
+-#define PATH1_TRIM_START	0x1c
+-#define PATH1_TRIM_SIZE		0x20
++/* path 1 at 0x10, path 2 at 0x24 */
++#define PATH_CFG		0x00
++#define  P_OUT_FMT		GENMASK(7, 6)	/* 0 YUV422, 1 YUV420, 2-plane */
++#define  P_UV_TAP		GENMASK(15, 11)
++#define  P_Y_TAP		GENMASK(19, 16)
++#define  P_SCALER_BYPASS	BIT(20)
++#define PATH_SRC_SIZE		0x04
++#define PATH_DST_SIZE		0x08
++#define PATH_TRIM_START		0x0c
++#define PATH_TRIM_SIZE		0x10
+ #define INT_STS			0x3c
+ #define INT_MASK		0x40
+ #define INT_CLR			0x44
+-#define  INT_PATH1_DONE		BIT(6)
+-#define  INT_PATH1_OV		BIT(7)
+ #define  INT_SN_LINE_ERR	BIT(10)
+ #define  INT_SN_FRAME_ERR	BIT(11)
+ #define  INT_MIPI_OV		BIT(14)
+-#define  INT_PATH1_SOF		BIT(19)
+ #define  INT_ALL		GENMASK(20, 0)
+-#define  INT_ERRORS		(INT_PATH1_OV | INT_SN_LINE_ERR | \
+-				 INT_SN_FRAME_ERR | INT_MIPI_OV)
+-#define FRM_ADDR1		0x50	/* path1 Y */
+-#define FRM_ADDR2		0x54	/* path1 CbCr */
+ #define ENDIAN_SEL		0x6c
+-#define  ENDIAN_P1_LITTLE	(BIT(6) | BIT(8))
+ #define  ENDIAN_AXI		(BIT(18) | BIT(19))
+ #define AHBM_STS		0x70
+ #define  AHBM_BUSY		BIT(0)
+-#define  AHBM_PATH1_STOP	BIT(4)
+ #define  AHBM_WR_ARBIT		BIT(8)
+-#define  AHBM_PATH1_BUSY	BIT(17)
+ #define CAP_MIPI_CTRL		0x128
+ #define  CAP_MULTI_FRAME	BIT(6)
+ #define  CAP_YUV_ORDER		GENMASK(8, 7)	/* 2 = UYVY */
+@@ -96,9 +89,10 @@
+ #define CAP_MIPI_START		0x130
+ #define CAP_MIPI_END		0x134
+ #define CAP_MIPI_IMG_DECI	0x138
+-#define SC1_COEF_H		0x400	/* path1 scaler coefficient RAM */
+-#define SC1_COEF_V		0x4f0
+-#define SC1_COEF_VC		0x8f0
++/* scaler coefficient RAM: path 1 at 0x400, path 2 at 0x1400 */
++#define SC_COEF_H		0x000
++#define SC_COEF_V		0x0f0
++#define SC_COEF_VC		0x4f0
+ 
+ /* CSI-2 host */
+ #define CSI_VERSION		0x00
+@@ -127,7 +121,6 @@
+ #define  RST_DCAM		BIT(0)
+ #define  RST_CCIR		BIT(1)
+ #define  RST_CSI		BIT(5)
+-#define  RST_PATH1		BIT(8)
+ #define MM_GEN_CKG		0x08
+ #define  CKG_CPHY_CFG		BIT(0)
+ #define  CKG_MIPI_CSI		BIT(1)
+@@ -151,9 +144,54 @@
+ #define  PWR_CSI0_PHY_PD	BIT(10)
+ 
+ #define DCAM_MCLK_HZ		24000000
+-#define DCAM_MAX_WIDTH		2048	/* path1 line buffer */
++#define DCAM_PATH1_MAX_WIDTH	2048	/* line buffer; path2: 4096 */
++#define DCAM_MAX_WIDTH		4092	/* capture window */
+ #define DCAM_MAX_HEIGHT		4092
+ 
++/* the two scaling paths, from the vendor sc8830g/dcam_drv.c */
++struct dcam_path {
++	unsigned int id;
++	u32 regs;		/* PATH_CFG .. PATH_TRIM_SIZE */
++	u32 addr_y, addr_uv;	/* FRM_ADDR1/2, FRM_ADDR4/5 */
++	u32 cfg_en, cfg_src;	/* DCAM_CFG */
++	u32 force_copy, auto_copy, coef_force;	/* DCAM_CONTROL */
++	u32 endian_little;	/* ENDIAN_SEL Y and UV fields */
++	u32 ahbm_stop, ahbm_busy;
++	u32 int_done, int_ov, int_sof;
++	u32 rst;		/* MM_AHB_RST */
++	u32 coef;		/* scaler coefficient RAM */
++};
++
++static const struct dcam_path dcam_paths[] = {
++	{
++		.id = 1, .regs = 0x10, .addr_y = 0x50, .addr_uv = 0x54,
++		.cfg_en = BIT(1), .cfg_src = GENMASK(12, 11),
++		.force_copy = BIT(10), .auto_copy = BIT(11),
++		.coef_force = BIT(14),
++		.endian_little = BIT(6) | BIT(8),
++		.ahbm_stop = BIT(4), .ahbm_busy = BIT(17),
++		.int_done = BIT(6), .int_ov = BIT(7), .int_sof = BIT(19),
++		.rst = BIT(8), .coef = 0x400,
++	}, {
++		.id = 2, .regs = 0x24, .addr_y = 0x5c, .addr_uv = 0x60,
++		.cfg_en = BIT(2), .cfg_src = GENMASK(14, 13),
++		.force_copy = BIT(12), .auto_copy = BIT(13),
++		.coef_force = BIT(16),
++		.endian_little = BIT(10) | BIT(12),
++		.ahbm_stop = BIT(5), .ahbm_busy = BIT(18),
++		.int_done = BIT(8), .int_ov = BIT(9), .int_sof = BIT(20),
++		.rst = BIT(9), .coef = 0x1400,
++	},
++};
++
++static int path_sel;
++module_param(path_sel, int, 0644);
++MODULE_PARM_DESC(path_sel, "0: path 1 up to 2048 pixels wide, path 2 above; 1 or 2: always that path");
++
++static unsigned int path2_crop;
++module_param(path2_crop, uint, 0644);
++MODULE_PARM_DESC(path2_crop, "Lines trimmed off the bottom on path 2, scaler still bypassed (even)");
++
+ enum { DCAM_PORT_PHY_A, DCAM_PORT_PHY_C, DCAM_NUM_PORTS };
+ 
+ struct dcam_buf {
+@@ -182,6 +220,9 @@ struct dcam {
+ 	struct v4l2_async_notifier notifier;
+ 	struct dcam_sensor sensors[DCAM_NUM_PORTS];
+ 	struct dcam_sensor *active;	/* streaming sensor */
++	const struct dcam_path *path;	/* in use while streaming */
++	u32 int_errors;
++	u32 skip;			/* frames dropped after the start */
+ 
+ 	struct video_device vdev;
+ 	struct media_pad pad;
+@@ -405,8 +446,16 @@ static void dcam_csi_stop(struct dcam *d, struct dcam_sensor *s)
+ 
+ static void dcam_set_addr(struct dcam *d, dma_addr_t addr)
+ {
+-	writel(addr, d->base + FRM_ADDR1);
+-	writel(addr + d->fmt.width * d->fmt.height, d->base + FRM_ADDR2);
++	writel(addr, d->base + d->path->addr_y);
++	writel(addr + d->fmt.width * d->fmt.height,
++	       d->base + d->path->addr_uv);
++}
++
++static const struct dcam_path *dcam_pick_path(struct dcam *d)
++{
++	if (path_sel == 1 || path_sel == 2)
++		return &dcam_paths[path_sel - 1];
++	return &dcam_paths[d->fmt.width > DCAM_PATH1_MAX_WIDTH];
+ }
+ 
+ static dma_addr_t dcam_buf_addr(struct dcam *d, struct dcam_buf *buf)
+@@ -477,7 +526,10 @@ static void dcam_load_coef(struct dcam *d, u32 off, const u32 *coef,
+ 
+ static void dcam_hw_start(struct dcam *d)
+ {
++	const struct dcam_path *p = d->path;
++	void __iomem *regs = d->base + p->regs;
+ 	u32 size = d->fmt.width | d->fmt.height << 16;
++	u32 out = size;
+ 	unsigned long flags;
+ 	u32 v;
+ 
+@@ -487,35 +539,39 @@ static void dcam_hw_start(struct dcam *d)
+ 	dcam_rmw(d->mmahb + MM_AHB_RST, RST_DCAM | RST_CCIR, 0);
+ 	writel(INT_ALL, d->base + INT_CLR);
+ 
+-	dcam_rmw(d->base + DCAM_CFG, CFG_PATH1_SRC, CFG_CSI2_IN);
++	/* the path's source is the capture block (0), not the ISP */
++	dcam_rmw(d->base + DCAM_CFG, p->cfg_src, CFG_CSI2_IN);
+ 	writel(CAP_MULTI_FRAME | FIELD_PREP(CAP_YUV_ORDER, 2),
+ 	       d->base + CAP_MIPI_CTRL);
+-	writel(FIELD_PREP(CAP_PRE_SKIP, 2) | CAP_CLR_COUNT,
++	writel(FIELD_PREP(CAP_PRE_SKIP, d->skip) | CAP_CLR_COUNT,
+ 	       d->base + CAP_MIPI_FRM_CTRL);
+ 	writel(0, d->base + CAP_MIPI_START);
+ 	writel((d->fmt.width - 1) | (d->fmt.height - 1) << 16,
+ 	       d->base + CAP_MIPI_END);
+ 	writel(0, d->base + CAP_MIPI_IMG_DECI);
+ 
+-	writel(size, d->base + PATH1_SRC_SIZE);
+-	writel(0, d->base + PATH1_TRIM_START);
+-	writel(size, d->base + PATH1_TRIM_SIZE);
+-	writel(size, d->base + PATH1_DST_SIZE);
++	/* trim = destination keeps the scale at 1:1 */
++	if (p->id == 2 && path2_crop && path2_crop < d->fmt.height / 2)
++		out = d->fmt.width | (d->fmt.height - (path2_crop & ~1)) << 16;
++	writel(size, regs + PATH_SRC_SIZE);
++	writel(0, regs + PATH_TRIM_START);
++	writel(out, regs + PATH_TRIM_SIZE);
++	writel(out, regs + PATH_DST_SIZE);
+ 	if (d->fmt.pixelformat == V4L2_PIX_FMT_NV12) {
+ 		/* the scaler at 1:1 does the 4:2:0 chroma decimation */
+-		dcam_load_coef(d, SC1_COEF_H, dcam_sc_coef_h,
++		dcam_load_coef(d, p->coef + SC_COEF_H, dcam_sc_coef_h,
+ 			       ARRAY_SIZE(dcam_sc_coef_h));
+-		dcam_load_coef(d, SC1_COEF_V, dcam_sc_coef_v,
++		dcam_load_coef(d, p->coef + SC_COEF_V, dcam_sc_coef_v,
+ 			       ARRAY_SIZE(dcam_sc_coef_v));
+-		dcam_load_coef(d, SC1_COEF_VC, dcam_sc_coef_vc,
++		dcam_load_coef(d, p->coef + SC_COEF_VC, dcam_sc_coef_vc,
+ 			       ARRAY_SIZE(dcam_sc_coef_vc));
+-		writel(FIELD_PREP(P1_OUT_FMT, 1) |
+-		       FIELD_PREP(P1_UV_TAP, DCAM_SC_TAP) |
+-		       FIELD_PREP(P1_Y_TAP, DCAM_SC_TAP), d->base + PATH1_CFG);
++		writel(FIELD_PREP(P_OUT_FMT, 1) |
++		       FIELD_PREP(P_UV_TAP, DCAM_SC_TAP) |
++		       FIELD_PREP(P_Y_TAP, DCAM_SC_TAP), regs + PATH_CFG);
+ 	} else {
+-		writel(P1_SCALER_BYPASS, d->base + PATH1_CFG);
++		writel(P_SCALER_BYPASS, regs + PATH_CFG);
+ 	}
+-	dcam_rmw(d->base + ENDIAN_SEL, 0, ENDIAN_P1_LITTLE | ENDIAN_AXI);
++	dcam_rmw(d->base + ENDIAN_SEL, 0, p->endian_little | ENDIAN_AXI);
+ 
+ 	spin_lock_irqsave(&d->qlock, flags);
+ 	d->cur = dcam_take_buf(d);
+@@ -526,31 +582,31 @@ static void dcam_hw_start(struct dcam *d)
+ 	dcam_set_addr(d, dcam_buf_addr(d, d->cur));
+ 	spin_unlock_irqrestore(&d->qlock, flags);
+ 
+-	writel(INT_PATH1_DONE | INT_PATH1_SOF | INT_ERRORS, d->base + INT_MASK);
++	writel(p->int_done | p->int_sof | d->int_errors, d->base + INT_MASK);
+ 	enable_irq(d->irq);
+ 	dcam_rmw(d->base + AHBM_STS, 0, AHBM_WR_ARBIT);
+-	dcam_rmw(d->base + DCAM_CONTROL, 0,
+-		 CTL_PATH1_FORCE_COPY | CTL_PATH1_COEF_FORCE);
+-	dcam_rmw(d->base + DCAM_CFG, 0, CFG_PATH1_EN);
++	dcam_rmw(d->base + DCAM_CONTROL, 0, p->force_copy | p->coef_force);
++	dcam_rmw(d->base + DCAM_CFG, 0, p->cfg_en);
+ 	dcam_rmw(d->base + DCAM_CONTROL, 0, CTL_CAP_FORCE_COPY);
+ 	dcam_rmw(d->base + DCAM_CONTROL, 0, CTL_CAP_EN);
+ }
+ 
+ static void dcam_hw_stop(struct dcam *d)
+ {
++	const struct dcam_path *p = d->path;
+ 	u32 v;
+ 
+ 	writel(0, d->base + INT_MASK);
+ 	dcam_rmw(d->base + DCAM_CONTROL, CTL_CAP_EN, 0);
+-	dcam_rmw(d->base + AHBM_STS, 0, AHBM_PATH1_STOP);
++	dcam_rmw(d->base + AHBM_STS, 0, p->ahbm_stop);
+ 	udelay(10);
+-	dcam_rmw(d->base + DCAM_CFG, CFG_PATH1_EN, 0);
+-	dcam_rmw(d->base + DCAM_CONTROL, 0, CTL_PATH1_FORCE_COPY);
+-	readl_poll_timeout(d->base + AHBM_STS, v, !(v & AHBM_PATH1_BUSY),
++	dcam_rmw(d->base + DCAM_CFG, p->cfg_en, 0);
++	dcam_rmw(d->base + DCAM_CONTROL, 0, p->force_copy);
++	readl_poll_timeout(d->base + AHBM_STS, v, !(v & p->ahbm_busy),
+ 			   10, 10000);
+-	dcam_rmw(d->mmahb + MM_AHB_RST, 0, RST_PATH1);
++	dcam_rmw(d->mmahb + MM_AHB_RST, 0, p->rst);
+ 	udelay(1);
+-	dcam_rmw(d->mmahb + MM_AHB_RST, RST_PATH1, 0);
++	dcam_rmw(d->mmahb + MM_AHB_RST, p->rst, 0);
+ 	writel(INT_ALL, d->base + INT_CLR);
+ 	disable_irq(d->irq);
+ }
+@@ -567,6 +623,7 @@ static void dcam_buf_complete(struct dcam *d, struct dcam_buf *buf,
+ static irqreturn_t dcam_irq(int irq, void *data)
+ {
+ 	struct dcam *d = data;
++	const struct dcam_path *p = d->path;
+ 	u32 sts = readl(d->base + INT_STS);
+ 
+ 	if (!sts)
+@@ -574,22 +631,22 @@ static irqreturn_t dcam_irq(int irq, void *data)
+ 	writel(sts, d->base + INT_CLR);
+ 
+ 	spin_lock(&d->qlock);
+-	if (sts & INT_ERRORS) {
++	if (sts & d->int_errors) {
+ 		if (!d->errors++)
+ 			dev_warn(d->dev, "capture error %#x, CSI ERR1 %#x\n",
+ 				 sts, readl(d->csi + CSI_ERR1));
+ 	}
+ 	/* the frame in cur is complete */
+-	if (sts & INT_PATH1_DONE) {
++	if (sts & p->int_done) {
+ 		if (d->cur)
+-			dcam_buf_complete(d, d->cur, sts & INT_ERRORS ?
++			dcam_buf_complete(d, d->cur, sts & d->int_errors ?
+ 					  VB2_BUF_STATE_ERROR :
+ 					  VB2_BUF_STATE_DONE);
+ 		d->cur = NULL;
+ 		d->sequence++;
+ 	}
+ 	/* a new frame starts: it uses what latched; queue the one after */
+-	if (sts & INT_PATH1_SOF) {
++	if (sts & p->int_sof) {
+ 		if (d->next_valid) {
+ 			/* no DONE for the previous frame: dropped, reuse it */
+ 			if (d->cur)
+@@ -600,7 +657,7 @@ static irqreturn_t dcam_irq(int irq, void *data)
+ 		d->next = dcam_take_buf(d);
+ 		d->next_valid = true;
+ 		dcam_set_addr(d, dcam_buf_addr(d, d->next));
+-		dcam_rmw(d->base + DCAM_CONTROL, 0, CTL_PATH1_AUTO_COPY);
++		dcam_rmw(d->base + DCAM_CONTROL, 0, p->auto_copy);
+ 	}
+ 	spin_unlock(&d->qlock);
+ 	return IRQ_HANDLED;
+@@ -692,6 +749,7 @@ static int dcam_start_streaming(struct vb2_queue *q, unsigned int count)
+ 	struct media_pad *remote;
+ 	unsigned int i;
+ 	s64 link_freq;
++	u32 skip = 2;
+ 	int ret;
+ 
+ 	remote = media_pad_remote_pad_first(&d->pad);
+@@ -723,7 +781,11 @@ static int dcam_start_streaming(struct vb2_queue *q, unsigned int count)
+ 	if (ret)
+ 		goto err_scratch;
+ 
+-	/* sensor configured and asleep: lanes in LP-11 for the D-PHY */
++	/*
++	 * Sensor configured and asleep: lanes in LP-11 for the D-PHY. A
++	 * sensor that must switch modes while streaming (S5K4ECGX stills)
++	 * streams already; the vendor always started the PHY like that.
++	 */
+ 	ret = v4l2_subdev_call(s->sd, video, pre_streamon,
+ 			       V4L2_SUBDEV_PRE_STREAMON_FL_MANUAL_LP);
+ 	if (ret && ret != -ENOIOCTLCMD)
+@@ -738,6 +800,18 @@ static int dcam_start_streaming(struct vb2_queue *q, unsigned int count)
+ 	if (ret)
+ 		goto err_post;
+ 
++	v4l2_subdev_call(s->sd, sensor, g_skip_frames, &skip);
++	d->skip = min(skip, 15U);
++	d->path = dcam_pick_path(d);
++	d->int_errors = d->path->int_ov | INT_SN_LINE_ERR | INT_SN_FRAME_ERR |
++			INT_MIPI_OV;
++	/* test build: anything but the proven preview setup */
++	if (d->path->id != 1 || d->fmt.width > DCAM_PATH1_MAX_WIDTH ||
++	    d->skip != 2)
++		dev_info(d->dev, "%ux%u through path %u, skip %u, PHY_STATE %#x\n",
++			 d->fmt.width, d->fmt.height, d->path->id, d->skip,
++			 readl(d->csi + CSI_PHY_STATE));
++
+ 	d->active = s;
+ 	dcam_hw_start(d);
+ 	ret = v4l2_subdev_enable_streams(s->sd, remote->index, BIT(0));
+-- 
+2.47.3
+

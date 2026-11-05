@@ -1,7 +1,7 @@
-From e5c01e4a63abcde45e5811f3b14eb6361ab01941 Mon Sep 17 00:00:00 2001
+From 5b1f6880f42d2230108f79fd4d60c5600c981a2b Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 14:49:53 +0000
-Subject: [PATCH 65/79] ARM: sprd: sc7730: cap cpufreq at 1300 MHz from policy
+Subject: [PATCH 65/92] ARM: sprd: sc7730: cap cpufreq at 1300 MHz from policy
  creation
 
 The OPP table now goes up to 1612 MHz, beyond the vendor's 1300 MHz,

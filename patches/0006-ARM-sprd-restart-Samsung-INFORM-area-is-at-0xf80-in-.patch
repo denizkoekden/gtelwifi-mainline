@@ -1,8 +1,8 @@
 From f42387ff1c76227e27792fb0a6b440defcbc2931 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 15:37:41 +0000
-Subject: [PATCH 06/79] ARM: sprd: restart: Samsung INFORM area is at 0xf80 in
- IRAM0
+Subject: [PATCH 006/106] ARM: sprd: restart: Samsung INFORM area is at 0xf80
+ in IRAM0
 
 The vendor header location (0x50003000) holds code on this board, and
 sboot never saw our reboot reason. sboot itself reads the upload magic at

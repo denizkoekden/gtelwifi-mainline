@@ -1,0 +1,88 @@
+From 93eab1ae4586d8ea0e5ecd41aebe97e2d841f4b9 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Wed, 4 Nov 2026 19:04:00 +0000
+Subject: [PATCH 095/106] bpf: let local storage fall back to kmalloc where
+ kmalloc_nolock() fails
+
+Local storage elements and the per owner storage are allocated with
+kmalloc_nolock(). That only works on slab caches which update the
+freelist with a double word cmpxchg (__CMPXCHG_DOUBLE); on architectures
+without one, such as 32-bit Arm (no system_has_cmpxchg64()), it returns
+NULL every time. No sk, task, inode or cgroup storage can be created
+there at all: bpf_sk_storage_get(..., BPF_SK_STORAGE_GET_F_CREATE) in a
+cgroup/sock_create program always returns NULL. Android's netd checks
+this at boot (SO_ANDROID_DROP_REASON answered from sk storage), failed
+with EUNATCH and rebooted the device (gtelwifi, SC7730, 04.11.2026).
+
+In preemptible context this CPU holds no slab lock (the per-CPU sheaves
+are locked with preemption off, the node lists with interrupts off), so
+a plain non-sleeping allocation is safe there; fall back to it. That
+covers the creation from cgroup/sock_create programs, which run
+preemptible (rcu_read_lock_dont_migrate() under PREEMPT_RCU).
+Local storage is freed with kfree() or kfree_rcu(), which take objects
+from either allocator. Without CONFIG_PREEMPT_COUNT preemptible() is always
+false and nothing changes; a complete fix belongs into kmalloc_nolock()
+for these architectures. Mainline 7.4-rc1 has the same code.
+
+Assisted-by: Claude Opus 5.5
+---
+ kernel/bpf/bpf_local_storage.c | 29 +++++++++++++++++++++++++----
+ 1 file changed, 25 insertions(+), 4 deletions(-)
+
+diff --git a/kernel/bpf/bpf_local_storage.c b/kernel/bpf/bpf_local_storage.c
+index 6fc6a4b67..5827782df 100644
+--- a/kernel/bpf/bpf_local_storage.c
++++ b/kernel/bpf/bpf_local_storage.c
+@@ -51,6 +51,29 @@ owner_storage(struct bpf_local_storage_map *smap, void *owner)
+ 	return map->ops->map_owner_storage_ptr(owner);
+ }
+ 
++/*
++ * kmalloc_nolock() needs caches that update the freelist with a double word
++ * cmpxchg (__CMPXCHG_DOUBLE). On architectures without one, e.g. 32-bit Arm,
++ * it returns NULL every time, and no local storage could ever be created.
++ * In preemptible context this CPU holds no slab lock (the per-CPU sheaves
++ * are locked with preemption off, the node lists with interrupts off), so a
++ * plain non-sleeping allocation is safe there; that covers the creation in
++ * cgroup/sock_create programs. Local storage is freed with kfree() or
++ * kfree_rcu(), which take both kinds of objects.
++ */
++static void *bpf_local_storage_kmalloc(struct bpf_local_storage_map *smap,
++				       size_t size)
++{
++	void *ptr;
++
++	ptr = bpf_map_kmalloc_nolock(&smap->map, size, __GFP_ZERO, NUMA_NO_NODE);
++	if (!ptr && preemptible())
++		ptr = bpf_map_kmalloc_node(&smap->map, size,
++					   GFP_NOWAIT | __GFP_ZERO | __GFP_NOWARN,
++					   NUMA_NO_NODE);
++	return ptr;
++}
++
+ static bool selem_linked_to_storage_lockless(const struct bpf_local_storage_elem *selem)
+ {
+ 	return !hlist_unhashed_lockless(&selem->snode);
+@@ -75,8 +98,7 @@ bpf_selem_alloc(struct bpf_local_storage_map *smap, void *owner,
+ 	if (mem_charge(smap, owner, smap->elem_size))
+ 		return NULL;
+ 
+-	selem = bpf_map_kmalloc_nolock(&smap->map, smap->elem_size,
+-				       __GFP_ZERO, NUMA_NO_NODE);
++	selem = bpf_local_storage_kmalloc(smap, smap->elem_size);
+ 
+ 	if (selem) {
+ 		RCU_INIT_POINTER(SDATA(selem)->smap, smap);
+@@ -487,8 +509,7 @@ int bpf_local_storage_alloc(void *owner,
+ 	if (err)
+ 		return err;
+ 
+-	storage = bpf_map_kmalloc_nolock(&smap->map, sizeof(*storage),
+-					 __GFP_ZERO, NUMA_NO_NODE);
++	storage = bpf_local_storage_kmalloc(smap, sizeof(*storage));
+ 	if (!storage) {
+ 		err = -ENOMEM;
+ 		goto uncharge;
+-- 
+2.47.3
+

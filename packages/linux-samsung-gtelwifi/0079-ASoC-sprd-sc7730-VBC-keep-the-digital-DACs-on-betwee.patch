@@ -1,7 +1,7 @@
-From 9380d951b3bc7bbf9467e38b8b4bad17515f7b41 Mon Sep 17 00:00:00 2001
+From eded4a74063dbccfcc3f97f9c8ffa3ba48b009dd Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 20:41:27 +0000
-Subject: [PATCH 79/79] ASoC: sprd: sc7730 VBC: keep the digital DACs on
+Subject: [PATCH 79/92] ASoC: sprd: sc7730 VBC: keep the digital DACs on
  between streams
 
 The analog path behind the DACs stays powered after a stream for

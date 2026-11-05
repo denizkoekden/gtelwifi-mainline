@@ -1,7 +1,7 @@
-From 5d2dcc89b217578f6d8e16d81067a55c1814abc2 Mon Sep 17 00:00:00 2001
+From 9b43237bba6859f428da4390513924c618a7da40 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 22:28:46 +0000
-Subject: [PATCH 23/79] ARM: sprd: SC7730 clean-ups now that the architected
+Subject: [PATCH 023/106] ARM: sprd: SC7730 clean-ups now that the architected
  timer runs
 
 The AON timer no longer opens the INTC and wake-up mux gates for its

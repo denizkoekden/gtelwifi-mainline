@@ -1,8 +1,8 @@
 From 5e25ccc5ef2315fc1e0ad45d8ad4b58b46879c46 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 15:19:58 +0000
-Subject: [PATCH 04/79] mmc: sdhci-sc7730: add SC7730/SC8830 host glue, enable
- gtelwifi eMMC
+Subject: [PATCH 004/106] mmc: sdhci-sc7730: add SC7730/SC8830 host glue,
+ enable gtelwifi eMMC
 
 The 32-bit Spreadtrum "shark" SD/eMMC hosts are plain SDHCI 3.0 with a
 few quirks (vendor sprd-sdhci-fix-of.c) and a base clock the capability

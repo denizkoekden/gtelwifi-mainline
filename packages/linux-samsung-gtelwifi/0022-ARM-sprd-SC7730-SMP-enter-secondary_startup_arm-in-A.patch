@@ -1,7 +1,7 @@
-From 27824602f06ea7cf91ffe423867c9a5bfd390eb1 Mon Sep 17 00:00:00 2001
+From 3bad368aadfd1034903c984aa95d567bb96e9f47 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 22:09:55 +0000
-Subject: [PATCH 22/79] ARM: sprd: SC7730 SMP: enter secondary_startup_arm in
+Subject: [PATCH 22/92] ARM: sprd: SC7730 SMP: enter secondary_startup_arm in
  ARM state
 
 The boot ROM jumps to JMP_ADDR with interworking. In a Thumb-2 kernel

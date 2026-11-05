@@ -3,7 +3,7 @@ maintainer="Deniz Kokden <koekdendeniz@gmail.com>"
 pkgname=device-samsung-gtelwifi
 pkgdesc="Samsung Galaxy Tab E 9.6 (SM-T560)"
 pkgver=3
-pkgrel=12
+pkgrel=15
 url="https://nura.eco"
 license="MIT"
 arch="armv7"
@@ -54,7 +54,7 @@ package() {
 	install -Dm644 "$srcdir"/drirc.conf \
 		"$pkgdir"/usr/share/drirc.d/50-samsung-gtelwifi.conf
 
-	# Speaker: UCM laid out like alsa-ucm-conf (simple-card, long name "gtelwifi")
+	# Speaker, headphones, mic: UCM laid out like alsa-ucm-conf (simple-card, long name "gtelwifi")
 	local ucm="$pkgdir"/usr/share/alsa/ucm2
 	install -Dm644 "$srcdir"/gtelwifi.conf "$srcdir"/HiFi.conf \
 		-t "$ucm"/Unisoc/SC7730/gtelwifi/
@@ -122,6 +122,6 @@ afd74fa47ad1e0953284b5982b6e5fad55852731b0ed4eee7c337934e8f28b587ff37133e337a612
 273ef7c2627cc7fabdeaef17084a86eddfb796341f0dba75f821c17e1682b121f072fd4f9f3d95442cec9f9e303e8c03fad1fb7f8eef391560989c2c32c245c6  samsung-gtelwifi-efs-mac@.service
 601f11baa1a788d9ea0bac053f6f58eb9186a8276e24d9efb21232602b469270b41002687e6c8379d5dc5345f7d5c6791fb1f90161ea7a93b5544eef94ae65e1  samsung-gtelwifi-undim-on-exit.service
 ff08e0e8b5743f682c032592b99ae5767a057643f2ee1b6b37d7913ea6d4a5b1ff160cf79faef31f9cea6dbb6006a5314faadfa6189cf715fe0a1da049a10ca2  samsung-gtelwifi-undim-on-shutdown
-1f5deb9d317f620473fedc9f0bc625c988395371e1da1c7818a8bf3c3b71d2e285fc93aea5f0edaa5144c0a7add1be3509e54a3f9292028e954787127f876725  HiFi.conf
-333ca8962b11878576cb00ef3ee48dde252da0a949c9872433b9c263bcb4053a41c150f14f02133c2b9de674a9b4febb220f6c0bd6c5309f3a96d48eeb1de5fa  gtelwifi.conf
+2ed69ca9096c1bbacd6cee57ae19b7faa8db8681cd09ea092cfdf0a2ae8b20c3fe4df335d8f6741fb33dd522ae317421bcf6a3e6f841b3c2b8f042bda3cddfc3  HiFi.conf
+cbf6059c00df11571a5577f0bcc8b36e850e75beaa1e857a4aeaeab2188674ec12ae9269abe5e72b0980fc129a6da1eb35a627328e5eb0f8f78360b4959deecd  gtelwifi.conf
 "

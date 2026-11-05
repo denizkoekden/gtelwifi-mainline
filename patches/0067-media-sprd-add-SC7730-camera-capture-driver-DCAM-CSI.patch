@@ -1,7 +1,7 @@
-From 6f2962693d667bcb64db88e339855d1e13c6f85b Mon Sep 17 00:00:00 2001
+From 5a383b88415fa6e2b35b7a579b136895e430fbe7 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 15:26:26 +0000
-Subject: [PATCH 67/79] media: sprd: add SC7730 camera capture driver (DCAM +
+Subject: [PATCH 067/106] media: sprd: add SC7730 camera capture driver (DCAM +
  CSI-2)
 
 The Spreadtrum SC7730 (and SC8830 "shark") captures camera data through

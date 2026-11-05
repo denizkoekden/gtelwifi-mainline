@@ -1,0 +1,50 @@
+From f235ac6774ff0c569a7ca0199ea1f5b0b37c7fe5 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Wed, 4 Nov 2026 14:29:09 +0000
+Subject: [PATCH 093/106] fs: keep PID 1's old fs_struct for its threads
+
+Since 7.x validate_fs_switch() reverts the fs_struct that PID 1 leaves
+behind to nullfs when PID 1 stops sharing it (unshare(CLONE_FS) or
+unshare(CLONE_NEWNS)). Android's init does exactly that in its second
+stage, after it has started the property service as a thread of PID 1.
+That thread still shares the old fs_struct and loses its root: libselinux
+in it can no longer open selinuxfs, keeps its default (enforcing) and
+fails every access computation. init then rejects every property change,
+even its own, and the boot stops waiting for ro.cold_boot_done
+(LineageOS 24 on the SM-T560, kernel permissive, first boots on
+04.11.2026). Kernel threads that load firmware lose /vendor/firmware the
+same way.
+
+Keep the old state, as kernels before 7.x did, and warn only once.
+
+Assisted-by: Claude Opus 5.5
+---
+ fs/fs_struct.c | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/fs/fs_struct.c b/fs/fs_struct.c
+index 34699f3b6..5a08245f2 100644
+--- a/fs/fs_struct.c
++++ b/fs/fs_struct.c
+@@ -192,9 +192,15 @@ static inline void validate_fs_switch(struct fs_struct *old_fs)
+ 	/* @old_fs may be dangling but for comparison it's fine */
+ 	if (old_fs != userspace_init_fs)
+ 		return;
+-	pr_warn("VFS: Pid 1 stopped sharing filesystem state\n");
+-	set_fs_root(userspace_init_fs, &init_fs.root);
+-	set_fs_pwd(userspace_init_fs, &init_fs.root);
++	/*
++	 * Android's init starts its property service as a thread of PID 1
++	 * and unshares the mount namespace afterwards. That thread keeps
++	 * using the old fs_struct: reverted to nullfs it can no longer reach
++	 * selinuxfs, libselinux then denies every property change and the
++	 * boot stops waiting for ro.cold_boot_done. Keep the old state for
++	 * the threads that still share it, as kernels before 7.x did.
++	 */
++	pr_warn_once("VFS: Pid 1 stopped sharing filesystem state, kept for its threads\n");
+ }
+ 
+ struct fs_struct *switch_fs_struct(struct fs_struct *new_fs)
+-- 
+2.47.3
+

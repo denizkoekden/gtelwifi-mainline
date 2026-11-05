@@ -1,7 +1,7 @@
-From 8757a3494861d455d3c1ff3453b119e769d3b61e Mon Sep 17 00:00:00 2001
+From aebe53f11d4c9048cc0ae478a9b36271a1974716 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 20:51:31 +0000
-Subject: [PATCH 20/79] ARM: sprd: start the SC7730 system counter, use the
+Subject: [PATCH 20/92] ARM: sprd: start the SC7730 system counter, use the
  architected timer
 
 The architected timers of the Cortex-A7 cluster count the CoreSight

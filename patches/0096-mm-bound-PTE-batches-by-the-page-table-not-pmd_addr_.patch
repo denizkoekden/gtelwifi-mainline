@@ -1,0 +1,127 @@
+From 37bc4a4394b7c7d82931d846678a85eb01beee3a Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Wed, 4 Nov 2026 19:42:00 +0000
+Subject: [PATCH 096/106] mm: bound PTE batches by the page table, not
+ pmd_addr_end()
+
+move_present_ptes(), folio_unmap_pte_batch(), folio_referenced_one() and
+do_swap_page() limit a batch of PTEs to "a single page table" with
+pmd_addr_end(). With a folded PMD that does not work: 2-level page
+tables define pmd_addr_end(addr, end) as plain end
+(arch/arm/include/asm/pgtable-2level.h, asm-generic/pgtable-nopmd.h:
+32-bit Arm without LPAE, x86-32 without PAE, arm64 with two levels),
+because the pgd level already bounds every page table walk there.
+None of these callers walk the pgd level, so the batch is only limited
+by its own length.
+
+UFFDIO_MOVE hits this first: move_pages() hands the whole remaining
+length to move_pages_ptes(), and move_present_ptes() moves PTEs past the
+end of the PTE table, over the hardware half of the table and then into
+the next page. ART's userfaultfd GC triggered it on an SC7730 (Cortex-A7)
+running Android 17 a few seconds after zygote started:
+
+  Unable to handle kernel paging request at virtual address ffecf000 when write
+  PC is at cpu_ca15_set_pte_ext+0x56/0x5e
+  LR is at set_ptes+0x5b/0xa0
+  (move_pages_ptes <- move_pages <- userfaultfd_move <- sys_ioctl,
+   HeapTaskDaemon, UFFDIO_MOVE)
+
+and other boots froze without an oops. The rmap batches can clear or
+read PTEs beyond the table the same way once a large file folio is mapped
+across a 2 MiB boundary.
+
+Add pte_table_end(), the generic pmd_addr_end() computation that is also
+correct for a folded PMD, and use it at these four places. Mainline
+7.4-rc1 has the same code.
+
+Assisted-by: Claude Opus 5.5
+---
+ mm/internal.h    | 19 +++++++++++++++++++
+ mm/memory.c      |  2 +-
+ mm/rmap.c        |  4 ++--
+ mm/userfaultfd.c |  4 ++--
+ 4 files changed, 24 insertions(+), 5 deletions(-)
+
+diff --git a/mm/internal.h b/mm/internal.h
+index 38b116521..9bc69c086 100644
+--- a/mm/internal.h
++++ b/mm/internal.h
+@@ -379,6 +379,25 @@ static inline pte_t __pte_batch_clear_ignored(pte_t pte, fpb_t flags)
+ 	return pte_mkold(pte);
+ }
+ 
++/**
++ * pte_table_end - end of the PTE table that maps an address
++ * @addr: address mapped by the PTE table
++ * @end: end of the range of interest
++ *
++ * Return: the end of the PTE table that maps @addr, or @end if that comes
++ * first. Code that batches PTEs it did not get from a page table walk must
++ * use this, not pmd_addr_end(): with a folded PMD (2-level page tables, e.g.
++ * 32-bit Arm without LPAE) pmd_addr_end() returns @end unchanged, because the
++ * pgd level already bounds every walk there, and a batch would run off the
++ * end of the PTE table.
++ */
++static inline unsigned long pte_table_end(unsigned long addr, unsigned long end)
++{
++	unsigned long boundary = (addr + PMD_SIZE) & PMD_MASK;
++
++	return boundary - 1 < end - 1 ? boundary : end;
++}
++
+ /**
+  * folio_pte_batch_flags - detect a PTE batch for a large folio
+  * @folio: The large folio to detect a PTE batch for.
+diff --git a/mm/memory.c b/mm/memory.c
+index 8b0c2c735..4885f7989 100644
+--- a/mm/memory.c
++++ b/mm/memory.c
+@@ -5061,7 +5061,7 @@ vm_fault_t do_swap_page(struct vm_fault *vmf)
+ 
+ 		if (unlikely(folio_start < max(address & PMD_MASK, vma->vm_start)))
+ 			goto check_folio;
+-		if (unlikely(folio_end > pmd_addr_end(address, vma->vm_end)))
++		if (unlikely(folio_end > pte_table_end(address, vma->vm_end)))
+ 			goto check_folio;
+ 
+ 		folio_ptep = vmf->pte - idx;
+diff --git a/mm/rmap.c b/mm/rmap.c
+index f3b21aaa3..ec18a1490 100644
+--- a/mm/rmap.c
++++ b/mm/rmap.c
+@@ -971,7 +971,7 @@ static bool folio_referenced_one(struct folio *folio,
+ 		}
+ 
+ 		if (pvmw.pte && folio_test_large(folio)) {
+-			const unsigned long end_addr = pmd_addr_end(address, vma->vm_end);
++			const unsigned long end_addr = pte_table_end(address, vma->vm_end);
+ 			const unsigned int max_nr = (end_addr - address) >> PAGE_SHIFT;
+ 			pte_t pteval = ptep_get(pvmw.pte);
+ 
+@@ -1965,7 +1965,7 @@ static inline unsigned int folio_unmap_pte_batch(struct folio *folio,
+ 		return 1;
+ 
+ 	/* We may only batch within a single VMA and a single page table. */
+-	end_addr = pmd_addr_end(addr, vma->vm_end);
++	end_addr = pte_table_end(addr, vma->vm_end);
+ 	max_nr = (end_addr - addr) >> PAGE_SHIFT;
+ 
+ 	/* We only support lazyfree or file folios batching for now ... */
+diff --git a/mm/userfaultfd.c b/mm/userfaultfd.c
+index 74f04c323..a018a8597 100644
+--- a/mm/userfaultfd.c
++++ b/mm/userfaultfd.c
+@@ -1321,8 +1321,8 @@ static long move_present_ptes(struct mm_struct *mm,
+ 	unsigned long src_start = src_addr;
+ 	unsigned long src_end;
+ 
+-	len = pmd_addr_end(dst_addr, dst_addr + len) - dst_addr;
+-	src_end = pmd_addr_end(src_addr, src_addr + len);
++	len = pte_table_end(dst_addr, dst_addr + len) - dst_addr;
++	src_end = pte_table_end(src_addr, src_addr + len);
+ 	flush_cache_range(src_vma, src_addr, src_end);
+ 	double_pt_lock(dst_ptl, src_ptl);
+ 
+-- 
+2.47.3
+

@@ -1,7 +1,7 @@
-From 06d843abf80e648c208689ef9beff759df98ddd3 Mon Sep 17 00:00:00 2001
+From 83bd421f5dcb59daddf389f7c2b3dc4043f36a0f Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 11:29:35 +0000
-Subject: [PATCH 52/79] dmaengine: sprd: add the SC7730 (DMA r4p0) variant
+Subject: [PATCH 52/92] dmaengine: sprd: add the SC7730 (DMA r4p0) variant
 
 The AP DMA of the 32-bit SC7730/SC8830 SoCs is an older revision of the
 SC9860 block with the same register layout, but:

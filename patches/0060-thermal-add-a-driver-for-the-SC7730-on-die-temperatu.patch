@@ -1,8 +1,8 @@
-From 94b91032d5bcdad27d9ff6f64db66cab39f9ab30 Mon Sep 17 00:00:00 2001
+From 7dc93f9bd4535afa0357ecacb83ad0f0d61141a6 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 12:44:41 +0000
-Subject: [PATCH 60/79] thermal: add a driver for the SC7730 on-die temperature
- sensor
+Subject: [PATCH 060/106] thermal: add a driver for the SC7730 on-die
+ temperature sensor
 
 The 32-bit Spreadtrum SC7730/SC8830 SoCs have a temperature sensor block
 at 0x402f0000 that the bootloader leaves gated off. Its layout has

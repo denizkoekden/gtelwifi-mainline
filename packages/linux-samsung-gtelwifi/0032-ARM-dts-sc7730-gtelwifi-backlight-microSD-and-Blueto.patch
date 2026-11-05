@@ -1,7 +1,7 @@
-From 08ec49942d1bd8a1ed2d1ab655835638fccf3777 Mon Sep 17 00:00:00 2001
+From e726cf4159594bd4ab5f368bbd7087ced8269d07 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 22:48:55 +0000
-Subject: [PATCH 32/79] ARM: dts: sc7730: gtelwifi backlight, microSD and
+Subject: [PATCH 32/92] ARM: dts: sc7730: gtelwifi backlight, microSD and
  Bluetooth
 
 - PWM3 with pwm-backlight (RT8555 stays as the bootloader set it up),

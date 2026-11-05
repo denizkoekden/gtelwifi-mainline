@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Kamera (schnell)
+Comment=Flüssige Kamera mit GPU-Vorschau, Selbstauslöser und Drehsperre
+Exec=tabcam
+Icon=camera-photo
+Categories=AudioVideo;Video;Recorder;
+X-Purism-FormFactor=Workstation;Mobile;

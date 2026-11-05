@@ -8,7 +8,8 @@
  * the sensor is set to W x H UYVY first. V4L_NV12=1 asks for NV12.
  * V4L_GUARD=1 allocates twice the image size, fills it with 0xa5 and
  * reports writes past the image. V4L_CTRL=saturation=160,contrast=128 sets
- * brightness/contrast/saturation on the V4L_SUBDEV sensor first, with
+ * brightness/contrast/saturation (or auto_focus_range/auto_focus_start) on
+ * the V4L_SUBDEV sensor first, with
  * V4L_CTRL_LATE=1 after STREAMON instead (the running sensor).
  *
  *   v4lgrab /dev/videoN W H frames out.nv16
@@ -35,13 +36,15 @@ static void die(const char *what)
 	exit(1);
 }
 
-/* "name=value,..." for brightness, contrast, saturation on a subdev */
+/* "name=value,..." for the sensor controls below, on a subdev */
 static void set_ctrls(int fd, char *list)
 {
 	static const struct { const char *name; __u32 id; } names[] = {
 		{ "brightness", V4L2_CID_BRIGHTNESS },
 		{ "contrast", V4L2_CID_CONTRAST },
 		{ "saturation", V4L2_CID_SATURATION },
+		{ "auto_focus_range", V4L2_CID_AUTO_FOCUS_RANGE },
+		{ "auto_focus_start", V4L2_CID_AUTO_FOCUS_START },
 	};
 	char *item, *save;
 	unsigned int i;

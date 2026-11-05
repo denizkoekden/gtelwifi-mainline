@@ -1,7 +1,7 @@
-From 6582fce66142bc53fa23f52903a8492709a2e557 Mon Sep 17 00:00:00 2001
+From 4ff328820a57a261efe9ed5e0268905495c3b2cd Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 14:12:48 +0000
-Subject: [PATCH 63/79] ARM: dts: sc7730: CPU frequency scaling and thermal
+Subject: [PATCH 063/106] ARM: dts: sc7730: CPU frequency scaling and thermal
  throttling
 
 The vendor OPP table for chip ID 0x8730Cxxx: 768 and 1000 MHz at

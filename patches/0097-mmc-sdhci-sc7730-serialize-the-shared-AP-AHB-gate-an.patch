@@ -1,0 +1,174 @@
+From 6524c8c39965e5c533543b4ea087f199c29beeeb Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Wed, 4 Nov 2026 19:45:30 +0000
+Subject: [PATCH 097/106] mmc: sdhci-sc7730: serialize the shared AP AHB gate
+ and reset bits
+
+SDIO0 (microSD) and SDIO1 (WLAN) open their gate in the AP AHB enable
+register and pulse their bit in the AP AHB reset register with plain
+read-modify-write cycles. Both registers are shared by all AP AHB blocks,
+and the driver probes asynchronously, so the two hosts run this in
+parallel and can lose each other's bits. On one LineageOS boot SDIO0 came
+up gated or held in reset (04.11.2026):
+
+  mmc2: Internal clock never stabilised.
+  sdhci-sc7730 20300000.mmc: base clock 384000000 Hz (mux 3), caps 00000000 00000000
+
+followed by a command timeout every 10 s.
+
+Take the gate as "ahb" clock from the AP AHB gate clocks when the device
+tree names one, so it shares the lock of the other gate users (DMA, USB),
+and do the reset pulse and the fallback without a clock under a lock.
+
+Assisted-by: Claude Opus 5.5
+---
+ .../bindings/mmc/sprd,sc7730-sdhci.yaml       | 11 ++++
+ arch/arm/boot/dts/unisoc/sc7730.dtsi          |  4 ++
+ drivers/mmc/host/sdhci-sc7730.c               | 50 +++++++++++++++----
+ 3 files changed, 56 insertions(+), 9 deletions(-)
+
+diff --git a/Documentation/devicetree/bindings/mmc/sprd,sc7730-sdhci.yaml b/Documentation/devicetree/bindings/mmc/sprd,sc7730-sdhci.yaml
+index 9c8e32ffc..671152630 100644
+--- a/Documentation/devicetree/bindings/mmc/sprd,sc7730-sdhci.yaml
++++ b/Documentation/devicetree/bindings/mmc/sprd,sc7730-sdhci.yaml
+@@ -51,6 +51,17 @@ properties:
+   interrupts:
+     maxItems: 1
+ 
++  clocks:
++    maxItems: 1
++    description:
++      Gate of this host in the AP AHB clock enable register. When given it
++      is enabled through the clock framework, which serializes the shared
++      register with the other AP AHB blocks, instead of setting
++      sprd,ahb-eb-bit directly.
++
++  clock-names:
++    const: ahb
++
+   sprd,clk-parent-rates:
+     $ref: /schemas/types.yaml#/definitions/uint32-array
+     description:
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index f0e516a50..f70108ce3 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -525,6 +525,8 @@ sdio1: mmc@20400000 {
+ 			      <0x20d00000 0x8>;
+ 			reg-names = "sdhci", "clk-cfg", "ap-ahb";
+ 			interrupts = <GIC_SPI 58 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&ap_ahb_gates 9>;
++			clock-names = "ahb";
+ 			sprd,clk-parent-rates = <48000000 76800000 96000000 128000000>;
+ 			sprd,ahb-eb-bit = <9>;
+ 			sprd,ahb-rst-bit = <12>;
+@@ -542,6 +544,8 @@ sdio0: mmc@20300000 {
+ 			      <0x20d00000 0x8>;
+ 			reg-names = "sdhci", "clk-cfg", "ap-ahb";
+ 			interrupts = <GIC_SPI 57 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&ap_ahb_gates 8>;
++			clock-names = "ahb";
+ 			sprd,clk-parent-rates = <26000000 256000000 312000000 384000000>;
+ 			sprd,clk-sel = <3>;	/* 384 MHz like the vendor */
+ 			sprd,clk-has-div;
+diff --git a/drivers/mmc/host/sdhci-sc7730.c b/drivers/mmc/host/sdhci-sc7730.c
+index 494a4d8d2..3bc172086 100644
+--- a/drivers/mmc/host/sdhci-sc7730.c
++++ b/drivers/mmc/host/sdhci-sc7730.c
+@@ -17,16 +17,21 @@
+  * them up, and so are gate and reset unless an "ap-ahb" region is given
+  * (EB at +0, RST at +4, bits in "sprd,ahb-eb-bit"/"sprd,ahb-rst-bit"): the
+  * bootloader only enables the eMMC host, the WLAN slot SDIO1 stays gated.
++ * The gate is the "ahb" clock (an AP AHB gate clock) when the device tree
++ * names one; both registers are shared with other blocks, and the two SDIO
++ * hosts probe in parallel.
+  */
+ 
+ #include <linux/bitfield.h>
+ #include <linux/bits.h>
++#include <linux/clk.h>
+ #include <linux/delay.h>
+ #include <linux/io.h>
+ #include <linux/mmc/host.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
++#include <linux/spinlock.h>
+ 
+ #include "sdhci-pltfm.h"
+ 
+@@ -94,27 +99,52 @@ static const struct sdhci_pltfm_data sc7730_sdhci_pdata = {
+ 		   SDHCI_QUIRK2_BROKEN_HS200,
+ };
+ 
+-static void sc7730_sdhci_ahb_init(struct platform_device *pdev)
++/*
++ * EB and RST are read-modify-write registers shared by all AP AHB blocks.
++ * Unlocked, the parallel probes of SDIO0 and SDIO1 lost each other's bits:
++ * one host stayed gated or in reset and read back all zeroes ("Internal
++ * clock never stabilised").
++ */
++static DEFINE_SPINLOCK(sc7730_ahb_lock);
++
++static void sc7730_ahb_update(void __iomem *reg, u32 set, u32 clear)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&sc7730_ahb_lock, flags);
++	writel((readl(reg) & ~clear) | set, reg);
++	spin_unlock_irqrestore(&sc7730_ahb_lock, flags);
++}
++
++static int sc7730_sdhci_ahb_init(struct platform_device *pdev)
+ {
+ 	struct device_node *np = pdev->dev.of_node;
+ 	struct resource *res;
+ 	void __iomem *ahb;
++	struct clk *gate;
+ 	u32 eb, rst;
+ 
++	/* the gate clock shares its lock with every other AP AHB gate user */
++	gate = devm_clk_get_optional_enabled(&pdev->dev, "ahb");
++	if (IS_ERR(gate))
++		return dev_err_probe(&pdev->dev, PTR_ERR(gate),
++				     "failed to enable the ahb gate\n");
++
+ 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "ap-ahb");
+-	if (!res || of_property_read_u32(np, "sprd,ahb-eb-bit", &eb) ||
+-	    of_property_read_u32(np, "sprd,ahb-rst-bit", &rst))
+-		return;
++	if (!res || of_property_read_u32(np, "sprd,ahb-rst-bit", &rst))
++		return 0;
+ 	/* shared with other blocks, so no request_mem_region */
+ 	ahb = devm_ioremap(&pdev->dev, res->start, resource_size(res));
+ 	if (!ahb)
+-		return;
++		return 0;
+ 	/* vendor sequence: gate on, wait, then a reset pulse */
+-	writel(readl(ahb + SC7730_AHB_EB) | BIT(eb), ahb + SC7730_AHB_EB);
++	if (!gate && !of_property_read_u32(np, "sprd,ahb-eb-bit", &eb))
++		sc7730_ahb_update(ahb + SC7730_AHB_EB, BIT(eb), 0);
+ 	usleep_range(500, 1000);
+-	writel(readl(ahb + SC7730_AHB_RST) | BIT(rst), ahb + SC7730_AHB_RST);
++	sc7730_ahb_update(ahb + SC7730_AHB_RST, BIT(rst), 0);
+ 	usleep_range(200, 400);
+-	writel(readl(ahb + SC7730_AHB_RST) & ~BIT(rst), ahb + SC7730_AHB_RST);
++	sc7730_ahb_update(ahb + SC7730_AHB_RST, 0, BIT(rst));
++	return 0;
+ }
+ 
+ static int sc7730_sdhci_probe(struct platform_device *pdev)
+@@ -132,7 +162,9 @@ static int sc7730_sdhci_probe(struct platform_device *pdev)
+ 	priv = sdhci_pltfm_priv(sdhci_priv(host));
+ 
+ 	/* before the first register access, a gated host hangs the bus */
+-	sc7730_sdhci_ahb_init(pdev);
++	ret = sc7730_sdhci_ahb_init(pdev);
++	if (ret)
++		return ret;
+ 
+ 	clk_cfg = devm_platform_ioremap_resource_byname(pdev, "clk-cfg");
+ 	if (IS_ERR(clk_cfg))
+-- 
+2.47.3
+

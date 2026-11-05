@@ -1,0 +1,120 @@
+From 1d32730b7045498f73086b88d2abbc0432d236e8 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 09:08:48 +0000
+Subject: [PATCH 101/106] ARM: dts: unisoc: gtelwifi: add UART3 and the GPS
+ power supplies
+
+The Broadcom BCM47520 GPS of the SM-T560 is a hosted receiver on UART3
+(921600 baud). The position engine is the vendor's userspace daemon, so
+the kernel only provides the port and the power switching.
+
+Add the UART3 node to sc7730.dtsi (SPI 5, AP APB gate 16) and, on the
+board, the two SC2723 LDOs the vendor driver enabled for it (LDO_CAMD at
+1.8 V, kept on, and the TCXO supply LDO_SDIO at 3.3 V, used by nothing
+else), plus GPS_PWR_EN on GPIO 168. The TCXO supply and GPS_PWR_EN form
+one regulator output, so the daemon can switch the receiver through its
+"state" file as it did with the vendor's GPS_PWR_EN sysfs file.
+
+Assisted-by: Claude Opus 5.5
+---
+ .../dts/unisoc/sc7730-samsung-gtelwifi.dts    | 50 +++++++++++++++++++
+ arch/arm/boot/dts/unisoc/sc7730.dtsi          |  9 ++++
+ 2 files changed, 59 insertions(+)
+
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index 546dd1f4c..ec79bf25c 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -232,6 +232,7 @@ aliases {
+ 		mmc2 = &sdio0;
+ 		serial0 = &uart0;
+ 		serial1 = &uart1;
++		serial3 = &uart3;
+ 	};
+ 
+ 	chosen {
+@@ -352,6 +353,50 @@ cam_dvdd: regulator-cam-dvdd {
+ 		startup-delay-us = <1000>;
+ 	};
+ 
++	/*
++	 * Broadcom BCM47520 GPS (vendor "broadcom,bcm47520"): a hosted GNSS on
++	 * UART3, the position engine is the proprietary glgps daemon. The
++	 * vendor driver turned on LDO_CAMD (1.8 V) and the TCXO supply LDO_SDIO
++	 * (3.3 V, nothing else on it) at probe and left GPS_PWR_EN (GPIO 168,
++	 * nStandby) to glgps through a sysfs file. Here LDO_CAMD stays on, and
++	 * the TCXO supply and GPS_PWR_EN switch together through a regulator
++	 * output whose "state" file glgps writes 1/0 to (GpioNStdbyPath, it
++	 * waits 250 ms after power-up).
++	 */
++	vddcamd: regulator-vddcamd {
++		compatible = "sprd,sc2723-ldo";
++		regulator-name = "vddcamd";
++		sprd,pd-reg = <0x814 5>;
++		sprd,vsel-reg = <0x81c 0x7f>;
++		sprd,min-microvolt = <1150000>;
++		sprd,step-microvolt = <6250>;
++		regulator-min-microvolt = <1800000>;
++		regulator-max-microvolt = <1800000>;
++		regulator-always-on;
++	};
++
++	vddsdio: regulator-vddsdio {
++		compatible = "sprd,sc2723-ldo";
++		regulator-name = "vddsdio";
++		sprd,pd-reg = <0x814 0>;
++		sprd,vsel-reg = <0x828 0xff>;
++		regulator-min-microvolt = <3300000>;
++		regulator-max-microvolt = <3300000>;
++	};
++
++	gps_pwr_en: regulator-gps-pwr-en {
++		compatible = "regulator-fixed";
++		regulator-name = "gps_pwr_en";
++		gpio = <&gpio 168 GPIO_ACTIVE_HIGH>;
++		enable-active-high;
++		vin-supply = <&vddsdio>;
++	};
++
++	gps-power {
++		compatible = "regulator-output";
++		vout-supply = <&gps_pwr_en>;
++	};
++
+ 	backlight: backlight {
+ 		compatible = "pwm-backlight";
+ 		pwms = <&pwm 3 49039 0>;
+@@ -495,6 +540,11 @@ bluetooth {
+ 	};
+ };
+ 
++/* BCM47520 GPS, 921600 baud set by glgps (gps.xml) */
++&uart3 {
++	status = "okay";
++};
++
+ &gpu {
+ 	status = "okay";
+ };
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index f70108ce3..a926ef831 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -668,5 +668,14 @@ uart1: serial@70100000 {
+ 			clock-names = "enable", "uart";
+ 			status = "disabled";
+ 		};
++
++		uart3: serial@70300000 {
++			compatible = "sprd,sc9836-uart";
++			reg = <0x70300000 0x100>;
++			interrupts = <GIC_SPI 5 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&ap_apb_gates 16>, <&ext_26m>;
++			clock-names = "enable", "uart";
++			status = "disabled";
++		};
+ 	};
+ };
+-- 
+2.47.3
+

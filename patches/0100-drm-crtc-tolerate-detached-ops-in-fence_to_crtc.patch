@@ -1,0 +1,49 @@
+From 78bd6a8f18aef21130fbbe178327f94017e94cae Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 07:44:59 +0000
+Subject: [PATCH 100/106] drm/crtc: tolerate detached ops in fence_to_crtc()
+
+dma_fence_signal() now clears fence->ops of fences without release and
+wait callbacks, which includes the CRTC out-fences. dma_fence_driver_name()
+loads the ops, checks the signaled bit and then calls ->get_driver_name();
+if the fence signals in between, fence_to_crtc() reads fence->ops a second
+time, finds NULL and hits the BUG_ON:
+
+  kernel BUG at drivers/gpu/drm/drm_crtc.c:161!
+  PC is at drm_crtc_fence_get_driver_name+0x22/0x28
+  LR is at sync_file_get_name+0x25/0x60
+   sync_file_get_name from sync_file_ioctl+0x303/0x51c
+   sync_file_ioctl from sys_ioctl+0x88f/0x8b8
+
+Seen on Android (SYNC_IOCTL_FILE_INFO from a RenderThread on the present
+fence of the composer) while playing a 1080p video. Only reject ops that
+belong to another fence implementation.
+
+Assisted-by: Claude Opus 5.5
+---
+ drivers/gpu/drm/drm_crtc.c | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/drm_crtc.c b/drivers/gpu/drm/drm_crtc.c
+index 63ead8ba6..1143ba3d6 100644
+--- a/drivers/gpu/drm/drm_crtc.c
++++ b/drivers/gpu/drm/drm_crtc.c
+@@ -158,7 +158,14 @@ static const struct dma_fence_ops drm_crtc_fence_ops;
+ 
+ static struct drm_crtc *fence_to_crtc(struct dma_fence *fence)
+ {
+-	BUG_ON(rcu_access_pointer(fence->ops) != &drm_crtc_fence_ops);
++	/*
++	 * dma_fence_signal() clears fence->ops, so a caller that loaded the
++	 * ops just before the fence signaled (dma_fence_driver_name(),
++	 * dma_fence_timeline_name()) gets here with ops already NULL.
++	 */
++	const struct dma_fence_ops *ops = rcu_access_pointer(fence->ops);
++
++	BUG_ON(ops && ops != &drm_crtc_fence_ops);
+ 	return container_of(fence->extern_lock, struct drm_crtc, fence_lock);
+ }
+ 
+-- 
+2.47.3
+

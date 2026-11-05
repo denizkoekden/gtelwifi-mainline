@@ -1,0 +1,78 @@
+From 6c99e088cff73ce199832e9ad635caf1a257e839 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Tue, 3 Nov 2026 12:13:18 +0000
+Subject: [PATCH 92/92] media: i2c: s5k4ecgx: at least 15 fps, preview sizes up
+ to 800x480
+
+The init table allows a longest frame time of 100 ms in preview
+config 0, which the exposure uses up indoors: 10 to 11 fps. Write the
+stock HAL's 15 fps value (66.6 ms) before the size table, whose config
+sync takes it over; the shortest frame time stays at 33.3 ms (30 fps).
+Indoors on the gtelwifi the rear camera went from 13.9 to 16.1 fps at
+the same light, with the mean luma at 123.
+
+GNOME Snapshot picks the preview size closest to 1280x720 and renders it
+on the CPU (GTK 4 needs GLES 3, the Mali-400 has GLES 2): 1280x720 at
+11 fps kept four Cortex-A7 at about 70 %. Offer only 640x480 and
+800x480 until there is a still capture path for the larger sizes.
+
+Assisted-by: Claude Opus 5.5
+---
+ drivers/media/i2c/s5k4ecgx.c | 24 ++++++++++++++++++++----
+ 1 file changed, 20 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/media/i2c/s5k4ecgx.c b/drivers/media/i2c/s5k4ecgx.c
+index 991727baf..ec656f69a 100644
+--- a/drivers/media/i2c/s5k4ecgx.c
++++ b/drivers/media/i2c/s5k4ecgx.c
+@@ -59,6 +59,13 @@
+ #define S5K_USER_CONTRAST	0x70000232
+ #define S5K_USER_SATURATION	0x70000234
+ #define S5K_SATURATION_DEF	0
++/*
++ * Preview config 0, longest frame time in 1/10 ms. The init allows 100 ms
++ * (10 fps), which the exposure uses up indoors; 66.6 ms is the HAL's
++ * 15 fps value. The shortest frame time stays at 33.3 ms (30 fps).
++ */
++#define S5K_PCFG0_MAX_FR_TIME	0x700002c2
++#define  S5K_MAX_FR_TIME_15FPS	666
+ 
+ #define S5K_MCLK_HZ		24000000
+ #define S5K_LANES		2
+@@ -71,13 +78,16 @@ struct s5k_mode {
+ /* 344 Mbit/s per lane, DDR, set up by the init table for all sizes */
+ static const s64 s5k_link_freqs[] = { 172000000 };
+ 
++/*
++ * Preview sizes only up to 800x480: camera applications such as GNOME
++ * Snapshot pick the size closest to 1280x720 and render it on the CPU
++ * (no GLES 3 on the Mali-400), which keeps four Cortex-A7 at about 70 %
++ * for 1280x720 at 11 fps. The larger HAL preview tables (960x960,
++ * 1024x768, 1280x720, 1280x768) come back with a still capture path.
++ */
+ static const struct s5k_mode s5k_modes[] = {
+ 	{ 640, 480, "s5k4ecgx/640x480.bin" },
+ 	{ 800, 480, "s5k4ecgx/800x480.bin" },
+-	{ 960, 960, "s5k4ecgx/960x960.bin" },
+-	{ 1024, 768, "s5k4ecgx/1024x768.bin" },
+-	{ 1280, 720, "s5k4ecgx/1280x720.bin" },
+-	{ 1280, 768, "s5k4ecgx/1280x768.bin" },
+ };
+ 
+ static const char * const s5k_supplies[] = { "dovdd", "avdd", "dvdd" };
+@@ -368,6 +378,12 @@ static int s5k_enable_streams(struct v4l2_subdev *sd,
+ 	if (s5k->loaded != s5k->mode) {
+ 		s5k->loaded = NULL;
+ 		ret = s5k_write_table(s5k, "s5k4ecgx/init.bin", true);
++		/* before the size table, which ends with the config sync */
++		if (!ret)
++			cci_write(s5k->regmap, S5K_REG_AHB_PAGE, S5K_AHB_PAGE, &ret);
++		if (!ret)
++			ret = s5k_write(s5k, S5K_PCFG0_MAX_FR_TIME,
++					S5K_MAX_FR_TIME_15FPS);
+ 		if (!ret)
+ 			ret = s5k_write_table(s5k, s5k->mode->fw, true);
+ 		if (ret)
+-- 
+2.47.3
+

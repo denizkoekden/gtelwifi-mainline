@@ -1,0 +1,80 @@
+From 7c144427c6a29028bce965d6f7713f7867fa4975 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Wed, 4 Nov 2026 15:44:27 +0000
+Subject: [PATCH 094/106] ARM: sprd: serve the kernel CRNG as /dev/hw_random
+
+The SC7730 has no hardware RNG the kernel knows of, the vendor kernel has
+none either. Android's prng_seeder conditions /dev/hw_random for its FIPS
+BoringSSL: init creates the daemon's socket already listening, and
+without the device the daemon parks before accept() ("Timed out opening
+hwrng /dev/hw_random", LineageOS 24 on the SM-T560, 04.11.2026), so
+every process that asks the daemon for its first seed would block in
+read() forever.
+
+Register a hwrng that returns get_random_bytes(), built with
+CONFIG_HW_RANDOM. Quality 1 of 1024, since the hwrng core feeds every rng
+back into the pool and these bytes must not be credited as entropy (0
+means the default, full credit).
+
+Assisted-by: Claude Opus 5.5
+---
+ arch/arm/mach-sprd/Makefile     |  1 +
+ arch/arm/mach-sprd/crng-hwrng.c | 37 +++++++++++++++++++++++++++++++++
+ 2 files changed, 38 insertions(+)
+ create mode 100644 arch/arm/mach-sprd/crng-hwrng.c
+
+diff --git a/arch/arm/mach-sprd/Makefile b/arch/arm/mach-sprd/Makefile
+index 1cdd3f435..978bbaf97 100644
+--- a/arch/arm/mach-sprd/Makefile
++++ b/arch/arm/mach-sprd/Makefile
+@@ -14,3 +14,4 @@ obj-$(CONFIG_SPRD_SC2723_ADC)	+= sc2723-adc.o
+ obj-$(CONFIG_SPRD_SC2723_FGU)	+= sc2723-fgu.o
+ obj-$(CONFIG_SPRD_SC2723_PMIC)	+= sc2723-pmic.o
+ obj-$(CONFIG_SPRD_SC7730_PM_DOMAINS)	+= pm-domains.o
++obj-$(CONFIG_HW_RANDOM)		+= crng-hwrng.o
+diff --git a/arch/arm/mach-sprd/crng-hwrng.c b/arch/arm/mach-sprd/crng-hwrng.c
+new file mode 100644
+index 000000000..f87a85a2e
+--- /dev/null
++++ b/arch/arm/mach-sprd/crng-hwrng.c
+@@ -0,0 +1,37 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * /dev/hw_random for the SC7730, which has no hardware RNG the kernel knows
++ * of (the vendor kernel has none either). Android's prng_seeder needs it:
++ * init creates the daemon's socket already listening, and without
++ * /dev/hw_random the daemon parks before accept(), so every process whose
++ * FIPS BoringSSL asks the daemon for its first seed blocks in read() forever.
++ *
++ * Serve the kernel's CRNG instead; prng_seeder conditions the bytes with its
++ * own DRBG anyway. Quality 1 (of 1024): the hwrng core feeds every rng back
++ * into the pool, these bytes must not be credited as entropy (0 would mean
++ * the default, full credit).
++ */
++#include <linux/hw_random.h>
++#include <linux/init.h>
++#include <linux/of.h>
++#include <linux/random.h>
++
++static int sc7730_crng_read(struct hwrng *rng, void *buf, size_t max, bool wait)
++{
++	get_random_bytes(buf, max);
++	return max;
++}
++
++static struct hwrng sc7730_crng = {
++	.name = "sc7730-crng",
++	.read = sc7730_crng_read,
++	.quality = 1,
++};
++
++static int __init sc7730_crng_init(void)
++{
++	if (!of_machine_is_compatible("sprd,sc7730"))
++		return 0;
++	return hwrng_register(&sc7730_crng);
++}
++device_initcall(sc7730_crng_init);
+-- 
+2.47.3
+

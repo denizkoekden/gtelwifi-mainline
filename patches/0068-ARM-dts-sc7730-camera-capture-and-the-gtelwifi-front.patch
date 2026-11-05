@@ -1,8 +1,8 @@
-From ecfd013779e367ef42d161961a3ffbd495f68122 Mon Sep 17 00:00:00 2001
+From f62fd2b84bd7989f38db1c3f5d3620df09b20f01 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 15:26:26 +0000
-Subject: [PATCH 68/79] ARM: dts: sc7730: camera capture and the gtelwifi front
- camera
+Subject: [PATCH 068/106] ARM: dts: sc7730: camera capture and the gtelwifi
+ front camera
 
 Add the DCAM/CSI-2 node to the SC7730 dtsi (registers, interrupt SPI 45,
 MM power domain, ports for D-PHY A and C, clock provider for the sensor

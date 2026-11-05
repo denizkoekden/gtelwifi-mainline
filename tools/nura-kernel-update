@@ -24,9 +24,10 @@ hash=$(shasum -a 256 "$apk" | cut -d' ' -f1)
 
 "$NURASSH" "mkdir -p /tmp/kupd && cat > /tmp/kupd/$name" < "$apk"
 # shellcheck disable=SC2029  # expanded on the tablet on purpose
+# (/tmp on Nura is on the root filesystem and survives reboots: clean up)
 "$NURASSH" "cd /tmp/kupd && echo '$hash  $name' | sha256sum -c - &&
 	apk add --no-network --allow-untrusted ./$name | tail -3 &&
-	sha256sum /boot/boot.img"
+	sha256sum /boot/boot.img; cd / && rm -rf /tmp/kupd"
 
 img=$ROOT/out/nura-flash/boot-$ver.img
 "$NURASSH" 'cat /boot/boot.img' > "$img"

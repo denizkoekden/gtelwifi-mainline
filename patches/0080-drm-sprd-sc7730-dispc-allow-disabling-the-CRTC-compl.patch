@@ -1,0 +1,41 @@
+From 66191144ec0c58ce25ba18b682e06ef7a82f430e Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 22:39:35 +0000
+Subject: [PATCH 080/106] drm/sprd: sc7730-dispc: allow disabling the CRTC
+ completely
+
+The CRTC check required a primary plane in every state, also when the
+CRTC gets disabled (enable = 0), which is what drm_atomic_helper_suspend()
+and drm_atomic_helper_shutdown() do. Only an enabled CRTC needs one.
+
+Assisted-by: Claude Opus 5.5
+---
+ drivers/gpu/drm/sprd/sprd_dispc.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/sprd/sprd_dispc.c b/drivers/gpu/drm/sprd/sprd_dispc.c
+index f178c41fb..947fca359 100644
+--- a/drivers/gpu/drm/sprd/sprd_dispc.c
++++ b/drivers/gpu/drm/sprd/sprd_dispc.c
+@@ -329,12 +329,17 @@ static void sprd_dispc_crtc_atomic_flush(struct drm_crtc *crtc,
+ 			 msecs_to_jiffies(FLIP_TIMEOUT_MS));
+ }
+ 
+-/* DISPC never stops: an active CRTC always needs a buffer to show */
++/*
++ * An enabled CRTC always needs a buffer to show (DISPC keeps scanning
++ * out); disabling all of it, as suspend and shutdown do, needs none.
++ */
+ static int sprd_dispc_crtc_atomic_check(struct drm_crtc *crtc,
+ 					struct drm_atomic_commit *state)
+ {
+ 	struct drm_crtc_state *crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
+ 
++	if (!crtc_state->enable)
++		return 0;
+ 	return drm_atomic_helper_check_crtc_primary_plane(crtc_state);
+ }
+ 
+-- 
+2.47.3
+

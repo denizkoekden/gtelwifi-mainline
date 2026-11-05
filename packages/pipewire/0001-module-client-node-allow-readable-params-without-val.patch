@@ -1,0 +1,104 @@
+From 80cf0f74da25d7852ae5d3331f014f400f13ed72 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Tue, 3 Nov 2026 09:59:19 +0100
+Subject: [PATCH] module-client-node: allow readable params without values
+
+A node can announce a param as readable in its param info and still have
+no values for it, for example the PropInfo of a libcamera camera without
+controls (YUV sensors with their own ISP). spa-libcamera announces
+SPA_PARAM_PropInfo as readable, the exporting client finds no PropInfo
+objects and sends none, and impl_node_enum_params() then returns
+-ENOENT. WirePlumber treats that error as fatal and aborts activating
+the node and its port ("Object activation aborted: enum params id:1
+(PropInfo) failed"), so the camera never becomes a session item and
+clients only see "target not found".
+
+Keep a copy of the param info that the client sends with node and port
+updates, and return 0 instead of -ENOENT when nothing was found for an
+id that is announced as readable. Ids that are not announced, or not
+readable, still give -ENOENT.
+
+Assisted-by: Claude Opus 5.5
+---
+ src/modules/module-client-node/client-node.c | 32 ++++++++++++++++++++
+ 1 file changed, 32 insertions(+)
+
+diff --git a/src/modules/module-client-node/client-node.c b/src/modules/module-client-node/client-node.c
+index 9740e1c..111d726 100644
+--- a/src/modules/module-client-node/client-node.c
++++ b/src/modules/module-client-node/client-node.c
+@@ -61,6 +61,8 @@ struct mix {
+ struct params {
+ 	uint32_t n_params;
+ 	struct spa_pod **params;
++	uint32_t n_info;
++	struct spa_param_info info[MAX_PARAMS];
+ };
+ 
+ struct port {
+@@ -180,6 +182,26 @@ static int update_params(struct params *p, uint32_t n_params, const struct spa_p
+ 	return 0;
+ }
+ 
++static void update_param_info(struct params *p, uint32_t n_info,
++		const struct spa_param_info *info)
++{
++	p->n_info = SPA_MIN(n_info, SPA_N_ELEMENTS(p->info));
++	if (p->n_info > 0)
++		memcpy(p->info, info, p->n_info * sizeof(p->info[0]));
++}
++
++/* A param that is announced as readable can still have no values, like
++ * the PropInfo of a node without controls. Enumerating it is not an error. */
++static bool param_is_readable(const struct params *p, uint32_t id)
++{
++	uint32_t i;
++	for (i = 0; i < p->n_info; i++) {
++		if (p->info[i].id == id)
++			return SPA_FLAG_IS_SET(p->info[i].flags, SPA_PARAM_INFO_READ);
++	}
++	return false;
++}
++
+ static int
+ do_port_use_buffers(struct impl *impl,
+ 		    enum spa_direction direction,
+@@ -367,6 +389,8 @@ static int impl_node_enum_params(void *object, int seq,
+ 		if (count == num)
+ 			break;
+ 	}
++	if (!found && param_is_readable(&impl->params, id))
++		return 0;
+ 	return found ? 0 : -ENOENT;
+ }
+ 
+@@ -528,7 +552,11 @@ do_update_port(struct impl *impl,
+ 			}
+ 			port->info.n_params = 0;
+ 			port->info.params = NULL;
++			if (info->change_mask & SPA_PORT_CHANGE_MASK_PARAMS)
++				update_param_info(&port->params, info->n_params, info->params);
+ 			spa_node_emit_port_info(&impl->hooks, port->direction, port->id, info);
++		} else {
++			update_param_info(&port->params, 0, NULL);
+ 		}
+ 	}
+ }
+@@ -641,6 +669,8 @@ node_port_enum_params(struct impl *impl, int seq,
+ 		if (count == num)
+ 			break;
+ 	}
++	if (!found && param_is_readable(&port->params, id))
++		return 0;
+ 	return found ? 0 : -ENOENT;
+ }
+ 
+@@ -994,6 +1024,8 @@ client_node_update(void *data,
+ 		update_params(&impl->params, n_params, params);
+ 	}
+ 	if (change_mask & PW_CLIENT_NODE_UPDATE_INFO) {
++		if (info != NULL && (info->change_mask & SPA_NODE_CHANGE_MASK_PARAMS))
++			update_param_info(&impl->params, info->n_params, info->params);
+ 		spa_node_emit_info(&impl->hooks, info);
+ 	}
+ 	pw_log_debug("%p: got node update", impl);

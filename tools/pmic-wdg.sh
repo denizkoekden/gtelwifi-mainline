@@ -17,6 +17,8 @@ A=/sys/kernel/debug/sprd-adi
 rd() { echo "$1" > $A/address; v=$(cat $A/value); echo $((v)); }
 wr() { echo "$1" > $A/address; echo "$2" > $A/value; }
 rmw() { wr "$1" $(( ($(rd "$1") & ~$2) | $3 )); }
+# busybox devmem takes the width in bits, toybox (Android) in bytes
+dm() { devmem "$1" 32 "$2" 2>/dev/null || devmem "$1" 4 "$2"; }
 
 case $1 in
 arm)
@@ -25,9 +27,9 @@ arm)
 	# power-off charging, normal boot (IRAM keeps the values of the last
 	# restart anyway, Nura has no devmem)
 	if command -v devmem > /dev/null; then
-		devmem 0xf80 32 0
-		devmem 0xf8c 32 0x12345678
-		devmem 0xf90 32 0x12345670
+		dm 0xf80 0
+		dm 0xf8c 0x12345678
+		dm 0xf90 0x12345670
 	fi
 	rmw 0x800 0 4
 	rmw 0x808 0 4

@@ -1,7 +1,7 @@
-From 7205fb400e9e7046d011b67a92af5d74b4bd274f Mon Sep 17 00:00:00 2001
+From 901a309da8ebcd40aa5363da80d814493d827045 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 08:34:01 +0000
-Subject: [PATCH 42/79] ARM: sprd: sc7730: suspend to RAM as standby
+Subject: [PATCH 042/106] ARM: sprd: sc7730: suspend to RAM as standby
 
 The vendor's standby: the PM core takes CPU1-3 offline, which powers
 them down, and CPU0 waits in WFI. DDR, GIC and the counter stay powered;

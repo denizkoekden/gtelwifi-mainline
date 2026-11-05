@@ -1,7 +1,7 @@
-From 3eb73c2191d4bebd007eab1e089d5016f5e75982 Mon Sep 17 00:00:00 2001
+From f7b39545269fdb5859e8d61ee1e24e766487bf72 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 11:29:35 +0000
-Subject: [PATCH 56/79] ARM: dts: sc7730: audio on the gtelwifi speaker
+Subject: [PATCH 056/106] ARM: dts: sc7730: audio on the gtelwifi speaker
 
 AP AHB gates as a clock controller (for the DMA enable), the AP DMA
 (sprd,sc7730-dma, SPI 50), the VBC, the SC2723 codec under the PMIC, the

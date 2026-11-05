@@ -6,7 +6,7 @@
 > but please keep this in mind when you review, reuse or submit any of it to a project: check that project's policy
 > on AI-assisted contributions first.
 
-Linux 7.3.1 with 79 patches on the Spreadtrum/Unisoc SC7730SE (4x Cortex-A7 at up to 1.3 GHz, Mali-400 MP2, 1.5 GB
+Linux 7.3.1 with 87 patches on the Spreadtrum/Unisoc SC7730SE (4x Cortex-A7 at up to 1.3 GHz, Mali-400 MP2, 1.5 GB
 RAM, PMIC SC2723), running a postmarketOS-based userspace with Phosh. The international SM-T560 only; the SM-T560NU
 has a Snapdragon 410 and needs a different port.
 
@@ -19,13 +19,18 @@ has a Snapdragon 410 and needs a different port.
 - charging (SMB358 with the SM5504 MUIC selecting the input current), fuel gauge, battery temperature
 - WLAN and Bluetooth (BCM43430A1), the factory MAC/BT addresses read from the device at run time
 - backlight, accelerometer, RTC, suspend (secondary cores off, CPU0 in WFI, woken by RTC and keys)
-- a DRM driver for the display controller (takes over the pipeline the bootloader leaves running) and GPU
-  acceleration with lima
-- speaker audio
-- both cameras through V4L2, libcamera (with a small pipeline patch) and PipeWire
+- a DRM driver for the display controller (takes over the pipeline the bootloader leaves running, powers the
+  panel off over DSI while the screen is off) and GPU acceleration with lima
+- device tree binding schemas for all compatible strings used (`dtbs_check` clean)
+- audio: speaker; headphones with jack detection and the internal microphone (new, being tested)
+- both cameras through V4L2, libcamera (with a small pipeline patch) and PipeWire (with a client-node fix, so cameras
+  without controls are not dropped by WirePlumber; `packages/pipewire`)
 
-Not yet: DSI/panel power-down and deep sleep, headphones and microphones, camera still capture and autofocus,
-GPS (needs a proprietary host-side engine).
+Not yet: deep sleep (DDR self-refresh), a full DSI/panel driver, headset microphone and buttons, camera still
+capture and autofocus, GPS (needs a proprietary host-side engine).
+
+**LineageOS:** the branch [`lineageos`](../../tree/lineageos) carries a LineageOS 24.0 (Android 17) port on the newer
+kernel patch series (0001-0106), see `lineageos/README.md` there.
 
 ## Layout
 
