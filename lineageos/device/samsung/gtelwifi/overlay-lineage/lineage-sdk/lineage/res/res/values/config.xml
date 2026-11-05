@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     Samsung Galaxy Tab E 9.6 (gtelwifi): hardware keys that may wake the
+     device. LineageOS' PhoneWindowManager wakes on Home only with bit 1
+     set here (the stock firmware wakes on Home); 64 = volume rocker, the
+     lineage-sdk default (still gated by its own setting).
+-->
+<resources>
+    <integer name="config_deviceHardwareWakeKeys">65</integer>
+</resources>

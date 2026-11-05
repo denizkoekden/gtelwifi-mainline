@@ -1,0 +1,130 @@
+# Samsung Galaxy Tab E 9.6 (gtelwifi), mainline kernel - DRAFT, never booted.
+# Most of the plumbing (zram, USB gadget, ueventd, module loading from
+# vendor_dlkm, suspend blocker) comes from device/mainline/common.
+
+# init only imports /vendor/etc/init/hw/init.${ro.hardware}.rc, and
+# mainline/common's own one is init.mainline.rc (ro.hardware=mainline on
+# its generic targets). Without it the configfs USB script was never read:
+# sys.usb.configfs stayed 0, the gadget HAL never started and adb never
+# showed up (boots of 04.11.). It also creates /data/vendor/wifi.
+import /vendor/etc/init/hw/init.mainline.rc
+
+on early-init
+    # Bring-up: turn a stalled kernel into a panic, so pstore keeps a trace
+    # and the next boot copies it to /metadata/gtelwifi (a boot froze on
+    # 04.11. without a single message). Detectors from the kernel config.
+    write /proc/sys/kernel/softlockup_panic 1
+    write /proc/sys/kernel/hardlockup_panic 1
+    write /proc/sys/kernel/hung_task_panic 1
+    write /proc/sys/kernel/panic_on_rcu_stall 1
+    # init.rc leaves the kernel without a modprobe; brcmfmac loads its vendor
+    # part (brcmfmac-cyw) through request_module()
+    write /proc/sys/kernel/modprobe /vendor/bin/gtelwifi-modprobe
+
+on init
+    # schedutil: 768 MHz when idle, up to the cpu_max_khz limit (1300 MHz)
+    # under load (user, 05.11.: battery when idle, full speed on use). The
+    # power HAL (libperfmgr, configs/power/powerhint.json) lifts the floor to
+    # 1300 MHz on touch and app launch. MPLL/DCDC switching under schedutil
+    # was soak-tested under Nura (tools/lab/soak.sh).
+    write /sys/devices/system/cpu/cpufreq/policy0/scaling_governor schedutil
+    # RT tasks (SurfaceFlinger, composer, audio) would otherwise ask
+    # schedutil for the maximum on every wakeup (default 1024), as on Pixels
+    write /proc/sys/kernel/sched_util_clamp_min_rt_default 0
+
+on fs
+    mkdir /mnt/vendor/efs 0700 root system
+    mount_all /vendor/etc/fstab.gtelwifi --early
+
+on post-fs
+    # Bring-up: kernel log and logcat of the last two boots on /metadata,
+    # readable from the rescue system (vendor/bin/gtelwifi-bootlog.sh). The
+    # su domain exists in userdebug only; drop this with the bring-up.
+    exec_background u:r:su:s0 root root -- /system/bin/sh /vendor/bin/gtelwifi-bootlog.sh
+
+on late-fs
+    mount_all /vendor/etc/fstab.gtelwifi --late
+
+on post-fs-data
+    # Bring-up: "Rooted debugging" on, as Settings -> System -> Developer
+    # options would store it through adbroot_service, so "adb root" works
+    # while the display shows nothing and KERNEL can be written from
+    # Android. adb_root reads the file when class main starts; its own rc
+    # (system_ext) creates the directory too, later. Drop with the bring-up.
+    mkdir /data/adbroot 0700 root root encryption=Require
+    write /data/adbroot/enabled 1
+
+    # GPS: the stock legacy HAL loads from /vendor/lib/gpsblobs (device.mk,
+    # gnss/README). glgps needs libssl, libcrypto and libstdc++ of /system,
+    # which the vendor linker namespace does not offer, so it runs from /data
+    # (system namespace): copied there with its two libraries on every boot.
+    mkdir /data/vendor/gps 0771 gps system
+    mkdir /data/vendor/gps/blobs 0755 root system
+    # Wi-Fi factory address from efs (rootdir/bin/gtelwifi-wlanmac.sh); waits
+    # for wlan0, which appears once brcmfmac has its firmware
+    exec_background u:r:su:s0 root root -- /vendor/bin/sh /vendor/bin/gtelwifi-wlanmac.sh
+
+    # glgps and its HAL meet through named pipes in this fixed directory
+    # (NvStorageDir in gps.xml must point here as well)
+    mkdir /data/system/gps 0770 gps system
+    # (no shell variables: init expands "$" itself; the image has gpsd 0644)
+    exec u:r:su:s0 root root -- /vendor/bin/sh -c "[ -f /vendor/lib/gpsblobs/gpsd ] || exit 0; /system/bin/cp /vendor/lib/gpsblobs/gpsd /vendor/lib/gpsblobs/libsprd_agps_agent.so /vendor/lib/gpsblobs/gps.xml /vendor/lib/libgpsd_shim.so /data/vendor/gps/blobs/ && /system/bin/chmod 0755 /data/vendor/gps/blobs/gpsd && /system/bin/setprop vendor.gtelwifi.gps 1"
+
+on early-boot
+    # UDC of the dwc2 (usb@20200000). mainline/common's USB gadget HAL and
+    # init.usb.configfs.rc bind the gadget to ${sys.usb.controller} but leave
+    # it to the device; without it adb never came up (boots of 04.11.).
+    setprop sys.usb.controller 20200000.usb
+
+    # Rear camera stills up to 2576x1932 (kernel patch 0104), before the
+    # camera provider reads the sizes in class hal. The libcamera HAL
+    # scales the preview from the still stream (external_libcamera 0009).
+    write /sys/module/s5k4ecgx/parameters/still_modes 1
+
+    # PWM backlight (pwm-backlight, 0-255, sboot default 143). The drmfb
+    # composer (system:graphics) writes brightness and bl_power; without
+    # bl_power it could not power the display on again after its first
+    # power off ("Failed to power on display 0 backlight: Permission
+    # denied", screen stayed dark). Before class_start hal in on boot.
+    chown system graphics /sys/class/backlight/backlight/brightness
+    chmod 0664 /sys/class/backlight/backlight/brightness
+    chown system graphics /sys/class/backlight/backlight/bl_power
+    chmod 0664 /sys/class/backlight/backlight/bl_power
+
+# init.rc starts a root shell on /dev/console on debuggable builds. Here
+# that is the display VT (no UART is wired), so it serves nobody, and while
+# it runs ActivityManagerService posts "Serial console enabled". The kernel
+# keeps console=tty0 (panics on screen) and ramoops.
+on property:init.svc.console=running
+    stop console
+
+on boot
+    # GPS port and power switch for glgps (UART3, regulator output of the
+    # TCXO supply and GPS_PWR_EN, kernel patch 0101)
+    chown gps system /dev/ttyS3
+    chmod 0660 /dev/ttyS3
+    chown gps system /sys/devices/platform/gps-power/state
+    chmod 0664 /sys/devices/platform/gps-power/state
+
+    # Keep the speaker path powered between sounds: the SC2723 speaker PA
+    # pops whenever it is switched (use_pmdown_time, patch 0059). Under Nura
+    # the same value comes from a udev rule; path checked there.
+    write /sys/devices/platform/sound/vbc-playback-sc2723-hifi/pmdown_time -1
+
+    # Rear camera: one autofocus search 1.5 s after each preview start
+    # (kernel patch 0104); libcamera has no AF control for this sensor, so
+    # Aperture cannot trigger one itself. Needs the AF range tables in
+    # /vendor/firmware/s5k4ecgx (af-normal.bin, af-macro.bin).
+    write /sys/module/s5k4ecgx/parameters/preview_af_ms 1500
+
+# Broadcom glgps (stock gpsd), only when its blobs are on the device. Runs
+# from /data, so it needs an explicit domain (su exists in userdebug only).
+service vendor.gpsd /data/vendor/gps/blobs/gpsd -c /data/vendor/gps/blobs/gps.xml
+    class main
+    user gps
+    group system inet net_raw
+    seclabel u:r:su:s0
+    disabled
+
+on property:vendor.gtelwifi.gps=1 && property:sys.boot_completed=1
+    start vendor.gpsd

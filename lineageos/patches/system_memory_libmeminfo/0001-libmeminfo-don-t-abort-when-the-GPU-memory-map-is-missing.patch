@@ -1,0 +1,59 @@
+From 65a902e2fe990fbb0fba776597bf5904cfaa3381 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Wed, 4 Nov 2026 21:50:54 +0100
+Subject: [PATCH] libmeminfo: don't abort when the GPU memory map is missing
+
+ReadProcessGpuUsageKb() and ReadPerProcessGpuMem() check
+map.isValid() after constructing a bpf::BpfMapRO, but its constructor
+already aborts when the map cannot be opened. On a kernel without the
+gpu_mem/gpu_mem_total tracepoint gpuMem.bpf cannot load and the map
+never exists, so ActivityManager's periodic Debug.getGpuTotalUsageKb()
+aborted system_server a few minutes after every start (gtelwifi,
+mainline kernel 7.3, 04.11.2026):
+
+  BpfMapRO<unsigned long long, unsigned long long>::abortOnMismatch
+  android::meminfo::ReadProcessGpuUsageKb
+  android_os_Debug_getGpuTotalUsageKb
+
+Check that the map exists first and report no GPU usage otherwise, as
+the isValid() check intended.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I2b7f09d75e34f64484accb013e1f4e4d5f719b2d
+---
+ sysmeminfo.cpp | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+diff --git a/sysmeminfo.cpp b/sysmeminfo.cpp
+index c014987..141c90b 100644
+--- a/sysmeminfo.cpp
++++ b/sysmeminfo.cpp
+@@ -415,6 +415,12 @@ bool ReadPerProcessGpuMem([[maybe_unused]] std::unordered_map<uint32_t, uint64_t
+ #if defined(__ANDROID__) && !defined(__ANDROID_APEX__) && !defined(__ANDROID_VNDK__)
+     static constexpr const char kBpfGpuMemTotalMap[] = "/sys/fs/bpf/map_gpuMem_gpu_mem_total_map";
+ 
++    // BpfMapRO aborts in its constructor when it cannot open the map, so the
++    // isValid() check below never sees a missing one. Kernels without the
++    // gpu_mem tracepoint cannot load gpuMem.bpf and have no map at all: report
++    // no GPU usage instead of taking system_server down.
++    if (access(kBpfGpuMemTotalMap, F_OK)) return false;
++
+     // Use the read-only wrapper BpfMapRO to properly retrieve the read-only map.
+     auto map = bpf::BpfMapRO<uint64_t, uint64_t>(kBpfGpuMemTotalMap);
+     if (!map.isValid()) {
+@@ -469,6 +475,12 @@ bool ReadProcessGpuUsageKb([[maybe_unused]] uint32_t pid, [[maybe_unused]] uint3
+     // BPF Key [32-bits GPU ID | 32-bits PID]
+     uint64_t kBpfKeyGpuUsage = ((uint64_t)gpu_id << 32) | pid;
+ 
++    // BpfMapRO aborts in its constructor when it cannot open the map, so the
++    // isValid() check below never sees a missing one. Kernels without the
++    // gpu_mem tracepoint cannot load gpuMem.bpf and have no map at all: report
++    // no GPU usage instead of taking system_server down.
++    if (access(kBpfGpuMemTotalMap, F_OK)) return false;
++
+     // Use the read-only wrapper BpfMapRO to properly retrieve the read-only map.
+     auto map = bpf::BpfMapRO<uint64_t, uint64_t>(kBpfGpuMemTotalMap);
+     if (!map.isValid()) {
+-- 
+2.56.0
+

@@ -1,0 +1,41 @@
+From f19d6fa77e50acaa8764430cf684e6ccc2e367c7 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 11:45:42 +0100
+Subject: [PATCH] dumb: Allow NV12 buffers with scanout usage
+
+Android requests scanout usage for every composer layer, camera preview
+buffers included, also where the composer composites all layers in the
+GPU (drmfb composer). The dumb backend offered NV12 for camera and video
+only, so a camera preview could not get its buffers. Dumb buffers serve
+any of these uses, so accept scanout for NV12 as well.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I4596ab5bc715ade2c5259acb3e8391bae4effbc1
+---
+ dumb_driver.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/dumb_driver.c b/dumb_driver.c
+index 0938150..021714d 100644
+--- a/dumb_driver.c
++++ b/dumb_driver.c
+@@ -163,9 +163,15 @@ static int dumb_driver_init(struct driver *drv)
+ 				       BO_USE_HW_VIDEO_ENCODER | BO_USE_HW_VIDEO_DECODER |
+ 					   BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE |
+ 					   BO_USE_GPU_DATA_BUFFER | BO_USE_SENSOR_DIRECT_DATA);
++		/*
++		 * Scanout too: Android asks for it on every composer layer
++		 * (camera preview included) even where the composer only
++		 * composites in the GPU, and dumb buffers suit both.
++		 */
+ 		drv_modify_combination(drv, DRM_FORMAT_NV12, &LINEAR_METADATA,
+ 				       BO_USE_HW_VIDEO_ENCODER | BO_USE_HW_VIDEO_DECODER |
+-					   BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE);
++					   BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE |
++					   BO_USE_SCANOUT);
+ 		drv_modify_combination(drv, DRM_FORMAT_NV21, &LINEAR_METADATA,
+ 				       BO_USE_HW_VIDEO_ENCODER);
+ 	}
+-- 
+2.56.0
+

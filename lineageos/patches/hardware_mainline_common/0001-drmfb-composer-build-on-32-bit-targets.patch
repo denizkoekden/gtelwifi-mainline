@@ -1,0 +1,44 @@
+From 667fc866f3e8c8cdf8664ec5f9664a5b2a1fce35 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 13:43:51 +0100
+Subject: [PATCH] drmfb composer: build on 32-bit targets
+
+time_t and long are 32 bits wide on arm32, so the int64 nanosecond
+timestamps narrow in the timespec braced initializers, which clang
+rejects (-Wc++11-narrowing). Cast explicitly; CLOCK_MONOTONIC seconds
+fit easily.
+
+Change-Id: Ie3342d5e807ef1359375f3fc5d5bc887bf93a107
+---
+ interfaces/graphics/composer/drmfb/ComposerClient.cpp | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/interfaces/graphics/composer/drmfb/ComposerClient.cpp b/interfaces/graphics/composer/drmfb/ComposerClient.cpp
+index e65a692..301125e 100644
+--- a/interfaces/graphics/composer/drmfb/ComposerClient.cpp
++++ b/interfaces/graphics/composer/drmfb/ComposerClient.cpp
+@@ -566,8 +566,8 @@ ndk::ScopedAStatus ComposerClient::executeCommands(const std::vector<DisplayComm
+         if (command.presentDisplay) {
+             if (command.expectedPresentTime && command.expectedPresentTime->timestampNanos > 0) {
+                 timespec deadline{
+-                        .tv_sec = command.expectedPresentTime->timestampNanos / 1000000000LL,
+-                        .tv_nsec = command.expectedPresentTime->timestampNanos % 1000000000LL};
++                        .tv_sec = static_cast<time_t>(command.expectedPresentTime->timestampNanos / 1000000000LL),
++                        .tv_nsec = static_cast<long>(command.expectedPresentTime->timestampNanos % 1000000000LL)};
+                 while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, nullptr) ==
+                        EINTR) {
+                 }
+@@ -853,8 +853,8 @@ ndk::ScopedAStatus ComposerClient::setActiveConfigWithConstraints(
+                                             : IComposerClient::EX_SEAMLESS_NOT_ALLOWED);
+     }
+     if (constraints.desiredTimeNanos > 0) {
+-        timespec deadline{.tv_sec = constraints.desiredTimeNanos / 1000000000LL,
+-                          .tv_nsec = constraints.desiredTimeNanos % 1000000000LL};
++        timespec deadline{.tv_sec = static_cast<time_t>(constraints.desiredTimeNanos / 1000000000LL),
++                          .tv_nsec = static_cast<long>(constraints.desiredTimeNanos % 1000000000LL)};
+         while (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, nullptr) == EINTR) {
+         }
+     }
+-- 
+2.56.0
+

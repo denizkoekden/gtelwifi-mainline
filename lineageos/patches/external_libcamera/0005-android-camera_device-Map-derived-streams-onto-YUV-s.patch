@@ -1,0 +1,41 @@
+From f23132d4125fce82fc58d4d5643e304ddba0c52b Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 11:20:02 +0100
+Subject: [PATCH] android: camera_device: Map derived streams onto YUV streams
+ again
+
+configureStreams() uses buildStreamConfigsNoMap(), which gives every
+camera3 stream, JPEG included, a libcamera stream of its own. The simple
+pipeline handler without a converter produces one stream only, so the
+usual preview plus still capture request (YUV and JPEG of the same
+size) was cut down to one stream and refused. Use the mapping builder,
+which derives JPEG from a YUV stream of the same size through the HAL's
+post-processor.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I8e647f98103e980c23e0aede2caad718ded5a044
+---
+ src/android/camera_device.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/android/camera_device.cpp b/src/android/camera_device.cpp
+index 218eac0e..9dac3bcd 100644
+--- a/src/android/camera_device.cpp
++++ b/src/android/camera_device.cpp
+@@ -873,7 +873,12 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
+ 	std::vector<Camera3StreamConfig> streamConfigs;
+ 	streamConfigs.reserve(stream_list->num_streams);
+ 
+-	if (buildStreamConfigsNoMap(capabilities_, stream_list, streamConfigs))
++	/*
++	 * Map JPEG and other derived streams onto a YUV stream of the same
++	 * size where possible: pipelines without a converter (simple) produce
++	 * a single stream only.
++	 */
++	if (buildStreamConfigsDefault(capabilities_, stream_list, streamConfigs))
+ 		return -EINVAL;
+ 
+ 	/*
+-- 
+2.56.0
+

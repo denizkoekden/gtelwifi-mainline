@@ -1,0 +1,9 @@
+# TWRP for gtelwifi (SM-T560) on the LineageOS port: the logical partitions
+# live in super on SYSTEM + CSC, /metadata on HIDDEN.
+# <src>                       <mnt>        <type>  <mnt_flags>  <fs_mgr_flags>
+system                        /system      erofs   ro           wait,logical
+system_ext                    /system_ext  erofs   ro           wait,logical
+product                       /product     erofs   ro           wait,logical
+vendor                        /vendor      erofs   ro           wait,logical
+/dev/block/by-name/HIDDEN     /metadata    ext4    noatime,nosuid,nodev  wait,check
+/dev/block/by-name/userdata   /data        ext4    noatime,nosuid,nodev  wait,check

@@ -1,0 +1,8 @@
+service vendor.camera.provider.libcamera /vendor/bin/hw/android.hardware.camera.provider-service.libcamera
+    interface aidl android.hardware.camera.provider.ICameraProvider/libcamera/0
+    class hal
+    user cameraserver
+    group system media camera
+    capabilities SYS_NICE
+    setenv LIBCAMERA_LOG_LEVELS *:WARN
+    setenv LIBCAMERA_LOG_FILE syslog

@@ -1,0 +1,35 @@
+{
+    "Nodes": [
+        {
+            "Name": "CPUMinFreq",
+            "Path": "/sys/devices/system/cpu/cpufreq/policy0/scaling_min_freq",
+            "Values": [
+                "1300000",
+                "1000000",
+                "768000"
+            ],
+            "DefaultIndex": 2,
+            "ResetOnInit": true
+        }
+    ],
+    "Actions": [
+        {
+            "PowerHint": "INTERACTION",
+            "Node": "CPUMinFreq",
+            "Duration": 0,
+            "Value": "1300000"
+        },
+        {
+            "PowerHint": "LAUNCH",
+            "Node": "CPUMinFreq",
+            "Duration": 3000,
+            "Value": "1300000"
+        },
+        {
+            "PowerHint": "SUSTAINED_PERFORMANCE",
+            "Node": "CPUMinFreq",
+            "Duration": 0,
+            "Value": "1000000"
+        }
+    ]
+}

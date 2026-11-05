@@ -1,0 +1,58 @@
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Subject: [PATCH] NetBpfLoad: allow 32-bit userspace on a 32-bit Arm kernel
+
+DRAFT for gtelwifi (Cortex-A7, no AArch64), never built or booted.
+Against android-17.0.0_r1 / lineage-24.0 (bpf/loader/NetBpfLoad.cpp is
+byte-identical in both).
+
+A Cortex-A7 cannot run a 64-bit kernel. The 32-on-64 compat problems the
+comment names do not exist with a 32-bit kernel, so warn instead of
+failing for the 32-bit kernel gates (8, 9, 10), let the 6.2+ userspace
+check pass on a 32-bit Arm kernel (12) and keep the 6.13+ userspace gate
+(14) for 64-bit kernels only. Whether netd's programs load on the ARM32
+JIT is a separate question for the first boot.
+---
+--- a/bpf/loader/NetBpfLoad.cpp
++++ b/bpf/loader/NetBpfLoad.cpp
+@@ -1589,19 +1589,16 @@
+     // Technically already required by U, but only enforce on V+
+     // see also: //system/netd/tests/kernel_test.cpp TestKernel64Bit
+     if (isAtLeastV && isKernel32Bit() && isAtLeastKernelVersion(5, 16)) {
+-        ALOGE("Android V+ platform with 32 bit kernel version >= 5.16.0 is unsupported");
+-        if (!isTV()) return 8;
++        ALOGW("Android V+ platform with 32 bit kernel version >= 5.16.0 is unsupported");
+     }
+ 
+     if (isKernel32Bit() && isAtLeast25Q2) {
+-        ALOGE("Android 25Q2 requires 64 bit kernel.");
+-        return 9;
++        ALOGW("Android 25Q2 requires 64 bit kernel.");
+     }
+ 
+     // 6.6 is highest version supported by Android V, so this is effectively W+ (sdk=36+)
+     if (isKernel32Bit() && isAtLeastKernelVersion(6, 7)) {
+-        ALOGE("Android platform with 32 bit kernel version >= 6.7.0 is unsupported");
+-        return 10;
++        ALOGW("Android platform with 32 bit kernel version >= 6.7.0 is unsupported");
+     }
+ 
+     // Various known ABI layout issues, particularly wrt. bpf and ipsec/xfrm.
+@@ -1674,6 +1671,9 @@
+             // also exempt Arm devices upgrading with major kernel rev from T-
+             // might possibly be better for them to run with a newer kernel...
+             ALOGW("[Arm KernelUpRev] 32-bit userspace unsupported on 6.2+ kernels.");
++        } else if (isArm() && isKernel32Bit()) {
++            // 32-bit userspace on a 32-bit kernel has no compat layer to break
++            ALOGW("[Arm32] 32-bit userspace on a 32-bit kernel (%d).", first_api_level);
+         } else if (isArm()) {
+             ALOGE("[Arm] 64-bit userspace required on 6.2+ kernels (%d).", first_api_level);
+             return 12;
+@@ -1690,7 +1690,7 @@
+     // Since officially Android only supports LTS, 6.13+ really means 6.18+,
+     // and won't be supported before 2026, most likely Android 17 / 26Q2.
+     // 6.13+ (implying 26Q2+) requires 64-bit userspace.
+-    if (isUserspace32bit() && isAtLeastKernelVersion(6, 13)) {
++    if (isUserspace32bit() && isKernel64Bit() && isAtLeastKernelVersion(6, 13)) {
+         // due to previous check only reachable on Arm && (<=T kernel uprev || TV || Wear)
+         ALOGE("64-bit userspace required on 6.13+ kernels.");
+         return 14;

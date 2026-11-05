@@ -1,0 +1,6 @@
+Wi-Fi/Bluetooth firmware for the BCM43430A1 (CYW43430) in gtelwifi, the same
+files Nura used (Alpine linux-firmware-cypress 20260916: cyfmac43430-sdio.bin
+and .clm_blob, installed under their brcm/ names; brcm/BCM43430A1.hcd from
+linux-firmware-brcm, the Raspberry Pi patch RAM that worked under Nura).
+Redistributable under the Cypress and Broadcom licences in linux-firmware.
+Not the Samsung .hcd from the stock backup (proprietary, never shipped).

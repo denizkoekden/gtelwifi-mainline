@@ -1,0 +1,10 @@
+Imported unchanged from STMicroelectronics' hardware-peripheral-camera
+(https://github.com/STMicroelectronics/hardware-peripheral-camera),
+commit 8a63cd4a0e8b8a0511e424953b041b38c9e6c0d6
+("st-android-16.0.0-2026-09-08 (v6.2.1)"), Apache License 2.0 (LICENSE).
+
+An android.hardware.camera.provider AIDL V1 service that wraps a camera3
+HAL module loaded through hw_get_module(), here libcamera's Android HAL
+(camera.libcamera, external/libcamera with the simple pipeline handler,
+lineageos/patches/external_libcamera). Local changes, if any, are listed
+below.

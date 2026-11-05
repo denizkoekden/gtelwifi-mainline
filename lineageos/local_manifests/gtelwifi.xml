@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Samsung Galaxy Tab E 9.6 (SM-T560, gtelwifi) on lineage-24.0 with the
+  mainline kernel - DRAFT. Goes to .repo/local_manifests/gtelwifi.xml.
+
+  Our device tree and kernel come from local bare repos on the build host
+  (lineageos/scripts/mkrepos.sh). The rest is LineageOS' mainline
+  infrastructure: device/mainline/common and its lineage.dependencies, two
+  levels deep (none of it is in the default manifest, checked 02.11.2026).
+-->
+<manifest>
+  <remote name="gtelwifi" fetch="file:///path/to/gtelwifi-src" />
+
+  <project path="device/samsung/gtelwifi" name="android_device_samsung_gtelwifi" remote="gtelwifi" revision="lineage-24.0" />
+  <project path="kernel/samsung/gtelwifi" name="android_kernel_samsung_gtelwifi" remote="gtelwifi" revision="lineage-24.0" clone-depth="1" />
+
+  <project path="device/mainline/common" name="LineageOS/android_device_mainline_common" />
+  <project path="kernel/mainline/configs" name="LineageOS/android_kernel_mainline_configs" />
+
+  <!-- device/mainline/common lineage.dependencies -->
+  <project path="external/drm_hwcomposer-upstream" name="LineageOS/android_external_drm_hwcomposer-upstream" />
+  <project path="external/minigbm-upstream" name="LineageOS/android_external_minigbm-upstream" />
+  <project path="external/linux-firmware-mainline" name="LineageOS/android_external_linux-firmware-mainline" />
+  <project path="external/mesa" name="LineageOS/android_external_mesa" />
+  <project path="hardware/mainline/common" name="LineageOS/android_hardware_mainline_common" />
+  <project path="vendor/mainline" name="LineageOS/android_vendor_mainline" />
+
+  <!-- their dependencies -->
+  <project path="external/libdisplay-info-upstream" name="LineageOS/android_external_libdisplay-info-upstream" />
+  <project path="prebuilts/mesa-build-dep" name="LineageOS/android_prebuilts_mesa-build-dep" />
+  <project path="external/alsa-lib" name="LineageOS/android_external_alsa-lib" />
+  <project path="external/alsa-ucm-conf" name="LineageOS/android_external_alsa-ucm-conf" />
+</manifest>

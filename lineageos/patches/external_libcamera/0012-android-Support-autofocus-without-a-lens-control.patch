@@ -1,0 +1,147 @@
+From 2077b8549b2396a2d2a0d2a5d52abfa057e826c5 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 15:23:55 +0100
+Subject: [PATCH 12/12] android: Support autofocus without a lens control
+
+The HAL enabled autofocus only for cameras with a LensFocusDistance
+control. A sensor that focuses on its own (S5K4ECGX through the simple
+pipeline) offers AfTrigger instead: treat that as autofocus support too,
+with a minimum focus distance of 10 diopters (~10 cm, the sensor's macro
+limit) and an uncalibrated focus distance.
+
+The AfState of libcamera (Idle, Scanning, Focused, Failed) was passed on
+unchanged as ANDROID_CONTROL_AF_STATE, whose values differ. Translate it:
+in auto mode, and in a continuous mode after an AF trigger until the
+next cancel, report ACTIVE_SCAN and FOCUSED_LOCKED / NOT_FOCUSED_LOCKED,
+which apps wait for after a tap to focus or before a still; otherwise
+the passive states.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I7772574cf147314c52f3a0614c59e6604d849c4b
+---
+ src/android/camera_capabilities.cpp | 12 +++++++++
+ src/android/camera_device.cpp       | 41 +++++++++++++++++++++++++++--
+ src/android/camera_device.h         |  5 ++++
+ 3 files changed, 56 insertions(+), 2 deletions(-)
+
+diff --git a/src/android/camera_capabilities.cpp b/src/android/camera_capabilities.cpp
+index ecd758b1..21196861 100644
+--- a/src/android/camera_capabilities.cpp
++++ b/src/android/camera_capabilities.cpp
+@@ -1423,6 +1423,18 @@ int CameraCapabilities::initializeStaticMetadata()
+ 			staticMetadata_->addEntry(ANDROID_LENS_INFO_FOCUS_DISTANCE_CALIBRATION,
+ 						  availableFocusDistanceCalibration[0]);
+ 		}
++	} else if (camera_->controls().count(&controls::AfTrigger)) {
++		/*
++		 * Autofocus without a lens control: a sensor with its own ISP
++		 * (S5K4ECGX) searches on a trigger. No focus distance to
++		 * report; 10 diopters stand for its macro limit of ~10 cm.
++		 */
++		float minFocusDistance = 10.0f;
++		staticMetadata_->addEntry(ANDROID_LENS_INFO_MINIMUM_FOCUS_DISTANCE,
++					  minFocusDistance);
++		staticMetadata_->addEntry(ANDROID_LENS_INFO_FOCUS_DISTANCE_CALIBRATION,
++					  availableFocusDistanceCalibration[0]);
++		isAfSupported_ = true;
+ 	} else {
+ 		float minFocusDistance = 0;
+ 		staticMetadata_->addEntry(ANDROID_LENS_INFO_MINIMUM_FOCUS_DISTANCE,
+diff --git a/src/android/camera_device.cpp b/src/android/camera_device.cpp
+index 7eccb707..9c7dfff3 100644
+--- a/src/android/camera_device.cpp
++++ b/src/android/camera_device.cpp
+@@ -1270,6 +1270,10 @@ int CameraDevice::processControls(Camera3RequestDescriptor *descriptor)
+ 	if (settings.getEntry(ANDROID_CONTROL_AF_TRIGGER, &entry)) {
+ 		const uint8_t *data = entry.data.u8;
+ 		controls.set(controls::AfTrigger, static_cast<uint8_t>(data[0]));
++		if (data[0] == ANDROID_CONTROL_AF_TRIGGER_START)
++			afLocked_ = true;
++		else if (data[0] == ANDROID_CONTROL_AF_TRIGGER_CANCEL)
++			afLocked_ = false;
+ 	}
+ 
+ 	if (settings.getEntry(ANDROID_LENS_FOCUS_DISTANCE, &entry)) {
+@@ -2144,6 +2148,37 @@ std::unique_ptr<CameraMetadata> CameraDevice::getJpegPartialResultMetadata() con
+ 	return resultMetadata;
+ }
+ 
++/*
++ * libcamera reports Idle/Scanning/Focused/Failed. In auto mode, and in a
++ * continuous mode after a trigger, Android expects the locked states that
++ * apps wait for after a tap or before a still.
++ */
++uint8_t CameraDevice::androidAfState(int32_t mode, int32_t state, bool locked)
++{
++	if (mode == controls::AfModeOff || state == controls::AfStateIdle)
++		return ANDROID_CONTROL_AF_STATE_INACTIVE;
++
++	if (mode == controls::AfModeAuto || mode == controls::AfModeMacro || locked) {
++		switch (state) {
++		case controls::AfStateScanning:
++			return ANDROID_CONTROL_AF_STATE_ACTIVE_SCAN;
++		case controls::AfStateFocused:
++			return ANDROID_CONTROL_AF_STATE_FOCUSED_LOCKED;
++		default:
++			return ANDROID_CONTROL_AF_STATE_NOT_FOCUSED_LOCKED;
++		}
++	}
++
++	switch (state) {
++	case controls::AfStateScanning:
++		return ANDROID_CONTROL_AF_STATE_PASSIVE_SCAN;
++	case controls::AfStateFocused:
++		return ANDROID_CONTROL_AF_STATE_PASSIVE_FOCUSED;
++	default:
++		return ANDROID_CONTROL_AF_STATE_PASSIVE_UNFOCUSED;
++	}
++}
++
+ std::unique_ptr<CameraMetadata>
+ CameraDevice::getPartialResultMetadata(const ControlList &metadata) const
+ {
+@@ -2204,8 +2239,10 @@ CameraDevice::getPartialResultMetadata(const ControlList &metadata) const
+ 	}
+ 
+ 	if (metadata.contains(controls::AF_STATE)) {
+-		const auto &afState = metadata.get(controls::AfState);
+-		resultMetadata->addEntry(ANDROID_CONTROL_AF_STATE, afState.value_or(0));
++		const int32_t afState = metadata.get(controls::AfState).value_or(controls::AfStateIdle);
++		const int32_t afMode = metadata.get(controls::AfMode).value_or(controls::AfModeOff);
++		resultMetadata->addEntry(ANDROID_CONTROL_AF_STATE,
++					 androidAfState(afMode, afState, afLocked_));
+ 	}
+ 
+ 	if (metadata.contains(controls::draft::LENS_FOCUS_DISTANCE)) {
+diff --git a/src/android/camera_device.h b/src/android/camera_device.h
+index 9ec62fbf..52e3050b 100644
+--- a/src/android/camera_device.h
++++ b/src/android/camera_device.h
+@@ -7,6 +7,7 @@
+ 
+ #pragma once
+ 
++#include <atomic>
+ #include <map>
+ #include <memory>
+ #include <optional>
+@@ -123,6 +124,7 @@ private:
+ 				      StreamBuffer *buffer) const;
+ 
+ 	std::unique_ptr<CameraMetadata> getJpegPartialResultMetadata() const;
++	static uint8_t androidAfState(int32_t mode, int32_t state, bool locked);
+ 	std::unique_ptr<CameraMetadata> getPartialResultMetadata(
+ 		const libcamera::ControlList &metadata) const;
+ 	std::unique_ptr<CameraMetadata> getFinalResultMetadata(
+@@ -174,5 +176,8 @@ private:
+ 	CameraMetadata lastSettings_;
+ 	CameraMetadata sessionSettings_;
+ 
++	/* An AF trigger started a search whose result stays locked */
++	std::atomic<bool> afLocked_ = false;
++
+ 	bool opened_;
+ };
+-- 
+2.56.0
+

@@ -1,0 +1,22 @@
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+
+soong_namespace {
+}
+
+// Boot/recovery image packer for sboot (header v0 + SPRD dt.img), used by
+// mkbootimg.mk through BOARD_CUSTOM_BOOTIMG_MK
+python_binary_host {
+    name: "mkbootimg_sprd",
+    main: "tools/mkbootimg_sprd.py",
+    srcs: ["tools/mkbootimg_sprd.py"],
+}
+
+// libperfmgr power HAL (TARGET_POWER_HAL := perfmgr-lineage): raises the
+// CPU floor to 1300 MHz on touch and app launch, schedutil does the rest
+prebuilt_etc {
+    name: "powerhint.json",
+    src: "configs/power/powerhint.json",
+    vendor: true,
+}

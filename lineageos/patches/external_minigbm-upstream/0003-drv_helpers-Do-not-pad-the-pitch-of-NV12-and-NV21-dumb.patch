@@ -1,0 +1,48 @@
+From 5c4401baab109f30086880dae201096337b87d5c Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 14:39:42 +0100
+Subject: [PATCH 3/3] drv_helpers: Do not pad the pitch of NV12 and NV21 dumb
+ buffers
+
+The llvmpipe tile alignment rounds the pitch of every dumb buffer up to a
+multiple of 64. Camera receivers without stride registers, such as the
+SC7730 DCAM, write NV12 with the chroma plane right after width x height
+bytes of luma, while the gralloc layout puts it at pitch x height. For a
+2576x1932 still the pitch became 2624: the JPEG encoder read the chroma
+plane 36 lines too late, colours were shifted and the last lines green.
+Smaller sizes such as 800x480 (pitch 832) are affected the same way.
+
+Keep the pitch of NV12 and NV21 buffers at their width. The height stays
+aligned; it only adds space after the chroma plane.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: Id43de15077c5d2202048df592a916279392f4b38
+---
+ drv_helpers.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/drv_helpers.c b/drv_helpers.c
+index 09f3096..73d2bc8 100644
+--- a/drv_helpers.c
++++ b/drv_helpers.c
+@@ -403,7 +403,16 @@ int drv_dumb_bo_create_ex(struct bo *bo, uint32_t width, uint32_t height, uint32
+ 		 * JPEG size, away from where the framework looks for it.
+ 		 */
+ 		if (aligned_height > 1) {
+-			aligned_width = ALIGN(aligned_width, MESA_LLVMPIPE_TILE_SIZE);
++			/*
++			 * Camera receivers without stride registers (SC7730
++			 * DCAM) write NV12/NV21 with the chroma plane right
++			 * after width x height bytes of luma; a padded pitch
++			 * moves the chroma plane of the gralloc layout away
++			 * from it (2576 -> 2624 shifted the colours of 5 MP
++			 * stills by 36 lines).
++			 */
++			if (format != DRM_FORMAT_NV12 && format != DRM_FORMAT_NV21)
++				aligned_width = ALIGN(aligned_width, MESA_LLVMPIPE_TILE_SIZE);
+ 			aligned_height = ALIGN(aligned_height, MESA_LLVMPIPE_TILE_SIZE);
+ 		}
+ 		create_dumb.bpp = layout_from_format(format)->bytes_per_pixel[0] * 8;
+-- 
+2.56.0
+

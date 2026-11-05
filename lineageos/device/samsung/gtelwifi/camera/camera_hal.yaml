@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# libcamera Android HAL: internal cameras must be listed here. IDs as
+# libcamera generates them from the DT path of the sensor. "rotation" is the
+# Android sensor orientation, i.e. 360 minus the DT "rotation" property
+# (S5K4ECGX 270, SR200PC20M 90), as libcamera derives it itself.
+cameras:
+  "/base/soc/i2c@70500000/camera@56":
+    location: back
+    rotation: 90
+  "/base/soc/i2c@70500000/camera@20":
+    location: front
+    rotation: 270

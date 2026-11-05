@@ -1,0 +1,56 @@
+From 3a697f52b84f7805958e827fdf3751c8ab9476b9 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 15:02:50 +0100
+Subject: [PATCH 10/10] libcamera: simple: Import more buffer slots than the stream's
+ buffers
+
+Without a converter the simple pipeline imports exactly bufferCount (3)
+V4L2 buffer slots. The Android HAL may produce several Android streams
+from that one libcamera stream (a preview scaled from the 5 MP still
+stream behind the JPEG); each of them can have bufferCount buffers in
+flight, so a fourth queued buffer failed with "Fail to get buffer from
+cache" and the request was cancelled: every still capture failed.
+
+Import slots only map dmabufs to V4L2 buffer indices and cost no memory.
+Import at least 16.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: Ia65bf1c4aaf9145ad6f890473e19454eab7b49ca
+---
+ src/libcamera/pipeline/simple/simple.cpp | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index df531dbd..69972a3c 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -338,6 +338,7 @@ protected:
+ 
+ private:
+ 	static constexpr unsigned int kNumInternalBuffers = 3;
++	static constexpr unsigned int kNumImportSlots = 16;
+ 
+ 	struct EntityData {
+ 		std::unique_ptr<V4L2VideoDevice> video;
+@@ -1219,9 +1220,16 @@ int SimplePipelineHandler::start(Camera *camera, [[maybe_unused]] const ControlL
+ 		ret = video->allocateBuffers(kNumInternalBuffers,
+ 					     &data->converterBuffers_);
+ 	} else {
+-		/* Otherwise, prepare for using buffers from the only stream. */
++		/*
++		 * Otherwise, prepare for using buffers from the only stream.
++		 * Import slots only map dmabufs to V4L2 buffer indices and
++		 * cost no memory; the Android HAL produces several streams
++		 * from this one, each with bufferCount buffers in flight, so
++		 * leave room for more than bufferCount queued buffers.
++		 */
+ 		Stream *stream = &data->streams_[0];
+-		ret = video->importBuffers(stream->configuration().bufferCount);
++		ret = video->importBuffers(std::max(stream->configuration().bufferCount,
++						    kNumImportSlots));
+ 	}
+ 	if (ret < 0) {
+ 		releasePipeline(data);
+-- 
+2.56.0
+

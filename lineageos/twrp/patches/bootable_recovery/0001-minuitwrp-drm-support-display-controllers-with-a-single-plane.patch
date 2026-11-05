@@ -1,0 +1,41 @@
+From 7cba07a4c78ac5a1c1312b8563bdf514a24048ac Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 19:46:34 +0100
+Subject: [PATCH] minuitwrp: drm: support display controllers with a single
+ plane
+
+The atomic DRM backend assumes two layer mixers (DEFAULT_NUM_LMS) unless
+the connector has a "mode_properties" topology property, which only the
+Qualcomm SDE driver provides. On a display controller with one plane,
+drm_init() returned NULL without a message, TWRP fell back to fbdev and
+crashed when /dev/fb0 did not exist either.
+
+Use as many layer mixers as there are planes. Tested on the Samsung
+Galaxy Tab E 9.6 (SM-T560, sprd-dispc on mainline Linux).
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I32069818228221b3f94c36d83358bd85ed2681bc
+---
+ minuitwrp/graphics_drm.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/minuitwrp/graphics_drm.cpp b/minuitwrp/graphics_drm.cpp
+index 99ebd28..1c9de1a 100644
+--- a/minuitwrp/graphics_drm.cpp
++++ b/minuitwrp/graphics_drm.cpp
+@@ -812,8 +812,11 @@ static GRSurface* drm_init(minui_backend* backend __unused) {
+ 
+  /* Get possible plane_ids */
+   drmModePlaneRes *plane_options = drmModeGetPlaneResources(drm_fd);
+-  if (!plane_options || !plane_options->planes || (plane_options->count_planes < number_of_lms))
++  if (!plane_options || !plane_options->planes || !plane_options->count_planes)
+     return NULL;
++  /* Display controllers with a single plane (no split into layer mixers) */
++  if (plane_options->count_planes < number_of_lms)
++    number_of_lms = plane_options->count_planes;
+ 
+   /* Set crtc resources */
+   crtc_res.props = drmModeObjectGetProperties(drm_fd,
+-- 
+2.56.0
+

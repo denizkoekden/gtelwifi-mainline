@@ -1,0 +1,4 @@
+service vendor.gnss-gtelwifi /vendor/bin/hw/android.hardware.gnss-service.gtelwifi
+    class hal
+    user gps
+    group system inet

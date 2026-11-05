@@ -1,0 +1,7 @@
+# Samsung Galaxy Tab E 9.6 (gtelwifi): SC7730 matrix keypad, physical Home
+# and Volume Up (Volume Down and Power come from gpio-keys, Generic.kl).
+# Home wakes the device as with the stock firmware; Generic.kl maps 172 to
+# HOME without WAKE.
+
+key 115   VOLUME_UP
+key 172   HOME              WAKE

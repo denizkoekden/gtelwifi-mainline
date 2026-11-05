@@ -1,0 +1,41 @@
+From dbcd7977e9d858e40b0ac1b2e2934c308b0f51c8 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 10:58:30 +0100
+Subject: [PATCH 2/2] libcamera: camera_sensor: Do not require V4L2_CID_HBLANK
+
+CameraSensor::init() reads the HBLANK control unconditionally to set it
+to its minimum. Sensors that output YUV from their own ISP, such as the
+S5K4ECGX and SR200PC20M, do not expose it, and ControlInfoMap::at()
+throws, which aborts the camera HAL (exceptions are fatal here). Only
+touch HBLANK when the sensor has it, as later libcamera releases do.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: Ic57c4b26cc6774f3cee99610d5dc40c7d03ac0dd
+---
+ src/libcamera/camera_sensor.cpp | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/src/libcamera/camera_sensor.cpp b/src/libcamera/camera_sensor.cpp
+index cb167de7..36c9f5fa 100644
+--- a/src/libcamera/camera_sensor.cpp
++++ b/src/libcamera/camera_sensor.cpp
+@@ -196,9 +196,13 @@ int CameraSensor::init()
+ 	 * \todo The control API ought to have a flag to specify if a control
+ 	 * is read-only which could be used below.
+ 	 */
+-	const ControlInfo hblank = ctrls.infoMap()->at(V4L2_CID_HBLANK);
+-	const int32_t hblankMin = hblank.min().get<int32_t>();
+-	const int32_t hblankMax = hblank.max().get<int32_t>();
++	const ControlInfoMap *infoMap = ctrls.infoMap();
++	const auto hblankIt = infoMap->find(V4L2_CID_HBLANK);
++	/* YUV sensors with their own ISP need not expose HBLANK */
++	const int32_t hblankMin = hblankIt != infoMap->end()
++				  ? hblankIt->second.min().get<int32_t>() : 0;
++	const int32_t hblankMax = hblankIt != infoMap->end()
++				  ? hblankIt->second.max().get<int32_t>() : 0;
+ 
+ 	if (hblankMin != hblankMax) {
+ 		ControlList ctrl(subdev_->controls());
+-- 
+2.56.0
+

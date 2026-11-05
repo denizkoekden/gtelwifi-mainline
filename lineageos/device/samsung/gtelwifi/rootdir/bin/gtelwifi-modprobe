@@ -1,0 +1,6 @@
+#!/system/bin/sh
+# Kernel request_module() helper (init.gtelwifi.rc points
+# /proc/sys/kernel/modprobe here). Android's init.rc leaves the kernel without
+# a modprobe, and the modules live in /vendor/lib/modules: brcmfmac asks for
+# its vendor module brcmfmac-cyw that way.
+exec /system/bin/modprobe -d /vendor/lib/modules "$@"

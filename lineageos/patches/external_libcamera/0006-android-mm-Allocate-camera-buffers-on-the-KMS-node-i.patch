@@ -1,0 +1,83 @@
+From 9bd063fd0be1918a9a0d77b27438393ac6b0eb5c Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 11:29:08 +0100
+Subject: [PATCH] android: mm: Allocate camera buffers on the KMS node if
+ needed
+
+minigbm_create_default_device() only tries render nodes. On SoCs whose
+GPU has no minigbm backend and whose display controller is a separate
+KMS device (lima on the SC7730, sprd-dispc) no render node is usable,
+and the CameraBufferManager aborted the HAL ("Minigbm not supported").
+Fall back to the KMS nodes, whose dumb buffers are also physically
+contiguous for capture engines without an IOMMU.
+
+camera.libcamera links minigbm-upstream's libgbm: its dumb backend
+accepts any KMS driver with dumb buffers and PRIME, the older
+external/minigbm only a fixed list of driver names.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I0fe95e0ff28d624549b5fdcd07597e68806404cb
+---
+ Android.bp                           |  4 ++++
+ src/android/mm/minigbm_allocator.cpp | 23 +++++++++++++++++++++++
+ 2 files changed, 27 insertions(+)
+
+diff --git a/Android.bp b/Android.bp
+index a262f9f4..8448be6b 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -466,6 +466,10 @@ cc_library_shared {
+     srcs: [
+         "src/libcamera/pipeline/simple/simple.cpp",
+     ],
++    // minigbm-upstream: its dumb backend takes any KMS driver with dumb
++    // buffers and PRIME (external/minigbm only a fixed driver list)
++    exclude_shared_libs: ["libgbm"],
++    shared_libs: ["libgbm_upstream"],
+ }
+ 
+ cc_library_shared {
+diff --git a/src/android/mm/minigbm_allocator.cpp b/src/android/mm/minigbm_allocator.cpp
+index c50dbedb..1e3b46d5 100644
+--- a/src/android/mm/minigbm_allocator.cpp
++++ b/src/android/mm/minigbm_allocator.cpp
+@@ -4,6 +4,10 @@
+ 
+ #include "minigbm_allocator.h"
+ 
++#include <fcntl.h>
++#include <string>
++#include <unistd.h>
++
+ #include <gbm.h>
+ #include <unistd.h>
+ 
+@@ -267,6 +271,25 @@ std::unique_ptr<Allocator> CreateMinigbmAllocator()
+ {
+ 	int unused_fd = -1;
+ 	struct gbm_device *gbm_device = minigbm_create_default_device(&unused_fd);
++
++	/*
++	 * The default device is a render node. GPUs minigbm has no backend
++	 * for (lima, separate display controller) leave none usable, while
++	 * the KMS node of the display controller offers dumb buffers, which
++	 * are also contiguous for capture DMA engines without an IOMMU.
++	 */
++	for (int i = 0; !gbm_device && i < 8; i++) {
++		std::string path = "/dev/dri/card" + std::to_string(i);
++		int fd = open(path.c_str(), O_RDWR | O_CLOEXEC);
++		if (fd < 0)
++			continue;
++		gbm_device = gbm_create_device(fd);
++		if (!gbm_device)
++			close(fd);
++		else
++			LOG(HAL, Info) << "Minigbm on " << path;
++	}
++
+ 	if (!gbm_device) {
+ 		LOG(HAL, Error) << "Minigbm not supported";
+ 		return nullptr;
+-- 
+2.56.0
+

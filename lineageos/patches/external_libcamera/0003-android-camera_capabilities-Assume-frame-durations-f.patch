@@ -1,0 +1,54 @@
+From ad4ecccf7dd4501e54146ea6c933480998ee3ffc Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 11:11:16 +0100
+Subject: [PATCH] android: camera_capabilities: Assume frame durations for YUV
+ sensors
+
+The simple pipeline handler only reports FrameDurationLimits for
+sensors that expose blanking and pixel rate controls. Sensors with their
+own ISP, which deliver YUV and choose their frame rate themselves, have
+none, and the HAL refused to initialize such cameras. Assume a range of
+30 to 8 fps for them instead.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I94319469a38aee30d157e83ac7d800751443ca29
+---
+ src/android/camera_capabilities.cpp | 21 ++++++++++++++-------
+ 1 file changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/src/android/camera_capabilities.cpp b/src/android/camera_capabilities.cpp
+index 77edfa4e..ecd758b1 100644
+--- a/src/android/camera_capabilities.cpp
++++ b/src/android/camera_capabilities.cpp
+@@ -617,14 +617,21 @@ int CameraCapabilities::initializeStreamConfigurations()
+ 			const ControlInfoMap &controls = camera_->controls();
+ 			const auto frameDurations = controls.find(
+ 				&controls::FrameDurationLimits);
+-			if (frameDurations == controls.end()) {
+-				LOG(HAL, Error)
+-					<< "Camera does not report frame durations";
+-				return -EINVAL;
+-			}
+ 
+-			int64_t minFrameDuration = frameDurations->second.min().get<int64_t>() * 1000;
+-			int64_t maxFrameDuration = frameDurations->second.max().get<int64_t>() * 1000;
++			/*
++			 * Sensors with their own ISP (YUV output) pick their
++			 * frame rate themselves and the simple pipeline cannot
++			 * report limits for them. Assume 30 to 8 fps.
++			 */
++			int64_t minFrameDuration = 33333333;
++			int64_t maxFrameDuration = 125000000;
++			if (frameDurations != controls.end()) {
++				minFrameDuration = frameDurations->second.min().get<int64_t>() * 1000;
++				maxFrameDuration = frameDurations->second.max().get<int64_t>() * 1000;
++			} else {
++				LOG(HAL, Warning)
++					<< "Camera does not report frame durations, assuming 30-8 fps";
++			}
+ 
+ 			/*
+ 			 * Cap min frame duration to 30 FPS with 1% tolerance.
+-- 
+2.56.0
+

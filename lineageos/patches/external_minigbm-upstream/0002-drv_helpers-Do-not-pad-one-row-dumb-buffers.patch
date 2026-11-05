@@ -1,0 +1,54 @@
+From 62a2940252c971675b80731b0112bd8774d53bd4 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 14:28:39 +0100
+Subject: [PATCH 2/3] drv_helpers: Do not pad one-row dumb buffers
+
+drv_dumb_bo_create_ex() aligns width and height to the llvmpipe tile size
+of 64. A BLOB buffer (HAL_PIXEL_FORMAT_BLOB, R8) is a single row as long
+as its size in bytes:
+
+- The height alignment made it 64 times as large: the 7.5 MB JPEG
+  buffer of a 5 MP camera still became a 477 MB dumb buffer and
+  DRM_IOCTL_MODE_CREATE_DUMB failed with ENOMEM on every capture.
+- The width alignment moves the end of the plane by up to 63 bytes. The
+  camera HAL writes the JPEG size (camera3_jpeg_blob) at the end of the
+  plane, the framework reads it at the end of the requested width, so
+  apps saved the whole 7.5 MB buffer instead of the 1.3 MB JPEG.
+
+Leave one-row buffers unpadded.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I2359be4f71076e33e52ec22c6df6d0d5364f2029
+---
+ drv_helpers.c | 15 ++++++++++++---
+ 1 file changed, 12 insertions(+), 3 deletions(-)
+
+diff --git a/drv_helpers.c b/drv_helpers.c
+index 47c78b4..09f3096 100644
+--- a/drv_helpers.c
++++ b/drv_helpers.c
+@@ -394,9 +394,18 @@ int drv_dumb_bo_create_ex(struct bo *bo, uint32_t width, uint32_t height, uint32
+ 		    DIV_ROUND_UP(aligned_width * layout_from_format(format)->bytes_per_pixel[0], 4);
+ 		create_dumb.bpp = 32;
+ 	} else {
+-		/* Align for llvmpipe 64-byte tile size for dumb_driver */
+-		aligned_width = ALIGN(aligned_width, MESA_LLVMPIPE_TILE_SIZE);
+-		aligned_height = ALIGN(aligned_height, MESA_LLVMPIPE_TILE_SIZE);
++		/*
++		 * Align for llvmpipe 64-byte tile size for dumb_driver, but not
++		 * a single row: BLOB buffers (JPEG) are one row of their size
++		 * in bytes. 64 rows made the 7.5 MB JPEG buffer of 5 MP stills
++		 * a 477 MB allocation that always failed, and a padded row
++		 * moves the end of the buffer, where the camera HAL puts the
++		 * JPEG size, away from where the framework looks for it.
++		 */
++		if (aligned_height > 1) {
++			aligned_width = ALIGN(aligned_width, MESA_LLVMPIPE_TILE_SIZE);
++			aligned_height = ALIGN(aligned_height, MESA_LLVMPIPE_TILE_SIZE);
++		}
+ 		create_dumb.bpp = layout_from_format(format)->bytes_per_pixel[0] * 8;
+ 	}
+ 	create_dumb.width = aligned_width;
+-- 
+2.56.0
+

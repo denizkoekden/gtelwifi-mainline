@@ -1,0 +1,34 @@
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+// GPS of the SM-T560: shim for the stock glgps blobs and the AIDL GNSS
+// service that bridges to their legacy HAL (README).
+//
+
+cc_library_shared {
+    name: "libgpsd_shim",
+    vendor: true,
+    srcs: ["gpsd_shim.c"],
+    cflags: ["-Wall", "-Werror"],
+}
+
+cc_binary {
+    name: "android.hardware.gnss-service.gtelwifi",
+    relative_install_path: "hw",
+    vendor: true,
+    defaults: ["gnss_use_latest_hal_aidl_ndk_shared"],
+    srcs: ["GnssLegacy.cpp"],
+    cflags: ["-Wall", "-Werror"],
+    header_libs: ["libhardware_headers"],
+    shared_libs: [
+        "libbase",
+        "libbinder_ndk",
+        "libdl",
+        "liblog",
+        "libutils",
+    ],
+    // the legacy HAL loads it from the same namespace
+    required: ["libgpsd_shim"],
+    init_rc: ["android.hardware.gnss-service.gtelwifi.rc"],
+    vintf_fragments: ["android.hardware.gnss-service.gtelwifi.xml"],
+}

@@ -1,0 +1,41 @@
+From dbea13d3403c00c815436097359b8e8116491075 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 11:45:42 +0100
+Subject: [PATCH 8/8] android: camera_device: Set camera usage in the mapping
+ stream builder
+
+gralloc picks the actual format of IMPLEMENTATION_DEFINED streams from
+their usage. buildStreamConfigsNoMap() therefore marks every stream as
+written by the camera, the mapping builder only JPEG streams, so the
+preview buffers became XBGR8888 instead of NV12 and the buffer import
+failed. Mark the other streams the same way.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: Iafaa98a6ed8c1c72910802f514141bc1cae2ca72
+---
+ src/android/camera_device.cpp | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/src/android/camera_device.cpp b/src/android/camera_device.cpp
+index 9dac3bcd..b3f46d01 100644
+--- a/src/android/camera_device.cpp
++++ b/src/android/camera_device.cpp
+@@ -260,6 +260,15 @@ bool isJpegStream(camera3_stream_t *stream)
+ 			continue;
+ 		}
+ 
++		/*
++		 * As in buildStreamConfigsNoMap(): gralloc picks the actual
++		 * format of IMPLEMENTATION_DEFINED from the usage, so mark
++		 * every stream as written by the camera.
++		 */
++		stream->usage |= (GRALLOC_USAGE_HW_CAMERA_WRITE |
++				  GRALLOC_USAGE_SW_READ_OFTEN |
++				  GRALLOC_USAGE_SW_WRITE_OFTEN);
++
+ 		/*
+ 		 * If a CameraStream with the same size and format as the
+ 		 * current stream has already been requested, associate the two.
+-- 
+2.56.0
+

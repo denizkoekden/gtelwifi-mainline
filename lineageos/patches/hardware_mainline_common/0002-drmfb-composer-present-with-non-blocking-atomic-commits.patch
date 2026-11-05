@@ -1,0 +1,78 @@
+From d3d55325706d9151f03158bc171f8129a80c28e9 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 01:14:54 +0100
+Subject: [PATCH] drmfb composer: present with non-blocking atomic commits
+
+A blocking commit returns only after the kernel has waited for the plane's
+acquire fence (the client target SurfaceFlinger just rendered on the GPU)
+and for the flip at the next vblank. On gtelwifi (Mali-400 via lima,
+sprd-dispc) that was 25 ms median, 42 ms p90, during which the composer and
+SurfaceFlinger's present stood still; apps then waited ~25 ms in
+dequeueBuffer and the launcher drew at ~9 fps while swiping.
+
+Commit presents with DRM_MODE_ATOMIC_NONBLOCK and let OUT_FENCE_PTR report
+completion, as before. If the previous flip is still pending (-EBUSY),
+wait for its out-fence and commit again. Modesets stay blocking.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I57d0a8283ac083e7c3b43fb038f8a9c5bf0353d1
+---
+ .../graphics/composer/drmfb/DrmDevice.cpp     | 20 ++++++++++++++++---
+ .../graphics/composer/drmfb/DrmDevice.h       |  3 +++
+ 2 files changed, 20 insertions(+), 3 deletions(-)
+
+diff --git a/interfaces/graphics/composer/drmfb/DrmDevice.cpp b/interfaces/graphics/composer/drmfb/DrmDevice.cpp
+index bd2624b..1840b87 100644
+--- a/interfaces/graphics/composer/drmfb/DrmDevice.cpp
++++ b/interfaces/graphics/composer/drmfb/DrmDevice.cpp
+@@ -1128,9 +1128,22 @@ bool DrmDevice::AtomicCommit(DrmDisplay* d, const std::shared_ptr<DrmFramebuffer
+         constexpr int kAcquireFenceTimeoutMs = 3000;
+         ok = sync_wait(acquire_fence, kAcquireFenceTimeoutMs) == 0;
+     }
+-    const uint32_t flags = (modeset ? DRM_MODE_ATOMIC_ALLOW_MODESET : 0) |
+-                           (test_only ? DRM_MODE_ATOMIC_TEST_ONLY : 0);
+-    if (ok && drmModeAtomicCommit(fd_.get(), request, flags, nullptr) != 0) {
++    uint32_t flags = (modeset ? DRM_MODE_ATOMIC_ALLOW_MODESET : 0) |
++                     (test_only ? DRM_MODE_ATOMIC_TEST_ONLY : 0);
++    // Present without blocking: the kernel waits for the acquire fence and
++    // the flip in its commit worker, and OUT_FENCE_PTR signals completion.
++    // A blocking commit held the composer (and SurfaceFlinger) for the GPU
++    // fence plus up to a frame. Modesets stay blocking.
++    if (!test_only && !modeset) flags |= DRM_MODE_ATOMIC_NONBLOCK;
++    int ret = ok ? drmModeAtomicCommit(fd_.get(), request, flags, nullptr) : 0;
++    if (ok && ret != 0 && errno == EBUSY && (flags & DRM_MODE_ATOMIC_NONBLOCK) &&
++        d->last_present_fence.ok()) {
++        // the previous flip is still pending
++        constexpr int kPreviousFlipTimeoutMs = 1000;
++        sync_wait(d->last_present_fence.get(), kPreviousFlipTimeoutMs);
++        ret = drmModeAtomicCommit(fd_.get(), request, flags, nullptr);
++    }
++    if (ok && ret != 0) {
+         ALOGE("Atomic %s failed for display %" PRId64 ": %s", test_only ? "test" : "present", d->id,
+               strerror(errno));
+         ok = false;
+@@ -1141,6 +1154,7 @@ bool DrmDevice::AtomicCommit(DrmDisplay* d, const std::shared_ptr<DrmFramebuffer
+     if (test_only) {
+         if (fence >= 0) close(fence);
+     } else if (ok && fence >= 0) {
++        d->last_present_fence.reset(dup(fence));
+         out_fence->reset(fence);
+         d->powered = true;
+         d->modeset_needed = false;
+diff --git a/interfaces/graphics/composer/drmfb/DrmDevice.h b/interfaces/graphics/composer/drmfb/DrmDevice.h
+index 95e1696..36e35d1 100644
+--- a/interfaces/graphics/composer/drmfb/DrmDevice.h
++++ b/interfaces/graphics/composer/drmfb/DrmDevice.h
+@@ -66,6 +66,9 @@ struct DrmDisplay {
+     bool connected = false;
+     bool powered = false;
+     bool modeset_needed = true;
++    // OUT_FENCE of the last present, waited on when a non-blocking commit
++    // finds the previous flip still pending
++    android::base::unique_fd last_present_fence;
+     bool has_legacy_framebuffer = false;
+     uint32_t legacy_format = 0;
+     uint64_t legacy_modifier = 0;
+-- 
+2.56.0
+

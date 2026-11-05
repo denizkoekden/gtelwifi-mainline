@@ -1,0 +1,6 @@
+Sensor register tables of the S5K4ECGX (rear) and the SR200PC20M (front),
+taken from the stock camera HAL with tools/camtables.py --firmware. They are
+proprietary and never part of the public tree. Release builds carry them in
+the vendor image at /vendor/firmware/<sensor>/ (device.mk, from
+proprietary/camera on the build host), where the kernel drivers request
+them; without them the cameras do not start.

@@ -1,0 +1,45 @@
+From e61ca7dafb5629692d5944d3d1e73ca4e4c3691c Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Wed, 4 Nov 2026 15:39:59 +0100
+Subject: [PATCH] NetBpfLoad: accept interpreted programs on a 32-bit Arm
+ kernel
+
+The ARM32 eBPF JIT cannot translate BPF_ATOMIC, which the tethering
+offload and netd programs use for their counters (__sync_fetch_and_add):
+"*** NOT YET: opcode c3 ***", then schedcls_tether_downstream6_ether
+failed to load and NetBpfLoad reported a critical failure (gtelwifi,
+first boots on 04.11.2026). With BPF_JIT_ALWAYS_ON off the kernel runs
+such programs in the interpreter, so on a 32-bit Arm kernel warn about a
+program without JIT image instead of rejecting it.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I1d29d2014b99b9f0ead30318393af3520172c9ee
+---
+ bpf/loader/NetBpfLoad.cpp | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/bpf/loader/NetBpfLoad.cpp b/bpf/loader/NetBpfLoad.cpp
+index 924f33e4a5..3d64bbe585 100644
+--- a/bpf/loader/NetBpfLoad.cpp
++++ b/bpf/loader/NetBpfLoad.cpp
+@@ -1003,8 +1003,15 @@ static int validateProg(const borrowed_fd& fd, const char* const progPinLoc) {
+     if (!isUser) ALOGD("prog %s id %d len jit:%d xlat:%d", progPinLoc, progId, jitLen, xlatLen);
+ 
+     if (!jitLen && api_level_full >= NETBPFLOAD_25Q2_VER) {
+-        ALOGE("Kernel eBPF JIT failure for %s", progPinLoc);
+-        return -ENOTSUP;
++        // The ARM32 JIT has no BPF_ATOMIC (the programs count with
++        // __sync_fetch_and_add); with BPF_JIT_ALWAYS_ON off the kernel
++        // interprets such programs instead.
++        if (isArm() && isKernel32Bit()) {
++            ALOGW("Kernel eBPF JIT failure for %s, interpreted (32-bit Arm kernel)", progPinLoc);
++        } else {
++            ALOGE("Kernel eBPF JIT failure for %s", progPinLoc);
++            return -ENOTSUP;
++        }
+     }
+     return 0;
+ }
+-- 
+2.56.0
+

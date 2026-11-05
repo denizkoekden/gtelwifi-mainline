@@ -1,0 +1,143 @@
+From 07e62480f9bb251b84535adb955c121a30c484fc Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 14:18:09 +0100
+Subject: [PATCH 9/9] android: camera_device: Scale all streams from the largest
+ one
+
+Without a converter the simple pipeline produces one stream and keeps
+only the largest of a configuration. A still at a larger size than the
+preview (S5K4ECGX: 640x480 preview, 2576x1932 JPEG) then failed in
+configureStreams().
+
+When a probe validation drops streams, produce every YUV stream from the
+largest one: the others become Mapped streams scaled down by
+PostProcessorYuv (libyuv). A JPEG stream must belong to the largest
+stream already. Mapped streams may now derive from an Internal stream
+(the NV12 stream behind a JPEG of a size no app stream has); their
+source buffer then comes from its pool, as for a Direct stream that is
+not part of the request.
+
+The session runs in the mode of the largest stream: for 5 MP stills the
+preview runs at the still rate (7.7 fps on the SM-T560).
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I59c0ba61f2e15493d025b6006275ad9d36344c3a
+---
+ src/android/camera_device.cpp | 79 ++++++++++++++++++++++++++++++++---
+ 1 file changed, 73 insertions(+), 6 deletions(-)
+
+diff --git a/src/android/camera_device.cpp b/src/android/camera_device.cpp
+index b3f46d01..7eccb707 100644
+--- a/src/android/camera_device.cpp
++++ b/src/android/camera_device.cpp
+@@ -361,6 +361,69 @@ bool isJpegStream(camera3_stream_t *stream)
+ 	return 0;
+ }
+ 
++/*
++ * Whether the camera drops streams of this configuration: pipelines without
++ * a converter (simple) produce a single stream and keep only the largest.
++ */
++bool cameraDropsStreams(Camera *camera,
++			const std::vector<Camera3StreamConfig> &streamConfigs)
++{
++	std::unique_ptr<CameraConfiguration> probe = camera->generateConfiguration();
++	if (!probe)
++		return false;
++
++	for (const Camera3StreamConfig &streamConfig : streamConfigs)
++		probe->addConfiguration(streamConfig.config);
++	probe->validate();
++
++	return probe->size() < streamConfigs.size();
++}
++
++/*
++ * Produce every stream from the largest one: the other YUV streams become
++ * Mapped streams scaled down in software (PostProcessorYuv). A JPEG stream
++ * must already belong to the largest stream, the JPEG encoder does not
++ * scale. With a sensor whose modes differ in more than size (S5K4ECGX
++ * stills), the session then runs in the mode of the largest stream.
++ */
++int collapseStreamConfigs(std::vector<Camera3StreamConfig> &streamConfigs)
++{
++	auto area = [](const Camera3StreamConfig &streamConfig) {
++		return streamConfig.config.size.width * streamConfig.config.size.height;
++	};
++	auto head = std::max_element(streamConfigs.begin(), streamConfigs.end(),
++				     [&area](const auto &a, const auto &b) {
++					     return area(a) < area(b);
++				     });
++
++	for (auto it = streamConfigs.begin(); it != streamConfigs.end(); ++it) {
++		if (it == head)
++			continue;
++		if (it->config.pixelFormat != head->config.pixelFormat)
++			return -EINVAL;
++		for (const auto &stream : it->streams)
++			if (isJpegStream(stream.stream))
++				return -EINVAL;
++	}
++
++	Camera3StreamConfig merged = *head;
++	for (auto it = streamConfigs.begin(); it != streamConfigs.end(); ++it) {
++		if (it == head)
++			continue;
++		for (const auto &stream : it->streams) {
++			LOG(HAL, Info) << "Stream " << stream.stream->width << "x"
++				       << stream.stream->height << " scaled from "
++				       << merged.config.size;
++			merged.streams.push_back({ stream.stream,
++						   CameraStream::Type::Mapped });
++		}
++	}
++	merged.streams[0].stream->usage |= GRALLOC_USAGE_SW_READ_OFTEN;
++
++	streamConfigs = { std::move(merged) };
++	return 0;
++}
++
+ int buildStreamConfigsNoMap(const CameraCapabilities &capabilities,
+ 			    camera3_stream_configuration_t *stream_list,
+ 			    std::vector<Camera3StreamConfig> &streamConfigs)
+@@ -890,6 +953,11 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
+ 	if (buildStreamConfigsDefault(capabilities_, stream_list, streamConfigs))
+ 		return -EINVAL;
+ 
++	if (streamConfigs.size() > 1 &&
++	    cameraDropsStreams(camera_.get(), streamConfigs) &&
++	    collapseStreamConfigs(streamConfigs))
++		LOG(HAL, Error) << "Cannot produce the streams from a single one";
++
+ 	/*
+ 	 * Generate an empty configuration, and construct a StreamConfiguration
+ 	 * for each camera3_stream to add to it.
+@@ -913,12 +981,11 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
+ 			/*
+ 			 * The streamConfig.streams vector contains as its first
+ 			 * element a Direct (or Internal) stream, and then an
+-			 * optional set of Mapped streams derived from the
+-			 * Direct stream. Cache the Direct stream pointer, to
+-			 * be used when constructing the subsequent mapped
+-			 * streams.
++			 * optional set of Mapped streams derived from it. Cache
++			 * the source stream pointer, to be used when
++			 * constructing the subsequent mapped streams.
+ 			 */
+-			if (stream.type == CameraStream::Type::Direct)
++			if (stream.type != CameraStream::Type::Mapped)
+ 				sourceStream = &streams_.back();
+ 		}
+ 	}
+@@ -1526,7 +1593,7 @@ int CameraDevice::processCaptureRequest(camera3_capture_request_t *camera3Reques
+ 		 */
+ 		CameraStream *sourceStream = cameraStream->sourceStream();
+ 		ASSERT(sourceStream);
+-		ASSERT(sourceStream->type() == CameraStream::Type::Direct);
++		ASSERT(sourceStream->type() != CameraStream::Type::Mapped);
+ 
+ 		/*
+ 		 * If the buffer for the source stream has been requested as
+-- 
+2.56.0
+

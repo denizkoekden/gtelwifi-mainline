@@ -1,0 +1,89 @@
+From a3aa39c5a180a5cf6a30767c7d9d0f390fbf21ed Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Wed, 4 Nov 2026 17:48:49 +0100
+Subject: [PATCH] NetBpfLoad: skip programs with callbacks on a 32-bit Arm
+ kernel
+
+bpf_for_each_map_elem, bpf_loop, bpf_timer_set_callback, bpf_find_vma
+and bpf_user_ringbuf_drain take a callback (a bpf-to-bpf call). The
+ARM32 eBPF JIT supports no bpf-to-bpf calls and the interpreter rejects
+callbacks ("callbacks are not allowed in non-JITed programs"), so a
+program using one cannot load on a 32-bit Arm kernel at all. Today that
+is the DSCP policy program (bpf_for_each_map_elem), which made NetBpfLoad
+stop the boot (gtelwifi, 04.11.2026).
+
+Skip such programs there like a program for another kernel version: the
+maps are still created and pinned, the program is not pinned, and
+DscpPolicyTracker already copes with a missing program
+(TcUtils.isBpfProgramUsable). Selecting the kernel 5.10 variants instead
+is no option: netd's getsockopt self-test expects the behaviour of the
+real kernel version (EINVAL from 6.1 on) and aborts netd1shot otherwise.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: Ia143511207ea3ff49cd22f6e5e107e7e79ba8d9e
+---
+ bpf/loader/NetBpfLoad.cpp | 34 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 34 insertions(+)
+
+diff --git a/bpf/loader/NetBpfLoad.cpp b/bpf/loader/NetBpfLoad.cpp
+index 3d64bbe585..d951eae3ad 100644
+--- a/bpf/loader/NetBpfLoad.cpp
++++ b/bpf/loader/NetBpfLoad.cpp
+@@ -1024,6 +1024,26 @@ static enum bpf_attach_type fixup_attach(enum bpf_prog_type prog_type, enum bpf_
+     return expected_attach_type;
+ }
+ 
++// Helpers that take a callback. The interpreter cannot run callbacks
++// ("callbacks are not allowed in non-JITed programs") and the ARM32 eBPF JIT
++// supports no bpf-to-bpf calls, so such programs cannot load on a 32-bit Arm
++// kernel at all; there they are skipped like a program for another kernel
++// version (their maps are still created).
++static bool usesCallbackHelpers(const struct bpf_insn* insn, size_t cnt) {
++    for (size_t i = 0; i < cnt; i++) {
++        if (insn[i].code != (BPF_JMP | BPF_CALL) || insn[i].src_reg) continue;
++        switch (insn[i].imm) {
++            case BPF_FUNC_for_each_map_elem:
++            case BPF_FUNC_timer_set_callback:
++            case BPF_FUNC_find_vma:
++            case BPF_FUNC_loop:
++            case BPF_FUNC_user_ringbuf_drain:
++                return true;
++        }
++    }
++    return false;
++}
++
+ static int loadCodeSections(const ElfObject& elfObj, vector<codeSection>& cs,
+                             const char* const license) {
+     for (unsigned i = 0; i < cs.size(); i++) {
+@@ -1042,6 +1062,13 @@ static int loadCodeSections(const ElfObject& elfObj, vector<codeSection>& cs,
+ 
+         if (kernelVer < cs[i].prog_def->min_kver) continue;
+         if (kernelVer >= cs[i].prog_def->max_kver) continue;
++        if (isArm() && isKernel32Bit() &&
++            usesCallbackHelpers(reinterpret_cast<const struct bpf_insn*>(cs[i].data.data()),
++                                cs[i].data.size() / sizeof(struct bpf_insn))) {
++            ALOGW("skipping prog %s: it uses callbacks, which a 32-bit Arm kernel cannot run",
++                  cs[i].prog_def->name());
++            continue;
++        }
+         if (api_level_full < cs[i].prog_def->min_api_level_full) continue;
+         if (api_level_full >= cs[i].prog_def->max_api_level_full) continue;
+ 
+@@ -1183,6 +1210,13 @@ static int prepareLoadProgs(const struct bpf_object* obj, const vector<codeSecti
+             bpf_program__set_autoload(prog, false);
+             continue;
+         }
++        if (isArm() && isKernel32Bit() &&
++            usesCallbackHelpers(bpf_program__insns(prog), bpf_program__insn_cnt(prog))) {
++            ALOGW("skipping prog %s: it uses callbacks, which a 32-bit Arm kernel cannot run",
++                  cs[i].prog_def->name());
++            bpf_program__set_autoload(prog, false);
++            continue;
++        }
+ 
+         if (api_level_full < cs[i].prog_def->min_api_level_full ||
+             api_level_full >= cs[i].prog_def->max_api_level_full) {
+-- 
+2.56.0
+

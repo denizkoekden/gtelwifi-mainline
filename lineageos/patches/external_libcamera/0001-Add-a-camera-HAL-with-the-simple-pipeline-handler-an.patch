@@ -1,0 +1,64 @@
+From e23b2112b504e558591a0b77598c675d146f9dc4 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 10:30:41 +0100
+Subject: [PATCH] Add a camera HAL with the simple pipeline handler and the
+ SC7730 DCAM
+
+Build camera.libcamera: the Android camera HAL with the simple pipeline
+handler, for SoCs whose capture path is a plain CSI receiver feeding a
+DMA engine, loaded by a camera provider through hw_get_module() with
+ro.hardware.camera=libcamera.
+
+List the Spreadtrum SC7730 DCAM ("sc7730-dcam") among the simple
+pipeline's devices. Both sensors of the Samsung Galaxy Tab E 9.6
+(S5K4ECGX, SR200PC20M) have their own ISP and deliver YUV, which the
+DCAM writes as NV12 or NV16 without a converter.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I21e908a4e653900d0d89b2e77b6c1cc8b39a5d81
+---
+ Android.bp                               | 15 +++++++++++++++
+ src/libcamera/pipeline/simple/simple.cpp |  1 +
+ 2 files changed, 16 insertions(+)
+
+diff --git a/Android.bp b/Android.bp
+index 9ff66b08..a262f9f4 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -453,6 +453,21 @@ cc_library_shared {
+     ],
+ }
+ 
++// Generic camera HAL with the simple pipeline handler, for SoCs whose
++// capture path is a plain CSI receiver (here the Spreadtrum SC7730 DCAM,
++// whose sensors deliver YUV from their own ISP). Loaded by a camera
++// provider through hw_get_module() with ro.hardware.camera=libcamera.
++cc_library_shared {
++    name: "camera.libcamera",
++    defaults: [
++        "libcamera_src_defaults",
++        "libcamera_android_src_defaults",
++    ],
++    srcs: [
++        "src/libcamera/pipeline/simple/simple.cpp",
++    ],
++}
++
+ cc_library_shared {
+     name: "camera.libcamera_hal_base",
+     defaults: [
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index 05ba76bc..df531dbd 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -195,6 +195,7 @@ static const SimplePipelineInfo supportedDevices[] = {
+ 	{ "j721e-csi2rx", {} },
+ 	{ "mxc-isi", {} },
+ 	{ "qcom-camss", {} },
++	{ "sc7730-dcam", {} },
+ 	{ "sun6i-csi", {} },
+ };
+ 
+-- 
+2.56.0
+

@@ -1,0 +1,134 @@
+From bdc43bc114f812cf849121511ae38e7524ce1ac4 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 15:23:55 +0100
+Subject: [PATCH 11/12] libcamera: simple: Expose the autofocus of sensors with
+ their own ISP
+
+YUV sensors with their own ISP may run the autofocus themselves and
+expose it as V4L2_CID_AUTO_FOCUS_START/STOP/STATUS on the subdev
+(S5K4ECGX). The simple pipeline offered no controls for them, so apps
+could not focus.
+
+When the sensor has these controls, offer AfMode and AfTrigger: a
+trigger starts or stops one search on the sensor, and every completed
+request carries AfMode and the sensor's status as AfState (busy ->
+Scanning, reached -> Focused, failed -> Failed).
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I8e8678fae0ef0bd31db4eb1cf863f90291d5644b
+---
+ src/libcamera/pipeline/simple/simple.cpp | 67 ++++++++++++++++++++++++
+ 1 file changed, 67 insertions(+)
+
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index 69972a3c..e36a299f 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -217,6 +217,8 @@ public:
+ 			 V4L2Subdevice::Whence whence,
+ 			 Transform transform = Transform::Identity);
+ 	void bufferReady(FrameBuffer *buffer);
++	void applyAfControls(const ControlList &controls);
++	int32_t afState();
+ 
+ 	unsigned int streamIndex(const Stream *stream) const
+ 	{
+@@ -267,6 +269,10 @@ public:
+ 	std::unique_ptr<CameraSensor> sensor_;
+ 	V4L2VideoDevice *video_;
+ 
++	/* Autofocus of a sensor with its own ISP (V4L2_CID_AUTO_FOCUS_*) */
++	bool hasAf_ = false;
++	int32_t afMode_ = controls::AfModeOff;
++
+ 	std::vector<Configuration> configs_;
+ 	std::map<PixelFormat, std::vector<const Configuration *>> formats_;
+ 
+@@ -545,9 +551,62 @@ int SimpleCameraData::init()
+ 
+ 	properties_ = sensor_->properties();
+ 
++	/*
++	 * A sensor with its own ISP may run the autofocus itself (S5K4ECGX).
++	 * Expose it as AfMode and AfTrigger: a trigger starts or stops one
++	 * search, the sensor's status becomes AfState in the metadata.
++	 */
++	const ControlInfoMap &sensorControls = sensor_->controls();
++	if (sensorControls.find(V4L2_CID_AUTO_FOCUS_START) != sensorControls.end() &&
++	    sensorControls.find(V4L2_CID_AUTO_FOCUS_STATUS) != sensorControls.end()) {
++		ControlInfoMap::Map ctrls;
++
++		ctrls[&controls::AfMode] =
++			ControlInfo(static_cast<int32_t>(controls::AfModeOff),
++				    static_cast<int32_t>(controls::AfModeContinuousPicture));
++		ctrls[&controls::AfTrigger] =
++			ControlInfo(static_cast<int32_t>(controls::AfTriggerIdle),
++				    static_cast<int32_t>(controls::AfTriggerCancel));
++		controlInfo_ = ControlInfoMap(std::move(ctrls), controls::controls);
++		hasAf_ = true;
++	}
++
+ 	return 0;
+ }
+ 
++void SimpleCameraData::applyAfControls(const ControlList &ctrls)
++{
++	const auto mode = ctrls.get(controls::AfMode);
++	if (mode)
++		afMode_ = *mode;
++
++	const auto trigger = ctrls.get(controls::AfTrigger);
++	if (!trigger || *trigger == controls::AfTriggerIdle ||
++	    afMode_ == controls::AfModeOff)
++		return;
++
++	struct v4l2_ext_control ctrl = {};
++	ctrl.id = *trigger == controls::AfTriggerStart ? V4L2_CID_AUTO_FOCUS_START
++						       : V4L2_CID_AUTO_FOCUS_STOP;
++	sensor_->device()->setExtControl(&ctrl);
++}
++
++int32_t SimpleCameraData::afState()
++{
++	struct v4l2_ext_control ctrl = {};
++
++	ctrl.id = V4L2_CID_AUTO_FOCUS_STATUS;
++	if (sensor_->device()->getExtControl(&ctrl))
++		return controls::AfStateIdle;
++	if (ctrl.value & V4L2_AUTO_FOCUS_STATUS_BUSY)
++		return controls::AfStateScanning;
++	if (ctrl.value & V4L2_AUTO_FOCUS_STATUS_REACHED)
++		return controls::AfStateFocused;
++	if (ctrl.value & V4L2_AUTO_FOCUS_STATUS_FAILED)
++		return controls::AfStateFailed;
++	return controls::AfStateIdle;
++}
++
+ /*
+  * Generate a list of supported pipeline configurations for a sensor media bus
+  * code and size.
+@@ -798,6 +857,11 @@ void SimpleCameraData::bufferReady(FrameBuffer *buffer)
+ 		request->metadata().set(controls::SensorTimestamp,
+ 					buffer->metadata().timestamp);
+ 
++	if (request && hasAf_) {
++		request->metadata().set(controls::AfMode, afMode_);
++		request->metadata().set(controls::AfState, afState());
++	}
++
+ 	/*
+ 	 * Queue the captured and the request buffer to the converter if format
+ 	 * conversion is needed. If there's no queued request, just requeue the
+@@ -1284,6 +1348,9 @@ int SimplePipelineHandler::queueRequestDevice(Camera *camera, Request *request)
+ 
+ 	std::map<unsigned int, FrameBuffer *> buffers;
+ 
++	if (data->hasAf_)
++		data->applyAfControls(request->controls());
++
+ 	for (auto &[stream, buffer] : request->buffers()) {
+ 		/*
+ 		 * If conversion is needed, push the buffer to the converter
+-- 
+2.56.0
+

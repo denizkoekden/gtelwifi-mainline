@@ -1,0 +1,40 @@
+GPS of the SM-T560 (Broadcom BCM47520, hosted, UART3)
+====================================================
+
+The receiver needs Broadcom's proprietary glgps engine from the stock
+firmware (KTU84P.T560XXU0APL1, Android 4.4). The files are never part of
+the public tree. Release builds carry them in the vendor image
+(device.mk, from proprietary/gps on the build host):
+
+  /vendor/lib/gpsblobs/gps.default.so       stock /system/lib/hw/gps.default.so
+  /vendor/lib/gpsblobs/gpsd                 stock /system/bin/gpsd
+  /vendor/lib/gpsblobs/libsprd_agps_agent.so  stock /system/lib/
+  /vendor/lib/gpsblobs/gps.xml              stock /system/etc/gps.xml, edited
+
+The legacy HAL is loaded from there. gpsd needs libssl, libcrypto and
+libstdc++ of /system, so init copies it with libsprd_agps_agent.so,
+libgpsd_shim.so (this tree) and gps.xml to /data/vendor/gps/blobs on every
+boot and runs it from there (init.gtelwifi.rc).
+
+Changes to the blobs, DT_NEEDED only (patchelf):
+- gpsd: libgui.so -> libgpsd_shim.so, drop libstlport.so and libicuuc.so,
+  RUNPATH $ORIGIN (for libsprd_agps_agent.so and the shim)
+- gps.default.so: libstlport.so -> libgpsd_shim.so
+
+- gps.default.so: libstdc++.so -> libc++.so (operator new/delete and the
+  __cxa guards; there is no libstdc++ in the vendor namespace)
+
+gps.xml: PortName /dev/ttyS3, GpioNStdbyPath
+/sys/devices/platform/gps-power/state, LbsEnable and HttpSyncLto false
+(the Broadcom LTO server is gone, so cold starts take minutes).
+NvStorageDir, LtoDir and LogDirectory stay /data/system/gps/: glgps creates
+its server pipe (.gps.interface.pipe.to_gpsd) in NvStorageDir, and the HAL
+looks for it in /data/system/gps/ (hardcoded).
+
+Tested 05.11.2026: chip ID $PGLOR,0,RID,47520, UART3 without errors,
+~32 mA while tracking, NMEA through glgps -> HAL -> bridge -> GPSTest.
+
+init bind-mounts the blob directory on /vendor/lib/gpsblobs, where
+android.hardware.gnss-service.gtelwifi loads gps.default.so from (vendor
+linker namespace), and starts glgps (vendor.gpsd) when gpsd is present.
+Kernel side: UART3, LDO_CAMD, LDO_SDIO and GPS_PWR_EN (patch 0101).

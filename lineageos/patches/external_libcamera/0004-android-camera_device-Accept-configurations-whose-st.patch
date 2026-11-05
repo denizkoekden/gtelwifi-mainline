@@ -1,0 +1,64 @@
+From d968dcf7f8baac4b8824ec8d4e1ee8ebc18e2b39 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 11:14:47 +0100
+Subject: [PATCH] android: camera_device: Accept configurations whose streams
+ are kept
+
+A sensor mounted at 90 or 270 degrees that has no flip controls cannot
+honour the identity transform the HAL requests, so validate() adjusts
+the transform and reports Adjusted, and configureStreams() failed for
+every stream combination. Android compensates the mounting rotation
+through ANDROID_SENSOR_ORIENTATION, so accept an adjusted configuration
+when all streams keep their pixel format and size.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: Ic80b51bc6323f3a10832e0b2f17d7bbcaffe73a2
+---
+ src/android/camera_device.cpp | 22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+
+diff --git a/src/android/camera_device.cpp b/src/android/camera_device.cpp
+index d45bd4e8..218eac0e 100644
+--- a/src/android/camera_device.cpp
++++ b/src/android/camera_device.cpp
+@@ -909,16 +909,36 @@ int CameraDevice::configureStreams(camera3_stream_configuration_t *stream_list)
+ 		}
+ 	}
+ 
++	std::vector<std::pair<PixelFormat, Size>> requested;
++	for (const StreamConfiguration &cfg : *config)
++		requested.emplace_back(cfg.pixelFormat, cfg.size);
++
+ 	switch (config->validate()) {
+ 	case CameraConfiguration::Valid:
+ 		break;
+-	case CameraConfiguration::Adjusted:
++	case CameraConfiguration::Adjusted: {
++		/*
++		 * A sensor mounted at 90 or 270 degrees without flip controls
++		 * cannot honour the identity transform, so the pipeline
++		 * adjusts it. Android rotates by ANDROID_SENSOR_ORIENTATION
++		 * itself; accept the configuration if the streams are kept.
++		 */
++		bool streamsKept = config->size() == requested.size();
++		for (unsigned int i = 0; streamsKept && i < config->size(); i++)
++			streamsKept = config->at(i).pixelFormat == requested[i].first &&
++				      config->at(i).size == requested[i].second;
++		if (streamsKept) {
++			LOG(HAL, Info) << "Camera configuration adjusted, streams kept";
++			break;
++		}
++
+ 		LOG(HAL, Info) << "Camera configuration adjusted";
+ 
+ 		for (const StreamConfiguration &cfg : *config)
+ 			LOG(HAL, Info) << " - " << cfg.toString();
+ 
+ 		return -EINVAL;
++	}
+ 	case CameraConfiguration::Invalid:
+ 		LOG(HAL, Info) << "Camera configuration invalid";
+ 		return -EINVAL;
+-- 
+2.56.0
+

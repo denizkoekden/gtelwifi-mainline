@@ -1,0 +1,51 @@
+From 7c8ed5e2e2a6430226d755085d0e2ab9ddc3c422 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 08:21:43 +0100
+Subject: [PATCH] libcutils: accept sealed memfds when /proc/self/fd is not
+ readable
+
+is_memfd_fd() identifies a memfd by the readlink() target of
+/proc/self/fd/N. The WebView renderer's seccomp policy answers readlink
+with EPERM, so on a kernel without ashmem (sys.use_memfd=true) every
+ashmem_valid()/ashmem_get_size_region() call in the renderer failed
+("readlink(/proc/self/fd/94) failed: Operation not permitted", then
+"Unable to stat ashmem device") and pages were never drawn.
+
+On EPERM/EACCES rely on the seal check that already follows: only a
+memfd created with MFD_ALLOW_SEALING can carry F_SEAL_GROW and
+F_SEAL_SHRINK, any other file reports F_SEAL_SEAL or EINVAL.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: Ifae83727bbf9ac229bdb2f3c7ff2b006db440c95
+---
+ libcutils/ashmem-dev.cpp | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/libcutils/ashmem-dev.cpp b/libcutils/ashmem-dev.cpp
+index 4d3a70ac8..732b1eb03 100644
+--- a/libcutils/ashmem-dev.cpp
++++ b/libcutils/ashmem-dev.cpp
+@@ -198,11 +198,15 @@ static bool is_memfd_fd(int fd) {
+     std::string fd_path = android::base::StringPrintf("/proc/self/fd/%d", fd);
+     std::string result;
+     if (!android::base::Readlink(fd_path, &result)) {
+-        ALOGE("readlink(%s) failed: %m", fd_path.c_str());
+-        return false;
+-    }
+-
+-    if (!result.starts_with("/memfd:")) {
++        // Sandboxed processes (the WebView renderer's seccomp policy) get
++        // EPERM for readlink. Fall through to the seal check: only a memfd
++        // created with MFD_ALLOW_SEALING can carry F_SEAL_GROW and
++        // F_SEAL_SHRINK, any other file reports F_SEAL_SEAL or EINVAL.
++        if (errno != EPERM && errno != EACCES) {
++            ALOGE("readlink(%s) failed: %m", fd_path.c_str());
++            return false;
++        }
++    } else if (!result.starts_with("/memfd:")) {
+         return false;
+     }
+ 
+-- 
+2.56.0
+

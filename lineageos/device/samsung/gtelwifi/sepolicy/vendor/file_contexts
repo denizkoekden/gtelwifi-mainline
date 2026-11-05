@@ -1,0 +1,8 @@
+# gtelwifi - bring-up runs permissive (androidboot.selinux=permissive),
+# device labels follow once the first boot shows the denials
+
+# GPS: AIDL bridge to the stock legacy HAL (gnss/)
+/vendor/bin/hw/android\.hardware\.gnss-service\.gtelwifi    u:object_r:hal_gnss_default_exec:s0
+
+# Camera: STMicroelectronics' libcamera provider (camera/libcamera-provider)
+/vendor/bin/hw/android\.hardware\.camera\.provider-service\.libcamera    u:object_r:hal_camera_default_exec:s0

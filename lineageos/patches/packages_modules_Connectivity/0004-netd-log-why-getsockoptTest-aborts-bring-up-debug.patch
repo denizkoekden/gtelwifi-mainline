@@ -1,0 +1,65 @@
+From 33462c2d4c29e80269c732a487d8b14987a05fdd Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Wed, 4 Nov 2026 19:18:07 +0100
+Subject: [PATCH] netd: log why getsockoptTest() aborts (bring-up debug)
+
+getsockoptTest() calls abort() on four different conditions without a
+word, so a failing netd1shot only leaves a tombstone. Log errno or the
+unexpected value first. Debug aid for the gtelwifi bring-up (32-bit Arm
+kernel), not meant for upstream.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I438fa3b3810c99efc1d8ee1a7d3134678d106cfe
+---
+ bpf/netd/BpfHandler.cpp | 22 ++++++++++++++++++----
+ 1 file changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/bpf/netd/BpfHandler.cpp b/bpf/netd/BpfHandler.cpp
+index 9b57548b54..c0e800706f 100644
+--- a/bpf/netd/BpfHandler.cpp
++++ b/bpf/netd/BpfHandler.cpp
+@@ -20,6 +20,7 @@
+ 
+ #include <linux/bpf.h>
+ #include <inttypes.h>
++#include <string.h>
+ 
+ #include <android-base/result.h>
+ #include <android-base/unique_fd.h>
+@@ -96,16 +97,29 @@ static void getsockoptTest() {
+ 
+     uint64_t reason = 0xDEADC0DEDEADBEEFuLL; // should be overwritten by getsockopt()
+     socklen_t len = sizeof(reason);
+-    if (getsockopt(sock, SOL_SOCKET, SO_ANDROID_DROP_REASON, &reason, &len) != 0) abort();
+-    if (reason != DROP_REASON_NONE) abort();
++    if (getsockopt(sock, SOL_SOCKET, SO_ANDROID_DROP_REASON, &reason, &len) != 0) {
++        ALOGE("getsockoptTest: SO_ANDROID_DROP_REASON failed: %s (%d)", strerror(errno), errno);
++        abort();
++    }
++    if (reason != DROP_REASON_NONE) {
++        ALOGE("getsockoptTest: drop reason 0x%" PRIx64 " (len %u)", reason, (unsigned)len);
++        abort();
++    }
+ 
+     // This option expects an 8 byte buffer. Passing a smaller buffer (7 bytes)
+     // should trigger a size check failure in the eBPF program (netd.c).
+     len = sizeof(reason) - 1;
+     int expected = isAtLeastKernelVersion(6, 1) ? EINVAL : EPERM;
+     errno = 0;
+-    if (getsockopt(sock, SOL_SOCKET, SO_ANDROID_DROP_REASON, &reason, &len) == 0) abort();
+-    if (errno != expected) abort();
++    if (getsockopt(sock, SOL_SOCKET, SO_ANDROID_DROP_REASON, &reason, &len) == 0) {
++        ALOGE("getsockoptTest: 7 byte SO_ANDROID_DROP_REASON succeeded");
++        abort();
++    }
++    if (errno != expected) {
++        ALOGE("getsockoptTest: 7 byte SO_ANDROID_DROP_REASON: %s (%d), expected %d",
++              strerror(errno), errno, expected);
++        abort();
++    }
+ }
+ 
+ static Result<void> initPrograms(const char* cg2_path) {
+-- 
+2.56.0
+

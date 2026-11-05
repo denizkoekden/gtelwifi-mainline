@@ -1,0 +1,7 @@
+// Boot/recovery image packer for sboot (header v0 + SPRD dt.img), the same
+// tool as in the LineageOS device tree
+python_binary_host {
+    name: "mkbootimg_sprd",
+    main: "tools/mkbootimg_sprd.py",
+    srcs: ["tools/mkbootimg_sprd.py"],
+}

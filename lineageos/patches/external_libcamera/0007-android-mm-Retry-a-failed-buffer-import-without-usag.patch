@@ -1,0 +1,55 @@
+From 81bdff780764a55095b74adc74281302256d82a0 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Thu, 5 Nov 2026 11:45:42 +0100
+Subject: [PATCH 7/8] android: mm: Retry a failed buffer import without usage
+ flags
+
+The camera buffer manager imports every camera3 buffer with camera and
+CPU usage flags, which gbm checks against its format and usage table.
+Buffers that exist already were allocated for their real usage; when the
+import with the extra flags is refused, log it and import the buffer as
+it is. Return no buffer object instead of crashing when the import
+fails altogether.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I23b4deb6dde59878da7a2c3a4b6aeaf6df9028fd
+---
+ src/android/mm/minigbm_allocator.cpp | 22 ++++++++++++++++++----
+ 1 file changed, 18 insertions(+), 4 deletions(-)
+
+diff --git a/src/android/mm/minigbm_allocator.cpp b/src/android/mm/minigbm_allocator.cpp
+index 1e3b46d5..9cba280b 100644
+--- a/src/android/mm/minigbm_allocator.cpp
++++ b/src/android/mm/minigbm_allocator.cpp
+@@ -255,10 +255,24 @@ std::unique_ptr<Allocator::BufferObject> MinigbmAllocator::ImportBo(
+ 		import_data.strides[i] = desc.planes[i].row_stride;
+ 		import_data.offsets[i] = desc.planes[i].offset;
+ 	}
+-	return std::make_unique<BufferObject>(
+-		gbm_bo_import(gbm_device_, GBM_BO_IMPORT_FD_MODIFIER, &import_data,
+-			      desc.gbm_flags),
+-		desc.gbm_flags);
++	uint32_t flags = desc.gbm_flags;
++	struct gbm_bo *bo = gbm_bo_import(gbm_device_, GBM_BO_IMPORT_FD_MODIFIER,
++					  &import_data, flags);
++	if (!bo) {
++		LOG(HAL, Warning)
++			<< "gbm import failed: format 0x" << std::hex << desc.drm_format
++			<< std::dec << " " << desc.width << "x" << desc.height
++			<< " planes " << desc.num_planes << " stride "
++			<< desc.planes[0].row_stride << " flags 0x" << std::hex
++			<< flags << " modifier 0x" << desc.format_modifier;
++		/* the buffer exists already, its usage is not ours to check */
++		flags = 0;
++		bo = gbm_bo_import(gbm_device_, GBM_BO_IMPORT_FD_MODIFIER,
++				   &import_data, flags);
++	}
++	if (!bo)
++		return nullptr;
++	return std::make_unique<BufferObject>(bo, flags);
+ }
+ 
+ bool MinigbmAllocator::IsFormatSupported(uint32_t drm_format,
+-- 
+2.56.0
+
