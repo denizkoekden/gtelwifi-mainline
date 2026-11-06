@@ -14,6 +14,16 @@
  *                   and userdata, which Android formats on the next boot
  *                   (both are "formattable" in the fstab)
  *
+ * TWRP keeps /data (and maybe /metadata) mounted while it installs, and the
+ * zip may even sit on /data. A file system that is still mounted writes its
+ * superblock back when it is unmounted later, so Android found a damaged
+ * ext4 instead of a cleared partition and did not format it (testers,
+ * 06.11.2026: the first boot only worked after "Format Data"). Before
+ * clearing, every mount of the partition is therefore unmounted, or
+ * remounted read-only when it is busy (an ro file system writes nothing
+ * back); when neither works the partition is left alone and the user is told
+ * to use "Format Data".
+ *
  * Partitions are found by their PARTNAME in /sys/block/mmcblk0, and their
  * sizes are checked against the tablet's PIT before anything is written.
  * Nothing else (bootloader, PARAM, EFS, RECOVERY, CSC) is ever touched.
@@ -28,6 +38,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -332,16 +344,76 @@ static void write_sparse(int zip, struct entry *e, double p0, double p1)
 	say("SYSTEM written (%u chunks)", chunks);
 }
 
+/*
+ * Unmount every mount of the partition (compared by device number, so that
+ * /dev/block/mmcblk0pN, by-name links and the vendor kernel's
+ * /dev/block/platform/sprd-sdhci.3/by-name paths all match), or remount it
+ * read-only when it is busy. Returns 1 when nothing can write to it anymore.
+ */
+static int release_part(const char *partname)
+{
+	char dev[64], line[1024], mp[32][256];
+	struct stat pst, st;
+	uint64_t size;
+	int n = 0, ok = 1;
+	FILE *m;
+
+	partition(partname, dev, sizeof(dev), &size);
+	if (stat(dev, &pst) < 0)
+		die("stat %s: %s", dev, strerror(errno));
+	m = fopen("/proc/mounts", "r");
+	if (!m)
+		die("/proc/mounts: %s", strerror(errno));
+	while (n < 32 && fgets(line, sizeof(line), m)) {
+		char src[256], dst[256];
+
+		if (sscanf(line, "%255s %255s", src, dst) != 2)
+			continue;
+		if (stat(src, &st) == 0 && S_ISBLK(st.st_mode) && st.st_rdev == pst.st_rdev)
+			snprintf(mp[n++], sizeof(mp[0]), "%s", dst);
+	}
+	fclose(m);
+	/* the last mount first: binds on top of the first one */
+	while (n-- > 0) {
+		if (umount2(mp[n], 0) == 0) {
+			say("%s: unmounted %s", partname, mp[n]);
+		} else if (errno == EINVAL) {
+			/* already gone with an earlier one */
+		} else if (mount(NULL, mp[n], NULL, MS_REMOUNT | MS_RDONLY, NULL) == 0) {
+			say("%s: %s is in use, remounted read-only", partname, mp[n]);
+		} else {
+			say("%s: %s is in use and cannot be made read-only: %s", partname, mp[n],
+			    strerror(errno));
+			ok = 0;
+		}
+	}
+	return ok;
+}
+
+static int need_format;
+
 static void zero_start(const char *partname)
 {
 	uint64_t psize;
 	int fd = open_part(partname, 0, &psize);
 
 	memset(buf, 0, BUF);
+#ifndef INSTALLER_DRY_RUN
 	pwrite_all(fd, buf, BUF, 0);
 	fsync(fd);
+#endif
 	close(fd);
 	say("%s cleared, Android formats it on the first boot", partname);
+}
+
+static void wipe(const char *partname)
+{
+	if (release_part(partname)) {
+		zero_start(partname);
+	} else {
+		say("%s NOT cleared", partname);
+		need_format = 1;
+	}
 }
 
 int main(int argc, char **argv)
@@ -374,17 +446,29 @@ int main(int argc, char **argv)
 	}
 
 	progress(0.02);
+#ifdef INSTALLER_DRY_RUN
+	say("DRY RUN: nothing is written");
+	(void)boot;
+	(void)system;
+#else
 	write_boot(zip, boot);
 	progress(0.05);
 	write_sparse(zip, system, 0.05, 0.95);
+#endif
+	close(zip);
 	if (find("wipe", 0)) {
-		zero_start("HIDDEN");
-		zero_start("userdata");
+		wipe("HIDDEN");
+		wipe("userdata");
 	} else {
 		say("Data kept (update package)");
 	}
 	sync();
 	progress(1.0);
+	if (need_format) {
+		say("IMPORTANT: /data could not be cleared while it is in use.");
+		say("Before rebooting: Wipe -> Format Data -> type yes.");
+		return 0;
+	}
 	say("Done. The first boot takes 2-3 minutes.");
 	return 0;
 }

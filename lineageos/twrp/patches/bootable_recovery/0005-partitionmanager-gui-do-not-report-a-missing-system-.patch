@@ -1,0 +1,78 @@
+From ae7673f63e7dbd2d194497b8fd771f109af93213 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Fri, 6 Nov 2026 18:40:29 +0100
+Subject: [PATCH] partitionmanager, gui: do not report a missing system
+ partition
+
+Before the first install of a ROM with dynamic partitions the system root
+does not exist: TWRP drops the logical partitions while super holds no
+metadata yet. Three places still tried to unmount or mount it and printed
+"Unable to find partition for path '/system_root'" in red, which users
+took for a failing install: unmounting the main partitions at start, the
+TWRP app check reading ro.build.version.sdk from the system build.prop,
+and the "Keep System Read Only?" choice.
+
+Unmount the system root in UnMount_Main_Partitions() only when it
+exists, as already done for /vendor and /product, return an empty value
+from Partition_Property_Get() when the partition does not exist, and in
+mountsystemtoggle only store the read-only choice when there is no system
+partition.
+
+Tested on the Samsung Galaxy Tab E 9.6 (SM-T560).
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I9e060206c222965944bd79c90fcd4203719eee80
+---
+ gui/action.cpp       | 6 +++++-
+ partitionmanager.cpp | 3 ++-
+ twrp-functions.cpp   | 3 +++
+ 3 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/gui/action.cpp b/gui/action.cpp
+index 0d09400..c0ef64c 100755
+--- a/gui/action.cpp
++++ b/gui/action.cpp
+@@ -1889,7 +1889,11 @@ int GUIAction::mountsystemtoggle(std::string arg)
+ 	bool remount_vendor = PartitionManager.Is_Mounted_By_Path("/vendor");
+ 
+ 	operation_start("Toggle System Mount");
+-	if (!PartitionManager.UnMount_By_Path(PartitionManager.Get_Android_Root_Path(), true)) {
++	if (!PartitionManager.Find_Partition_By_Path(PartitionManager.Get_Android_Root_Path())) {
++		// No system partition, e.g. dynamic partitions not set up yet before
++		// the first ROM install: only remember the choice
++		DataManager::SetValue("tw_mount_system_ro", arg == "0" ? 0 : 1);
++	} else if (!PartitionManager.UnMount_By_Path(PartitionManager.Get_Android_Root_Path(), true)) {
+ 		op_status = 1; // fail
+ 	} else {
+ 		TWPartition* Part = PartitionManager.Find_Partition_By_Path(PartitionManager.Get_Android_Root_Path());
+diff --git a/partitionmanager.cpp b/partitionmanager.cpp
+index 2766b4c..99da80c 100755
+--- a/partitionmanager.cpp
++++ b/partitionmanager.cpp
+@@ -2393,7 +2393,8 @@ void TWPartitionManager::UnMount_Main_Partitions(void) {
+ 	TWPartition *Partition = Find_Partition_By_Path ("/vendor");
+ 
+ 	if (Partition != NULL) UnMount_By_Path("/vendor", false);
+-	UnMount_By_Path (Get_Android_Root_Path(), true);
++	Partition = Find_Partition_By_Path(Get_Android_Root_Path());
++	if (Partition != NULL) UnMount_By_Path(Get_Android_Root_Path(), true);
+ 	Partition = Find_Partition_By_Path ("/product");
+ 	if (Partition != NULL) UnMount_By_Path("/product", false);
+ 	if (!datamedia)
+diff --git a/twrp-functions.cpp b/twrp-functions.cpp
+index 1a404c6..08f746e 100644
+--- a/twrp-functions.cpp
++++ b/twrp-functions.cpp
+@@ -882,6 +882,9 @@ string TWFunc::Partition_Property_Get(string Prop_Name, TWPartitionManager &Part
+ 	std::vector<string> buildprop;
+ 	string propvalue;
+ 	string prop_file;
++	// No such partition, e.g. no system before the first ROM install
++	if (!PartitionManager.Find_Partition_By_Path(Mount_Point))
++		return propvalue;
+ 	if (!PartitionManager.Mount_By_Path(Mount_Point, true))
+ 		return propvalue;
+ 	if (Mount_Point == PartitionManager.Get_Android_Root_Path()) {
+-- 
+2.56.0
+

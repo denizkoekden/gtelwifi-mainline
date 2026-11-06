@@ -79,7 +79,8 @@ TW_USE_TOOLBOX := true
 TW_EXTRA_LANGUAGES := false
 TW_EXCLUDE_TWRPAPP := true
 TW_EXCLUDE_PYTHON := true
-TW_EXCLUDE_NANO := true
+# nano for the terminal (testers, 06.11.); a small lsblk script is in recovery/root
+TW_EXCLUDE_NANO := false
 TW_EXCLUDE_LPDUMP := true
 TW_EXCLUDE_LPTOOLS := false
 TW_INCLUDE_NTFS_3G := false
@@ -87,9 +88,16 @@ TW_INCLUDE_FB2PNG := false
 TW_NO_SCREEN_BLANK := false
 TW_INCLUDE_CRYPTO := false
 TW_INPUT_BLACKLIST := "hbtp_vm"
-TW_DEVICE_VERSION := gtelwifi-mainline
+TW_DEVICE_VERSION := gtelwifi-mainline-4
 # /data is FBE-encrypted by LineageOS (adiantum); no decryption yet
 TW_INCLUDE_FBE := false
+# TWRP copies some props from the vendor partition (Process_ResetProps,
+# external_storage.*); without libresetprop that ends in red "Unable to
+# override" lines at every start.
+TW_INCLUDE_LIBRESETPROP := true
+# The recovery binary links libresetprop, but TWRP's relink list does not
+# copy it into the recovery root (recovery would not start without it)
+TW_RECOVERY_ADDITIONAL_RELINK_LIBRARY_FILES += $(TARGET_OUT_SHARED_LIBRARIES)/libresetprop.so
 PLATFORM_VERSION := 16.1.0
 PLATFORM_SECURITY_PATCH := 2099-12-31
 VENDOR_SECURITY_PATCH := 2099-12-31

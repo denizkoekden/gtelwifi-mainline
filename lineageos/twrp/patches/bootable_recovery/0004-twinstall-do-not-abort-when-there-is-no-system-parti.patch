@@ -1,0 +1,46 @@
+From ca142bc0acd332de79b8d0b07c8b91a085bd7a23 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Fri, 6 Nov 2026 18:01:58 +0100
+Subject: [PATCH] twinstall: do not abort when there is no system partition to
+ unmount
+
+With "Unmount System before installing a ZIP" (the default on non-A/B
+devices) every zip install first unmounts the system root and aborts
+with "Failed unmounting System" when that partition does not exist.
+On a device whose system lives in super, TWRP drops the logical
+partitions while SYSTEM still holds the old non-dynamic system, so the
+first install of a ROM with dynamic partitions was impossible ("Unable
+to find partition for path '/system_root'").
+
+Skip the unmount when there is no system partition and go on with the
+install.
+
+Tested on the Samsung Galaxy Tab E 9.6 (SM-T560).
+
+Assisted-by: Claude Opus 5.5
+Change-Id: Ia2655a753cd8f06f403aeaa9a93883f3d22e088e
+---
+ twrpinstall/twinstall.cpp | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/twrpinstall/twinstall.cpp b/twrpinstall/twinstall.cpp
+index 6abccea..c9fdd75 100755
+--- a/twrpinstall/twinstall.cpp
++++ b/twrpinstall/twinstall.cpp
+@@ -297,7 +297,12 @@ int TWinstall_zip(const char* path, int* wipe_cache, bool check_for_digest) {
+ 
+ 	if (unmount_system) {
+ 		gui_msg("unmount_system=Unmounting System...");
+-		if(!PartitionManager.UnMount_By_Path(PartitionManager.Get_Android_Root_Path(), true)) {
++		if (!PartitionManager.Find_Partition_By_Path(PartitionManager.Get_Android_Root_Path())) {
++			// No system partition, e.g. dynamic partitions not set up yet
++			// before the first install of a ROM: nothing to unmount
++			LOGINFO("No %s partition, nothing to unmount\n",
++				PartitionManager.Get_Android_Root_Path().c_str());
++		} else if (!PartitionManager.UnMount_By_Path(PartitionManager.Get_Android_Root_Path(), true)) {
+ 			gui_err("unmount_system_err=Failed unmounting System");
+ 			return -1;
+ 		}
+-- 
+2.56.0
+

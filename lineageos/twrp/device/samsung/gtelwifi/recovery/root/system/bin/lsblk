@@ -1,0 +1,27 @@
+#!/system/bin/sh
+# lsblk for TWRP on the Tab E 9.6: block devices with size and name.
+#   lsblk      eMMC, its partitions, the microSD and the logical partitions
+#   lsblk -a   also loop, ram and zram devices
+# The GPT itself: sgdisk -p /dev/block/mmcblk0
+printf '%-14s %8s  %s\n' NAME SIZE PARTNAME
+for d in /sys/class/block/*; do
+	n=${d##*/}
+	case $n in
+	loop* | ram* | zram*) [ "$1" = -a ] || continue ;;
+	esac
+	s=$(cat "$d/size" 2>/dev/null)
+	s=${s:-0}
+	if [ -f "$d/dm/name" ]; then
+		p=$(cat "$d/dm/name")
+	else
+		p=$(sed -n 's/^PARTNAME=//p' "$d/uevent" 2>/dev/null)
+	fi
+	if [ "$s" -ge 2097152 ]; then
+		h="$((s / 2097152))G"
+	elif [ "$s" -ge 2048 ]; then
+		h="$((s / 2048))M"
+	else
+		h="$((s / 2))K"
+	fi
+	printf '%-14s %8s  %s\n' "$n" "$h" "$p"
+done

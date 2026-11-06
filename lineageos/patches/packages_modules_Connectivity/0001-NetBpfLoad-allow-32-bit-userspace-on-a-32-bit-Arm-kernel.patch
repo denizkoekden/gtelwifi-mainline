@@ -1,4 +1,6 @@
+From 164c7fe03d84d649d630d62d91e8175ecfe27bf8 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 2 Nov 2026 13:00:32 +0100
 Subject: [PATCH] NetBpfLoad: allow 32-bit userspace on a 32-bit Arm kernel
 
 DRAFT for gtelwifi (Cortex-A7, no AArch64), never built or booted.
@@ -12,9 +14,14 @@ check pass on a 32-bit Arm kernel (12) and keep the 6.13+ userspace gate
 (14) for 64-bit kernels only. Whether netd's programs load on the ARM32
 JIT is a separate question for the first boot.
 ---
+ bpf/loader/NetBpfLoad.cpp | 14 +++++++-------
+ 1 file changed, 7 insertions(+), 7 deletions(-)
+
+diff --git a/bpf/loader/NetBpfLoad.cpp b/bpf/loader/NetBpfLoad.cpp
+index 7ba3247dcc..924f33e4a5 100644
 --- a/bpf/loader/NetBpfLoad.cpp
 +++ b/bpf/loader/NetBpfLoad.cpp
-@@ -1589,19 +1589,16 @@
+@@ -1589,19 +1589,16 @@ static int doLoad(char** argv, char * const envp[]) {
      // Technically already required by U, but only enforce on V+
      // see also: //system/netd/tests/kernel_test.cpp TestKernel64Bit
      if (isAtLeastV && isKernel32Bit() && isAtLeastKernelVersion(5, 16)) {
@@ -37,7 +44,7 @@ JIT is a separate question for the first boot.
      }
  
      // Various known ABI layout issues, particularly wrt. bpf and ipsec/xfrm.
-@@ -1674,6 +1671,9 @@
+@@ -1674,6 +1671,9 @@ static int doLoad(char** argv, char * const envp[]) {
              // also exempt Arm devices upgrading with major kernel rev from T-
              // might possibly be better for them to run with a newer kernel...
              ALOGW("[Arm KernelUpRev] 32-bit userspace unsupported on 6.2+ kernels.");
@@ -47,7 +54,7 @@ JIT is a separate question for the first boot.
          } else if (isArm()) {
              ALOGE("[Arm] 64-bit userspace required on 6.2+ kernels (%d).", first_api_level);
              return 12;
-@@ -1690,7 +1690,7 @@
+@@ -1690,7 +1690,7 @@ static int doLoad(char** argv, char * const envp[]) {
      // Since officially Android only supports LTS, 6.13+ really means 6.18+,
      // and won't be supported before 2026, most likely Android 17 / 26Q2.
      // 6.13+ (implying 26Q2+) requires 64-bit userspace.
@@ -56,3 +63,6 @@ JIT is a separate question for the first boot.
          // due to previous check only reachable on Arm && (<=T kernel uprev || TV || Wear)
          ALOGE("64-bit userspace required on 6.13+ kernels.");
          return 14;
+-- 
+2.56.0
+

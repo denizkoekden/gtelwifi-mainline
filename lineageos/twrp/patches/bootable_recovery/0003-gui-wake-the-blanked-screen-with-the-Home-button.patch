@@ -1,0 +1,37 @@
+From ac3c4975b3e65fe0f0cb953a92aa6565406b4c71 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Fri, 6 Nov 2026 18:01:58 +0100
+Subject: [PATCH] gui: wake the blanked screen with the Home button
+
+Only the power button turned the screen back on after the blank timeout.
+On devices with a hardware Home button (Samsung tablets and phones) users
+expect it to wake the screen as in Android. Unblank on a Home press
+(KEY_HOME or KEY_HOMEPAGE) as well; when the screen is on, Home is
+handled as before.
+
+Tested on the Samsung Galaxy Tab E 9.6 (SM-T560, Home = KEY_HOMEPAGE).
+
+Assisted-by: Claude Opus 5.5
+Change-Id: If02437aed252cdb54625d3359b6942f0a473adf8
+---
+ gui/gui.cpp | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/gui/gui.cpp b/gui/gui.cpp
+index 874cdd9..68d2c60 100755
+--- a/gui/gui.cpp
++++ b/gui/gui.cpp
+@@ -212,6 +212,10 @@ bool InputHandler::processInput(int timeout_ms)
+ 		if (ev.code != KEY_POWER && ev.code > KEY_RESERVED)
+ 			blankTimer.resetTimerAndUnblank();
+ #ifndef TW_NO_SCREEN_BLANK
++	} else if (ev.type == EV_KEY && ev.value == 1 &&
++		   (ev.code == KEY_HOME || ev.code == KEY_HOMEPAGE)) {
++		// A Home button wakes the screen, as it does in Android
++		blankTimer.resetTimerAndUnblank();
+ 	}
+ #endif
+ 	return true;  // we got an event, so there might be more in the queue
+-- 
+2.56.0
+

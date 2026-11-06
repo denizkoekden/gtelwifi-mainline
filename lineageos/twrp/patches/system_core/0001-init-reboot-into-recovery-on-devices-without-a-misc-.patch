@@ -1,0 +1,47 @@
+From 6297368d45e2b2a01df90dd2df6702b3adf9e083 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Fri, 6 Nov 2026 18:01:58 +0100
+Subject: [PATCH] init: reboot into recovery on devices without a misc
+ partition
+
+A reboot to recovery first writes "boot-recovery" into the bootloader
+control block on misc and gives up when that fails. Without a misc
+partition in the fstab the request is dropped: in TWRP, Reboot ->
+Recovery logged "Failed to set bootloader message: failed to find /misc
+partition", init returned, and TWRP only restarted itself without a
+real reboot (no boot logo, the old recovery image still in memory).
+The bootloader of the Samsung Galaxy Tab E 9.6 picks recovery from the
+restart command alone, as the kernel restart handler passes it on.
+
+Keep returning when misc exists and the write fails; reboot without the
+BCB only when there is no misc partition at all. Same change as for
+LineageOS on this device.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I0a14309c9ed74ff6a9ec03f052381f98bcf12ee3
+---
+ init/reboot.cpp | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/init/reboot.cpp b/init/reboot.cpp
+index 0e59ae0..883f522 100644
+--- a/init/reboot.cpp
++++ b/init/reboot.cpp
+@@ -1028,7 +1028,13 @@ void HandlePowerctlMessage(const std::string& command) {
+                     strlcpy(boot.command, "boot-recovery", sizeof(boot.command));
+                     if (std::string err; !write_bootloader_message(boot, &err)) {
+                         LOG(ERROR) << "Failed to set bootloader message: " << err;
+-                        return;
++                        // A device without a misc partition has no BCB: its
++                        // bootloader or kernel restart handler picks recovery
++                        // from the restart command alone, so reboot anyway.
++                        if (std::string misc_err;
++                            !get_bootloader_message_blk_device(&misc_err).empty()) {
++                            return;
++                        }
+                     }
+                 }
+             } else if (reboot_target == "sideload" || reboot_target == "sideload-auto-reboot" ||
+-- 
+2.56.0
+

@@ -1,0 +1,47 @@
+From 6ae7d84c81ed7abacb26e902f70ecb7b99b39252 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Fri, 6 Nov 2026 17:02:53 +0100
+Subject: [PATCH] twrpApex: take the apex size before closing the file
+
+loadApexImage() closes the apex file after LOOP_SET_FD and then calls
+lseek() on the closed descriptor to get the size for lo_sizelimit. The
+lseek() fails with EBADF and its -1 ends up in lo_sizelimit as
+0xffffffffffffffff. Linux rejects that in loop_set_status_from_info()
+(lo_sizelimit > LLONG_MAX) with EOVERFLOW, so no apex is loaded and every
+start shows "failed to mount loop: ...apex: Value too large for defined
+data type" and "Unable to load apex images from /system_root/system/apex".
+
+Take the size with lseek64() before closing the file and leave
+lo_sizelimit at 0 (no limit) if that fails. Tested on the Samsung Galaxy
+Tab E 9.6 (SM-T560) with Linux 7.3.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I3a960dec20e702b43d9e48416529ade44fd78bb3
+---
+ twrpApex.cpp | 6 ++++--
+ 1 file changed, 4 insertions(+), 2 deletions(-)
+
+diff --git a/twrpApex.cpp b/twrpApex.cpp
+index 557283b..24eb1a6 100755
+--- a/twrpApex.cpp
++++ b/twrpApex.cpp
+@@ -148,12 +148,14 @@ bool twrpApex::loadApexImage(std::string fileToMount, size_t loop_device_number)
+ 		return false;
+ 	}
+ 
++	off64_t apex_size = lseek64(fd, 0, SEEK_END);
+ 	close(fd);
+ 
+ 	memset(&info, 0, sizeof(struct loop_info64));
+ 	strlcpy((char*)info.lo_crypt_name, "twrpApex", LO_NAME_SIZE);
+-	off_t apex_size = lseek(fd, 0, SEEK_END);
+-	info.lo_sizelimit = apex_size;
++	/* 0 = no limit; the -1 of a failed lseek() is rejected with EOVERFLOW */
++	if (apex_size > 0)
++		info.lo_sizelimit = apex_size;
+ 	if (ioctl(loop_fd, LOOP_SET_STATUS64, &info)) {
+ 		LOGERR("failed to mount loop: %s: %s\n", fileToMount.c_str(), strerror(errno));
+ 		close(loop_fd);
+-- 
+2.56.0
+
