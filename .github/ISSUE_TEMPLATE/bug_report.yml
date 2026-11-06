@@ -1,0 +1,41 @@
+name: Bug report
+description: Something does not work on LineageOS 24 or TWRP (mainline) for the Galaxy Tab E 9.6
+labels: [bug]
+body:
+  - type: dropdown
+    id: model
+    attributes:
+      label: Model
+      options:
+        - SM-T560 (Wi-Fi)
+        - SM-T561 (3G)
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Build / file
+      description: e.g. lineage-24.0-20261105aj-r2-gtelwifi-install.zip or twrp-3.7.1_12-gtelwifi-mainline-4.img
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Board revision (optional)
+      description: The number after hw_revision= in `adb shell cat /proc/cmdline`
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+      description: Steps to reproduce if you know them. Photos help for display problems.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Android: `adb logcat -d > logcat.txt` and `adb shell dmesg > dmesg.txt` (adb works without confirming anything on the screen).
+        TWRP: Advanced -> Copy Log, or `adb pull /tmp/recovery.log`.
+        If Android does not get far, the logs of the last boots are in /metadata/gtelwifi (readable from TWRP).
+        Please remove anything private (phone number, serial) before attaching.
