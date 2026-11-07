@@ -1,7 +1,7 @@
 From 602e21886cee2a5dcaf81c0ea3c440c8416f7621 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 09:23:24 +0000
-Subject: [PATCH 046/114] ARM: dts: sc7730: PMU power domains and the Mali-400
+Subject: [PATCH 046/115] ARM: dts: sc7730: PMU power domains and the Mali-400
  MP2
 
 The GPU sits at 0x60000000 in the standard Mali-400 layout that lima

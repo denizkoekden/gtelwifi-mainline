@@ -1,7 +1,7 @@
 From 7c144427c6a29028bce965d6f7713f7867fa4975 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Wed, 4 Nov 2026 15:44:27 +0000
-Subject: [PATCH 094/114] ARM: sprd: serve the kernel CRNG as /dev/hw_random
+Subject: [PATCH 094/115] ARM: sprd: serve the kernel CRNG as /dev/hw_random
 
 The SC7730 has no hardware RNG the kernel knows of, the vendor kernel has
 none either. Android's prng_seeder conditions /dev/hw_random for its FIPS

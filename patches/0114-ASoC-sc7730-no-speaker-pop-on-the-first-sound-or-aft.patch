@@ -1,7 +1,7 @@
 From 734ea0461f730eb2789270b1479de24b64f54996 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sat, 7 Nov 2026 22:09:05 +0000
-Subject: [PATCH 114/114] ASoC: sc7730: no speaker pop on the first sound or
+Subject: [PATCH 114/115] ASoC: sc7730: no speaker pop on the first sound or
  after suspend
 
 The speaker popped on the first sound after boot and, before that, on

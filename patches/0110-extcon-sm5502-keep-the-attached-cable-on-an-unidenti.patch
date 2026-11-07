@@ -1,7 +1,7 @@
 From 389a6700fdab4ce652115a72b171da710b434149 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sat, 7 Nov 2026 12:14:00 +0000
-Subject: [PATCH 110/114] extcon: sm5502: keep the attached cable on an
+Subject: [PATCH 110/115] extcon: sm5502: keep the attached cable on an
  unidentified state
 
 When the device type registers did not identify a cable, the driver

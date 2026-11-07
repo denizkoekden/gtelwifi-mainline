@@ -1,7 +1,7 @@
 From 8dbe5732d72536a03b6e5105d12ecdc735c8c509 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 18:19:22 +0000
-Subject: [PATCH 013/114] mmc: sdhci-sc7730: optional AHB gate; ARM: sprd:
+Subject: [PATCH 013/115] mmc: sdhci-sc7730: optional AHB gate; ARM: sprd:
  CLK_AUX0; gtelwifi: WLAN
 
 The bootloader leaves SDIO1, the WLAN slot, gated. Let the SDHCI glue

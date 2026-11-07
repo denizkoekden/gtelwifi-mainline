@@ -1,7 +1,7 @@
 From e0cdef3a3fa2335c28b8a30dde631550e6458718 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sat, 7 Nov 2026 12:14:00 +0000
-Subject: [PATCH 108/114] ARM: dts: unisoc: add Samsung Galaxy Tab E 9.6 3G
+Subject: [PATCH 108/115] ARM: dts: unisoc: add Samsung Galaxy Tab E 9.6 3G
  (SM-T561, gtel3g)
 
 The SM-T561 is the SM-T560 with the SC7730 modem in use. Board revisions

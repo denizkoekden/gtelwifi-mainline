@@ -1,7 +1,7 @@
 From 368332b4f4ab05ac0dfbbf69b869b84aed02cd19 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 09:45:49 +0000
-Subject: [PATCH 048/114] ARM: dts: sc7730: DISPC takeover and a CMA pool on
+Subject: [PATCH 048/115] ARM: dts: sc7730: DISPC takeover and a CMA pool on
  the gtelwifi
 
 DISPC has no IOMMU, so its buffers come from a 64 MiB CMA pool in lowmem

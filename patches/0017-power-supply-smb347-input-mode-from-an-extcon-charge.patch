@@ -1,7 +1,7 @@
 From 5caac702d754d9f251ef35882563312c434bb3d5 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 20:04:37 +0000
-Subject: [PATCH 017/114] power: supply: smb347: input mode from an extcon
+Subject: [PATCH 017/115] power: supply: smb347: input mode from an extcon
  charger type
 
 The driver never writes CMD_B, so the input stays in whatever mode the
