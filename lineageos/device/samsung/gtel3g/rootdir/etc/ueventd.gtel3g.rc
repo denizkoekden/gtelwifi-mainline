@@ -1,0 +1,15 @@
+# SM-T561 (gtel3g): SIPC nodes of the modem core (rights as in the LOS16
+# ROM, ueventd.sc8830.rc). Installed as /vendor/etc/ueventd.gtelwifi.rc:
+# mainline/common's ueventd.rc imports /vendor/etc/ueventd.${ro.hardware}.rc
+# and ro.hardware stays "gtelwifi" (kernel CMDLINE) on the T561 as well.
+/dev/stty_w*            0660    radio       radio
+/dev/slog_w             0660    system      system
+/dev/spipe_w0           0660    system      radio
+/dev/spipe_w1           0660    system      radio
+/dev/spipe_w2           0660    system      radio
+/dev/spipe_w3           0660    system      system
+/dev/spipe_w4           0660    media       audio
+/dev/spipe_w5           0660    radio       system
+/dev/spipe_w6           0660    media       audio
+/dev/spipe_w7           0660    system      system
+/dev/spipe_w8           0660    system      system

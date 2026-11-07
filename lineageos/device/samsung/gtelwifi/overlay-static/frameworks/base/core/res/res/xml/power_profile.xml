@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     Samsung Galaxy Tab E 9.6 WiFi (SM-T560, gtelwifi, SC7730SE): power profile.
+     Target: device/samsung/gtelwifi/overlay-static/frameworks/base/core/res/res/xml/power_profile.xml
+     Without it framework-res' default applies (battery.capacity = 2, every other value 0.1,
+     "deliberately incorrect").
+     Values in mA. [M] = derived from currents measured on the device (CLAUDE.md, Energie),
+     [R] = Samsung/CM reference profile of the scx35 boards, [E] = estimate, to be measured.
+-->
+<device name="Android">
+    <!-- [M] 5000 mAh, same as DT battery node (charge-full-design-microamp-hours) -->
+    <item name="battery.capacity">5000</item>
+
+    <!-- Display. [M] screen on, backlight at minimum: awake 244 mA with panel vs 111 mA with
+         panel power off (sprd_dispc.panel_power_off) -> ~133 mA. [E] full brightness:
+         133 + the 91 mA backlight delta of the CM profile (96 -> 187) = 224 -->
+    <item name="screen.on.display0">133</item>
+    <item name="screen.full.display0">224</item>
+    <item name="ambient.on.display0">0</item>
+
+    <!-- CPU: 4x Cortex-A7, one cluster/policy. Steps = OPP table in sc7730.dtsi
+         (768..1300 MHz regular, 1352..1612 MHz turbo/overclock, limit 1300 by default).
+         Power per active core: [R] 768 -> 29, 1300 -> 87 (CM list, same SoC family),
+         the other steps [E] interpolated linearly in f*V^2 with the OPP voltages. -->
+    <array name="cpu.clusters.cores">
+        <value>4</value>
+    </array>
+    <array name="cpu.core_speeds.cluster0">
+        <value>768000</value>
+        <value>1000000</value>
+        <value>1200000</value>
+        <value>1300000</value>
+        <value>1352000</value>
+        <value>1404000</value>
+        <value>1456000</value>
+        <value>1508000</value>
+        <value>1560000</value>
+        <value>1612000</value>
+    </array>
+    <array name="cpu.core_power.cluster0">
+        <value>29</value>
+        <value>42</value>
+        <value>70</value>
+        <value>87</value>
+        <value>96</value>
+        <value>106</value>
+        <value>116</value>
+        <value>127</value>
+        <value>138</value>
+        <value>150</value>
+    </array>
+    <!-- Cluster itself in the active state, [E] -->
+    <array name="cpu.cluster_power.cluster0">
+        <value>10</value>
+    </array>
+    <!-- [M] whole device with screen off in suspend 85-89 mA; awake, dark, panel off 111 mA
+         -> awake-idle adds ~26 mA. Suspend is attributed to the CPU here as there is no
+         other consumer in the profile. -->
+    <item name="cpu.suspend">85</item>
+    <item name="cpu.idle">26</item>
+
+    <!-- WLAN BCM43430 [E] -->
+    <item name="wifi.on">2</item>
+    <item name="wifi.scan">100</item>
+    <item name="wifi.active">120</item>
+    <array name="wifi.batchedscan">
+        <value>.0002</value>
+        <value>.002</value>
+        <value>.02</value>
+        <value>.2</value>
+        <value>2</value>
+    </array>
+    <!-- Bluetooth (same chip) [E] -->
+    <item name="bluetooth.on">1</item>
+    <item name="bluetooth.active">20</item>
+    <!-- No modem (Wi-Fi only) -->
+    <item name="radio.active">0</item>
+    <item name="radio.scanning">0</item>
+    <array name="radio.on">
+        <value>0</value>
+    </array>
+    <!-- [E] speaker path (PA + DAC + VBC) and software video decode load -->
+    <item name="audio">30</item>
+    <item name="video">100</item>
+    <!-- [E] BCM47520 GPS, camera average (S5K4ECGX + DCAM + CPU), no flash LED -->
+    <item name="gps.on">30</item>
+    <item name="camera.avg">150</item>
+    <item name="camera.flashlight">0</item>
+</device>

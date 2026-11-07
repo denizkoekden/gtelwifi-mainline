@@ -1,0 +1,40 @@
+<!-- Versions = the -V5-ndk libraries in Android.bp (goldfish uses the same).
+     FCM 202604 lists radio.* AIDL HALs; IMS, IMS media and SAP are left out
+     (optional there, a 3G modem without IMS). -->
+<manifest version="1.0" type="device">
+    <hal format="aidl">
+        <name>android.hardware.radio.config</name>
+        <version>5</version>
+        <fqname>IRadioConfig/default</fqname>
+    </hal>
+    <hal format="aidl">
+        <name>android.hardware.radio.data</name>
+        <version>5</version>
+        <fqname>IRadioData/slot1</fqname>
+    </hal>
+    <hal format="aidl">
+        <name>android.hardware.radio.messaging</name>
+        <version>5</version>
+        <fqname>IRadioMessaging/slot1</fqname>
+    </hal>
+    <hal format="aidl">
+        <name>android.hardware.radio.modem</name>
+        <version>5</version>
+        <fqname>IRadioModem/slot1</fqname>
+    </hal>
+    <hal format="aidl">
+        <name>android.hardware.radio.network</name>
+        <version>5</version>
+        <fqname>IRadioNetwork/slot1</fqname>
+    </hal>
+    <hal format="aidl">
+        <name>android.hardware.radio.sim</name>
+        <version>5</version>
+        <fqname>IRadioSim/slot1</fqname>
+    </hal>
+    <hal format="aidl">
+        <name>android.hardware.radio.voice</name>
+        <version>5</version>
+        <fqname>IRadioVoice/slot1</fqname>
+    </hal>
+</manifest>

@@ -15,6 +15,9 @@ set -euo pipefail
 T=${1:?usage: mkflash.sh <tag>}
 cd /mnt/datengrab/lineage
 P=out/target/product/gtelwifi; B=out/host/linux-x86/bin; export PATH=$PWD/$B:$PATH
+# super_split.info: misc_info.txt plus the image paths (there is no
+# "superimage" target for super spread over SYSTEM+CSC, 07.11.)
+{ cat $P/misc_info.txt; for p in system system_ext product vendor; do echo "${p}_image=$P/$p.img"; done; } > $P/super_split.info
 rm -rf $P/super_split; mkdir -p $P/super_split; build_super_image $P/super_split.info $P/super_split >/dev/null 2>&1
 simg2img $P/super_split/super_SYSTEM.img $P/super_split/super_SYSTEM.raw
 F=flash-$T; mkdir -p $F; cp $P/boot.img $F/; gzip -1 -c $P/super_split/super_SYSTEM.raw > $F/super_SYSTEM.raw.gz

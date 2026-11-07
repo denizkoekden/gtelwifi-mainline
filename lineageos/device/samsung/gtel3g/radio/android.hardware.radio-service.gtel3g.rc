@@ -1,0 +1,9 @@
+# AIDL radio HAL of the SM-T561 (gtel3g). Started by init.gtel3g.rc once the
+# modem core answers on its AT channel (vendor.gtel3g.cp=running), not with
+# class hal: before that /dev/stty_w0 exists but nobody answers.
+service vendor.radio-gtel3g /vendor/bin/hw/android.hardware.radio-service.gtel3g
+    class hal
+    user radio
+    group radio inet misc log readproc wakelock
+    capabilities BLOCK_SUSPEND NET_ADMIN NET_RAW
+    disabled

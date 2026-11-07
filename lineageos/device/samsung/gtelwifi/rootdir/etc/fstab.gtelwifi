@@ -35,4 +35,7 @@ vendor                        /vendor      erofs   ro               wait,logical
 /dev/block/by-name/efs        /mnt/vendor/efs  ext4  ro,noload,nosuid,nodev,noexec  wait,nofail
 
 # microSD (SDIO0, mmc@20300000)
-/devices/platform/soc/20300000.mmc/mmc_host*  auto  auto  defaults  voldmanaged=sdcard1:auto
+# encryptable=userdata: the SD card can be adopted as internal storage
+# (vold: dm-crypt with ro.crypto.fde_algorithm, files with fscrypt
+# ro.crypto.volume.options, both Adiantum as for /data, device.mk)
+/devices/platform/soc/20300000.mmc/mmc_host*  auto  auto  defaults  voldmanaged=sdcard1:auto,encryptable=userdata

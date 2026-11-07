@@ -128,3 +128,16 @@ service vendor.gpsd /data/vendor/gps/blobs/gpsd -c /data/vendor/gps/blobs/gps.xm
 
 on property:vendor.gtelwifi.gps=1 && property:sys.boot_completed=1
     start vendor.gpsd
+
+# Bring-up diagnostics for the USB gadget (issue #2, MTP): one kernel log
+# line per function switch of UsbDeviceManager/the gadget HAL, with the
+# gadget state at that moment. Drop with the bring-up.
+# (No unset property in the first line: init drops the whole write then.)
+on property:sys.usb.config=*
+    write /dev/kmsg "gtelwifi-usb: sys.usb.config=${sys.usb.config} configfs=${sys.usb.configfs}"
+
+on property:sys.usb.ffs.ready=*
+    write /dev/kmsg "gtelwifi-usb: sys.usb.ffs.ready=${sys.usb.ffs.ready} config=${sys.usb.config}"
+
+on property:sys.usb.state=*
+    write /dev/kmsg "gtelwifi-usb: sys.usb.state=${sys.usb.state}"

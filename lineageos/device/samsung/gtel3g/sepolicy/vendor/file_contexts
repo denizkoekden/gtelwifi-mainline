@@ -1,0 +1,4 @@
+# gtel3g - permissive like gtelwifi; labels only so init finds a domain
+
+# AIDL radio HAL (radio/): runs in AOSP's rild domain (hal_radio server)
+/vendor/bin/hw/android\.hardware\.radio-service\.gtel3g    u:object_r:rild_exec:s0

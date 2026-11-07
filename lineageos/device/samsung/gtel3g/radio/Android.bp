@@ -1,0 +1,65 @@
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+// AIDL radio HAL for the SM-T561 (gtel3g): device/generic/goldfish/hals/radio
+// (lineage-24.0, commit c97eaa10) adapted to the AT channel of the
+// Spreadtrum modem core (README.md). No IMS, IMS media or SAP service.
+//
+
+package {
+    default_applicable_licenses: ["device_samsung_gtel3g_radio_license"],
+}
+
+license {
+    name: "device_samsung_gtel3g_radio_license",
+    visibility: [":__subpackages__"],
+    license_kinds: ["SPDX-license-identifier-Apache-2.0"],
+    license_text: ["NOTICE"],
+}
+
+cc_binary {
+    name: "android.hardware.radio-service.gtel3g",
+    vendor: true,
+    relative_install_path: "hw",
+    cpp_std: "c++20",
+    srcs: [
+        "AtChannel.cpp",
+        "AtResponse.cpp",
+        "gtel3gUtils.cpp",
+        "hexbin.cpp",
+        "IdAllocator.cpp",
+        "main.cpp",
+        "makeRadioResponseInfo.cpp",
+        "Parser.cpp",
+        "ratUtils.cpp",
+        "RadioConfig.cpp",
+        "RadioData.cpp",
+        "RadioMessaging.cpp",
+        "RadioModem.cpp",
+        "RadioNetwork.cpp",
+        "RadioSim.cpp",
+        "RadioVoice.cpp",
+    ],
+    // versions as in goldfish (V5); the VINTF fragment must match
+    shared_libs: [
+        "android.hardware.radio.config-V5-ndk",
+        "android.hardware.radio.data-V5-ndk",
+        "android.hardware.radio.messaging-V5-ndk",
+        "android.hardware.radio.modem-V5-ndk",
+        "android.hardware.radio.network-V5-ndk",
+        "android.hardware.radio.sim-V5-ndk",
+        "android.hardware.radio.voice-V5-ndk",
+        "libbase",
+        "libbinder_ndk",
+        "libcrypto",
+        "libcutils",
+        "liblog",
+        "libutils",
+    ],
+    cflags: [
+        "-DANDROID_BASE_UNIQUE_FD_DISABLE_IMPLICIT_CONVERSION",
+        "-DLOG_TAG=\"radio-gtel3g\"",
+    ],
+    init_rc: ["android.hardware.radio-service.gtel3g.rc"],
+    vintf_fragments: ["android.hardware.radio-service.gtel3g.xml"],
+}

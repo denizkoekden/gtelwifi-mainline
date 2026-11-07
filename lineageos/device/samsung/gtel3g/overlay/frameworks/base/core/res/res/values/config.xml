@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     SM-T561 (gtel3g): 3G data and SMS, no voice (no audio path through the
+     modem core). check: names against frameworks/base of lineage-24.0.
+-->
+<resources>
+    <bool name="config_voice_capable">false</bool>
+    <bool name="config_sms_capable">true</bool>
+    <bool name="config_mobile_data_capable">true</bool>
+</resources>

@@ -71,6 +71,14 @@ PRODUCT_VENDOR_PROPERTIES += \
     ro.opengles.version=131072
 endif
 
+# Off-mode charger (libminui, DRM backend). Without ro.minui.pixel_format
+# minui allocates RGB565 dumb buffers, which sprd-dispc (XRGB8888/XBGR8888
+# only) rejects: "charger: gr_init failed", the bootloader's picture stays.
+# RGBX_8888 = DRM_FORMAT_XBGR8888 (same as TARGET_RECOVERY_PIXEL_FORMAT in
+# the TWRP tree).
+PRODUCT_VENDOR_PROPERTIES += \
+    ro.minui.pixel_format=RGBX_8888
+
 # Audio: the mainline audio HAL (default of mainline/common) on our UCM
 # profile (audio/ucm2, the Nura one with the ADC at maximum). Only our card,
 # none of alsa-ucm-conf's card profiles (the APEX brings the base files).
@@ -220,6 +228,15 @@ PRODUCT_PRODUCT_PROPERTIES += \
 DEVICE_PACKAGE_OVERLAYS += \
     $(DEVICE_PATH)/overlay-lineage
 
+# framework-res values read by system_server before runtime resource
+# overlays apply (PowerProfile caches power_profile.xml at boot, so the
+# auto-generated RRO left battery.capacity at AOSP's placeholder 2): built
+# into framework-res instead of an RRO (mainline_common.mk enforces RROs)
+DEVICE_PACKAGE_OVERLAYS += \
+    $(DEVICE_PATH)/overlay-static
+PRODUCT_ENFORCE_RRO_EXCLUDED_OVERLAYS += \
+    $(DEVICE_PATH)/overlay-static
+
 # Camera: STMicroelectronics' AIDL camera provider (camera/libcamera-provider,
 # imported unchanged) around libcamera's Android HAL with the simple pipeline
 # handler (camera.libcamera, external/libcamera patch). Both sensors deliver
@@ -276,3 +293,11 @@ PRODUCT_COPY_FILES += \
 PRODUCT_AAPT_CONFIG := normal
 PRODUCT_AAPT_PREF_CONFIG := mdpi
 PRODUCT_CHARACTERISTICS := tablet
+
+# Adoptable storage (SD card as internal storage, fstab encryptable=userdata).
+# No metadata encryption here, so vold sets the card up with dm-crypt
+# (cryptfs.cpp, default aes-128-cbc) plus fscrypt on top; Adiantum for both,
+# as for /data (Cortex-A7 without AES instructions)
+PRODUCT_VENDOR_PROPERTIES += \
+    ro.crypto.fde_algorithm=adiantum \
+    ro.crypto.volume.options=adiantum:adiantum:v2

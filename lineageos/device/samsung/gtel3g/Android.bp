@@ -1,0 +1,9 @@
+//
+// SPDX-License-Identifier: Apache-2.0
+//
+// SM-T561 (gtel3g): own Soong namespace for the radio HAL (radio/), exported
+// in device.mk like gtelwifi's.
+//
+
+soong_namespace {
+}

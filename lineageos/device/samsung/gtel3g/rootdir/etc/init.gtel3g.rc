@@ -1,0 +1,48 @@
+# SM-T561 (gtel3g): modem core and AIDL radio HAL - DRAFT, not built yet.
+# Replaces modem_control/modemd/phoneserver/rild of the LOS16 ROM:
+# gtel3g-modem.sh loads and starts the CP, the HAL
+# (android.hardware.radio-service.gtel3g) talks AT to /dev/stty_w0 itself.
+# Installed to /vendor/etc/init/ (read automatically, next to
+# init.gtelwifi.rc which ro.hardware=gtelwifi still selects).
+
+on post-fs-data
+    mkdir /data/vendor/radio 0770 radio radio
+    # the script exits at once with persist.vendor.gtel3g.modem=0 (CP off)
+    start vendor.gtel3g-modem
+
+# Loads MODEM/WDSP into /proc/cpw (files 0200 root) and starts the CP
+# (seclabel su as gtelwifi's bring-up scripts: init refuses services without
+# a domain transition even in permissive mode; su exists in userdebug)
+service vendor.gtel3g-modem /vendor/bin/sh /vendor/bin/gtel3g-modem.sh
+    seclabel u:r:su:s0
+    user root
+    group root system radio
+    oneshot
+    disabled
+
+on property:vendor.gtel3g.cp=running && property:persist.vendor.gtel3g.nvitemd=1
+    start vendor.gtel3g-nvitemd
+
+on property:vendor.gtel3g.cp=running
+    start vendor.radio-gtel3g
+
+# NV service of the CP over /dev/spipe_w1 (proprietary blob from the LOS16
+# ROM, lineageos/proprietary/gtel3g/, only if present). [V] whether the CP
+# needs it for radio on is open; the vendor ROM ran it (A404_'s ps). Without
+# ro.product.partitionpath it serves NV from RAM only and never writes the
+# NV partitions back (analysis: out/gtel3g-ril/ANALYSE.md).
+service vendor.gtel3g-nvitemd /vendor/bin/nvitemd w 0
+    seclabel u:r:su:s0
+    user system
+    group system radio
+    disabled
+
+on property:vendor.gtel3g.cp=failed
+    stop vendor.gtel3g-nvitemd
+    stop vendor.radio-gtel3g
+
+# Data: the HAL brings rmnet0-2 up without ARP; IPv6 stays off for now
+on boot
+    write /proc/sys/net/ipv6/conf/rmnet0/disable_ipv6 1
+    write /proc/sys/net/ipv6/conf/rmnet1/disable_ipv6 1
+    write /proc/sys/net/ipv6/conf/rmnet2/disable_ipv6 1

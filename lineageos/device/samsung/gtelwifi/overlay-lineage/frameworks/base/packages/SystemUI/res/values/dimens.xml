@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     Samsung Galaxy Tab E 9.6 (gtelwifi): position of the USB port for
+     SystemUI's charging ripple (WiredChargingRippleController).
+     Normalized position of the port centre in the natural orientation
+     (portrait, home key at the bottom), x from the left, y from the top.
+     The controller rotates it for the other orientations itself.
+     Default of AOSP: x 0.5, y 1.0 = middle of the bottom edge.
+     Port position confirmed by the user (07.11.): top edge, centre, in the natural (portrait) orientation. Reference table:
+       bottom edge, centre   0.5  1.0   (AOSP default)
+       bottom edge, left     0.2  1.0
+       top edge, centre      0.5  0.0
+       left edge, middle     0.0  0.5
+       right edge, middle    1.0  0.5
+-->
+<resources>
+    <item name="physical_charger_port_location_normalized_x" type="dimen" format="float">0.5</item>
+    <item name="physical_charger_port_location_normalized_y" type="dimen" format="float">0.0</item>
+</resources>

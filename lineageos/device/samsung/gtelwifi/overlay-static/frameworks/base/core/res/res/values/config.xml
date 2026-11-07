@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+     Static framework-res overlay (not turned into an RRO, see device.mk):
+     values that system_server reads before runtime overlays apply.
+-->
+<resources>
+    <!-- Brightness slider minimum. The lowest slider position mapped to
+         backlight level 0, which pwm-backlight treats as "off" (screen
+         black, 07.11.). 0.01 keeps the slider at level >= 1, which is
+         still visible (vendor curve: duty 3/255). -->
+    <item name="config_screenBrightnessSettingMinimumFloat" format="float" type="dimen">0.01</item>
+</resources>

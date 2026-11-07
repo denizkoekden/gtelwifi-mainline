@@ -8,7 +8,9 @@
 # the two boot images sboot is known to boot byte for byte (tools/selftest.py).
 
 MKBOOTIMG_SPRD := $(HOST_OUT_EXECUTABLES)/mkbootimg_sprd$(HOST_EXECUTABLE_SUFFIX)
-GTELWIFI_DTB := $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dtb
+# gtel3g (SM-T561) sets GTELWIFI_DTB_NAME := sc7730-samsung-gtel3g in its BoardConfig
+GTELWIFI_DTB_NAME ?= sc7730-samsung-gtelwifi
+GTELWIFI_DTB := $(TARGET_OUT_INTERMEDIATES)/KERNEL_OBJ/arch/arm/boot/dts/unisoc/$(GTELWIFI_DTB_NAME).dtb
 
 $(INSTALLED_BOOTIMAGE_TARGET): $(MKBOOTIMG_SPRD) $(INTERNAL_BOOTIMAGE_FILES) $(INSTALLED_KERNEL_TARGET)
 	$(call pretty,"Target boot image: $@")
