@@ -1,7 +1,7 @@
 From 6e33eda82c8379ce7a1594ca07577aeae0a6d950 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 16:06:11 +0000
-Subject: [PATCH 071/114] ARM: dts: sc7730-samsung-gtelwifi: add the rear
+Subject: [PATCH 071/115] ARM: dts: sc7730-samsung-gtelwifi: add the rear
  camera
 
 The rear S5K4ECGX sits on I2C0 at 0x56 and D-PHY A (two lanes), with

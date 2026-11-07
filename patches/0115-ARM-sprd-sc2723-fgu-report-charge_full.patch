@@ -1,0 +1,44 @@
+From 301c83079629ced8beaa98871c0ac39f684bb358 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sat, 7 Nov 2026 23:24:24 +0000
+Subject: [PATCH 115/115] ARM: sprd: sc2723-fgu: report charge_full
+
+Android's battery stats take the battery capacity from charge_full when
+the fuel gauge reports it, otherwise from power_profile.xml (which showed
+"2 mAh" here). Without capacity learning, full is the design capacity.
+Checked on the SM-T560: on battery, batterystats now shows an estimated
+and learned capacity of 5000 mAh.
+
+Assisted-by: Claude Opus 5.5
+---
+ arch/arm/mach-sprd/sc2723-fgu.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/arch/arm/mach-sprd/sc2723-fgu.c b/arch/arm/mach-sprd/sc2723-fgu.c
+index 6c19f8881..e07986ed6 100644
+--- a/arch/arm/mach-sprd/sc2723-fgu.c
++++ b/arch/arm/mach-sprd/sc2723-fgu.c
+@@ -459,6 +459,12 @@ static int sc2723_fgu_get_property(struct power_supply *psy,
+ 				    fgu->info->charge_full_design_uah);
+ 		break;
+ 	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
++	/*
++	 * No capacity learning (yet): full is the design value. Android's
++	 * battery stats take the capacity from charge_full when there is
++	 * one, else from power_profile.xml (07.11.: "2 mAh").
++	 */
++	case POWER_SUPPLY_PROP_CHARGE_FULL:
+ 		val->intval = fgu->info->charge_full_design_uah;
+ 		break;
+ 	case POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN:
+@@ -508,6 +514,7 @@ static const enum power_supply_property sc2723_fgu_props[] = {
+ 	POWER_SUPPLY_PROP_CAPACITY,
+ 	POWER_SUPPLY_PROP_CHARGE_NOW,
+ 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
++	POWER_SUPPLY_PROP_CHARGE_FULL,
+ 	POWER_SUPPLY_PROP_VOLTAGE_MIN_DESIGN,
+ 	POWER_SUPPLY_PROP_VOLTAGE_MAX_DESIGN,
+ 	POWER_SUPPLY_PROP_TEMP,
+-- 
+2.47.3
+

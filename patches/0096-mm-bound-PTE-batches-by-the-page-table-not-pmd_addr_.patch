@@ -1,7 +1,7 @@
 From 37bc4a4394b7c7d82931d846678a85eb01beee3a Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Wed, 4 Nov 2026 19:42:00 +0000
-Subject: [PATCH 096/114] mm: bound PTE batches by the page table, not
+Subject: [PATCH 096/115] mm: bound PTE batches by the page table, not
  pmd_addr_end()
 
 move_present_ptes(), folio_unmap_pte_batch(), folio_referenced_one() and

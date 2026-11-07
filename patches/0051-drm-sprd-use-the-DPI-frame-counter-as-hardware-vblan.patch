@@ -1,7 +1,7 @@
 From ebc415151000f3ac115d27a181f41e8a26130dd4 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 11:29:34 +0000
-Subject: [PATCH 051/114] drm/sprd: use the DPI frame counter as hardware
+Subject: [PATCH 051/115] drm/sprd: use the DPI frame counter as hardware
  vblank counter
 
 DPI_STS1 bits 15:0 count frames of the DPI output, +1 per frame. Use it

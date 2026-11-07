@@ -1,7 +1,7 @@
 From d03f16b8a0bd1b2f051e1c8dde64ee3f7e260cef Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Thu, 5 Nov 2026 13:05:36 +0000
-Subject: [PATCH 104/114] media: sc7730: S5K4ECGX stills up to 2576x1932 and
+Subject: [PATCH 104/115] media: sc7730: S5K4ECGX stills up to 2576x1932 and
  autofocus
 
 The S5K4ECGX has its own ISP with a separate capture configuration and

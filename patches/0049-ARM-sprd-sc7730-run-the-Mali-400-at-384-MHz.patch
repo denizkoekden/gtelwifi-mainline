@@ -1,7 +1,7 @@
 From ff55e3151d3a5e8fb8380119c1be5190553e5471 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 09:53:41 +0000
-Subject: [PATCH 049/114] ARM: sprd: sc7730: run the Mali-400 at 384 MHz
+Subject: [PATCH 049/115] ARM: sprd: sc7730: run the Mali-400 at 384 MHz
 
 clk_384m is TDPLL / 2, from the same PLL as the 256 MHz reset value and
 one of the vendor's GPU operating points (the vendor never scaled the GPU

@@ -1,7 +1,7 @@
 From 32d938549e5ce5baf5d9ad9a39aeed92724de9f9 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 22:48:55 +0000
-Subject: [PATCH 031/114] mmc: sdhci-sc7730: select the base clock, honour the
+Subject: [PATCH 031/115] mmc: sdhci-sc7730: select the base clock, honour the
  SDIO0 divider
 
 The bootloader leaves the microSD host SDIO0 alone, its clock config at
