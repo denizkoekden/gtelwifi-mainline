@@ -1,0 +1,166 @@
+From ad0980870d5e25b51dde808cbf0911d6dee8122a Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sat, 7 Nov 2026 12:14:00 +0000
+Subject: [PATCH 111/114] usb: dwc2: gadget: stay awake while a host has the
+ gadget enumerated
+
+System suspend makes dwc2 soft-disconnect the gadget, so a USB host sees
+the device leave and come back every time Android suspends with the
+screen off (adb sessions end). Hold a wakeup source from SET_ADDRESS until
+disconnect, reset or bus suspend. The parameter stay_awake_connected
+(default on) turns this off; writing 0 also releases a held source.
+
+Assisted-by: Claude Opus 5.5
+---
+ drivers/usb/dwc2/core.h      |  4 +++
+ drivers/usb/dwc2/core_intr.c |  3 +++
+ drivers/usb/dwc2/gadget.c    | 48 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 55 insertions(+)
+
+diff --git a/drivers/usb/dwc2/core.h b/drivers/usb/dwc2/core.h
+index 0c8051f4c..8d69b184c 100644
+--- a/drivers/usb/dwc2/core.h
++++ b/drivers/usb/dwc2/core.h
+@@ -1059,6 +1059,7 @@ struct dwc2_hregs_backup {
+  */
+ struct dwc2_hsotg {
+ 	struct device *dev;
++	struct wakeup_source *connected_ws;
+ 	void __iomem *regs;
+ 	/** Params detected from hardware */
+ 	struct dwc2_hw_params hw_params;
+@@ -1419,6 +1420,7 @@ void dwc2_dump_global_registers(struct dwc2_hsotg *hsotg);
+ 	IS_ENABLED(CONFIG_USB_DWC2_DUAL_ROLE)
+ int dwc2_hsotg_remove(struct dwc2_hsotg *hsotg);
+ int dwc2_hsotg_suspend(struct dwc2_hsotg *dwc2);
++void dwc2_gadget_stay_awake(struct dwc2_hsotg *hsotg, bool awake);
+ int dwc2_hsotg_resume(struct dwc2_hsotg *dwc2);
+ int dwc2_gadget_init(struct dwc2_hsotg *hsotg);
+ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *dwc2,
+@@ -1453,6 +1455,8 @@ static inline void dwc2_clear_fifo_map(struct dwc2_hsotg *hsotg)
+ #else
+ static inline int dwc2_hsotg_remove(struct dwc2_hsotg *dwc2)
+ { return 0; }
++static inline void dwc2_gadget_stay_awake(struct dwc2_hsotg *hsotg, bool awake)
++{}
+ static inline int dwc2_hsotg_suspend(struct dwc2_hsotg *dwc2)
+ { return 0; }
+ static inline int dwc2_hsotg_resume(struct dwc2_hsotg *dwc2)
+diff --git a/drivers/usb/dwc2/core_intr.c b/drivers/usb/dwc2/core_intr.c
+index 9565e6a52..52e416c14 100644
+--- a/drivers/usb/dwc2/core_intr.c
++++ b/drivers/usb/dwc2/core_intr.c
+@@ -428,6 +428,8 @@ static void dwc2_handle_wakeup_detected_intr(struct dwc2_hsotg *hsotg)
+ 	if (dwc2_is_device_mode(hsotg)) {
+ 		dev_dbg(hsotg->dev, "DSTS=0x%0x\n",
+ 			dwc2_readl(hsotg, DSTS));
++		if (hsotg->connected)
++			dwc2_gadget_stay_awake(hsotg, true);
+ 		if (hsotg->lx_state == DWC2_L2) {
+ 			if (hsotg->in_ppd) {
+ 				u32 dctl = dwc2_readl(hsotg, DCTL);
+@@ -576,6 +578,7 @@ static void dwc2_handle_usb_suspend_intr(struct dwc2_hsotg *hsotg)
+ 
+ 			/* Call gadget suspend callback */
+ 			call_gadget(hsotg, suspend);
++			dwc2_gadget_stay_awake(hsotg, false);
+ 		}
+ 	} else {
+ 		if (hsotg->op_state == OTG_STATE_A_PERIPHERAL) {
+diff --git a/drivers/usb/dwc2/gadget.c b/drivers/usb/dwc2/gadget.c
+index 102169b40..aec074206 100644
+--- a/drivers/usb/dwc2/gadget.c
++++ b/drivers/usb/dwc2/gadget.c
+@@ -22,6 +22,7 @@
+ #include <linux/delay.h>
+ #include <linux/io.h>
+ #include <linux/slab.h>
++#include <linux/pm_wakeup.h>
+ 
+ #include <linux/usb/ch9.h>
+ #include <linux/usb/gadget.h>
+@@ -32,6 +33,45 @@
+ #include "core.h"
+ #include "hw.h"
+ 
++static bool stay_awake_connected = true;
++/* The one gadget on this SoC; lets a write of 0 drop a held wakeup source */
++static struct wakeup_source *dwc2_connected_ws;
++
++static int stay_awake_connected_set(const char *val,
++				    const struct kernel_param *kp)
++{
++	int ret = param_set_bool(val, kp);
++
++	if (!ret && !stay_awake_connected && dwc2_connected_ws)
++		__pm_relax(dwc2_connected_ws);
++	return ret;
++}
++
++static const struct kernel_param_ops stay_awake_connected_ops = {
++	.set = stay_awake_connected_set,
++	.get = param_get_bool,
++};
++module_param_cb(stay_awake_connected, &stay_awake_connected_ops,
++		&stay_awake_connected, 0644);
++MODULE_PARM_DESC(stay_awake_connected,
++		 "Hold a wakeup source while a USB host has the gadget enumerated and the bus is active (no system suspend, so the host does not see a disconnect)");
++
++/**
++ * dwc2_gadget_stay_awake - block or allow system suspend for a live USB link
++ * @hsotg: The device state
++ * @awake: true while a host talks to us, false on disconnect or bus suspend
++ */
++void dwc2_gadget_stay_awake(struct dwc2_hsotg *hsotg, bool awake)
++{
++	if (!hsotg->connected_ws)
++		return;
++
++	if (awake && stay_awake_connected)
++		__pm_stay_awake(hsotg->connected_ws);
++	else
++		__pm_relax(hsotg->connected_ws);
++}
++
+ /* conversion functions */
+ static inline struct dwc2_hsotg_req *our_req(struct usb_request *req)
+ {
+@@ -1956,6 +1996,7 @@ static void dwc2_hsotg_process_control(struct dwc2_hsotg *hsotg,
+ 		switch (ctrl->bRequest) {
+ 		case USB_REQ_SET_ADDRESS:
+ 			hsotg->connected = 1;
++			dwc2_gadget_stay_awake(hsotg, true);
+ 			dcfg = dwc2_readl(hsotg, DCFG);
+ 			dcfg &= ~DCFG_DEVADDR_MASK;
+ 			dcfg |= (le16_to_cpu(ctrl->wValue) <<
+@@ -3321,6 +3362,7 @@ void dwc2_hsotg_disconnect(struct dwc2_hsotg *hsotg)
+ 
+ 	hsotg->connected = 0;
+ 	hsotg->test_mode = 0;
++	dwc2_gadget_stay_awake(hsotg, false);
+ 
+ 	/* all endpoints should be shutdown */
+ 	for (ep = 0; ep < hsotg->num_of_eps; ep++) {
+@@ -5091,6 +5133,9 @@ int dwc2_gadget_init(struct dwc2_hsotg *hsotg)
+ 
+ 	dwc2_hsotg_dump(hsotg);
+ 
++	hsotg->connected_ws = wakeup_source_register(dev, "dwc2-connected");
++	dwc2_connected_ws = hsotg->connected_ws;
++
+ 	return 0;
+ }
+ 
+@@ -5103,6 +5148,9 @@ int dwc2_hsotg_remove(struct dwc2_hsotg *hsotg)
+ {
+ 	usb_del_gadget_udc(&hsotg->gadget);
+ 	dwc2_hsotg_ep_free_request(&hsotg->eps_out[0]->ep, hsotg->ctrl_req);
++	if (dwc2_connected_ws == hsotg->connected_ws)
++		dwc2_connected_ws = NULL;
++	wakeup_source_unregister(hsotg->connected_ws);
+ 
+ 	return 0;
+ }
+-- 
+2.47.3
+

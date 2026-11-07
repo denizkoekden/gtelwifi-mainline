@@ -1,7 +1,7 @@
 From 5a2ce80dfd737949132fe957b449b5cb7c6c07e8 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 15:53:21 +0000
-Subject: [PATCH 007/106] irqchip: add Spreadtrum SC8830 INTC wake-up gates
+Subject: [PATCH 007/114] irqchip: add Spreadtrum SC8830 INTC wake-up gates
 
 Once all cores are in WFI the GIC clock on SC8830/SC7730 stops and only
 interrupts enabled in one of the four INTC blocks wake the CPU. They still

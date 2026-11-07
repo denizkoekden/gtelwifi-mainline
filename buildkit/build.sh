@@ -48,5 +48,6 @@ grep -E '^CONFIG_[A-Z0-9_]+=' "$HERE/config.local" |
 	grep -qxF "$want" "$O/.config" || { echo "config: $want did not stick" >&2; exit 1; }
 done
 $MAKE -j"$(nproc)" zImage dtbs
+# DTB=sc7730-samsung-gtelwifi-modem.dtb OUT=gtelwifi-modem.img for the modem test image
 python3 "$HERE/mkimage.py" --zimage "$O/arch/arm/boot/zImage" \
-  --dtb "$O/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dtb" -o "$HERE/gtelwifi-mainline.img"
+  --dtb "$O/arch/arm/boot/dts/unisoc/${DTB:-sc7730-samsung-gtelwifi.dtb}" -o "$HERE/${OUT:-gtelwifi-mainline.img}"

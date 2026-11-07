@@ -1,0 +1,119 @@
+From 67f3210a8a03e76e2bdf46ae13d115ed95f3ea86 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sat, 7 Nov 2026 12:14:00 +0000
+Subject: [PATCH 109/114] power: sc2723-fgu: only report empty from the OCV,
+ never anchor at 0 %
+
+The coulomb counter drifts on this board and could pull the reported
+capacity to 0 % while the cell still had charge, and re-anchoring at 0
+made the value stick there. Report 0 % only when the open-circuit voltage
+says empty in two consecutive polls at a light load (<= 600 mA), and keep
+the anchor at 1 % otherwise. Add a "trace" parameter that logs the
+inputs of every poll.
+
+Assisted-by: Claude Opus 5.5
+---
+ arch/arm/mach-sprd/sc2723-fgu.c | 50 ++++++++++++++++++++++++++++-----
+ 1 file changed, 43 insertions(+), 7 deletions(-)
+
+diff --git a/arch/arm/mach-sprd/sc2723-fgu.c b/arch/arm/mach-sprd/sc2723-fgu.c
+index 28110e833..6c19f8881 100644
+--- a/arch/arm/mach-sprd/sc2723-fgu.c
++++ b/arch/arm/mach-sprd/sc2723-fgu.c
+@@ -31,6 +31,7 @@
+ #include <linux/iio/consumer.h>
+ #include <linux/math64.h>
+ #include <linux/mod_devicetable.h>
++#include <linux/moduleparam.h>
+ #include <linux/platform_device.h>
+ #include <linux/power_supply.h>
+ #include <linux/property.h>
+@@ -76,6 +77,18 @@
+ #define FGU_SAVED_MAX_DIFF_EDGE	10
+ #define FGU_EDGE_SOC		10	/* below this or above 100 minus it */
+ 
++/*
++ * Empty is decided by the OCV (V - I * R_int), not by the loaded voltage:
++ * a worn cell sags under a burst while still holding charge. It must hold
++ * for FGU_ZERO_POLLS polls in a row under a moderate load.
++ */
++#define FGU_ZERO_POLLS		2
++#define FGU_ZERO_MAX_UA		600000
++
++static bool trace;
++module_param(trace, bool, 0644);
++MODULE_PARM_DESC(trace, "log voltage, current, OCV and the SOC estimates on every poll");
++
+ /* without eFuse data (vendor defaults): ADC counts at 4.2 V and 3.6 V */
+ #define FGU_DEF_A42		2752
+ #define FGU_DEF_A36		2374
+@@ -90,6 +103,7 @@ struct sc2723_fgu {
+ 	int soc0;		/* capacity at the last anchor, % */
+ 	s32 cc0;		/* coulomb counter at the last anchor */
+ 	int soc;		/* last reported capacity, % */
++	int zero_cnt;		/* polls in a row with the OCV below minimum */
+ 	int status;
+ 	bool ready;		/* battery data loaded, polling may run */
+ 	struct iio_channel *temp_chan;
+@@ -297,8 +311,8 @@ static void sc2723_fgu_temp_limits(struct sc2723_fgu *fgu, int temp)
+ static void sc2723_fgu_update(struct sc2723_fgu *fgu)
+ {
+ 	int volt = fgu_read(FGU_VOLT_VAL), curt = fgu_read(FGU_CURT_VAL);
+-	int uv, ua, ocv, soc, status, full_uah;
+-	bool supplied, full;
++	int uv, ua, ocv, soc, soc_cc, status, full_uah;
++	bool supplied, full, discharging;
+ 	s32 cc, delta;
+ 
+ 	if (volt < 0 || curt < 0 || sc2723_fgu_clbcnt(&cc))
+@@ -311,6 +325,7 @@ static void sc2723_fgu_update(struct sc2723_fgu *fgu)
+ 	/* the counter may be 30 bit wide: compare modulo 2^30 */
+ 	delta = sign_extend32(cc - fgu->cc0, 29);
+ 	soc = fgu->soc0 + div_s64(fgu_cc_to_uah(fgu, delta) * 100, full_uah);
++	soc_cc = soc;
+ 
+ 	/*
+ 	 * Re-anchor like the vendor at the ends of the OCV table and when
+@@ -323,13 +338,34 @@ static void sc2723_fgu_update(struct sc2723_fgu *fgu)
+ 	 * now off, which is the case while we inhibit it for the temperature.
+ 	 */
+ 	full = supplied && !fgu->inhibited && sc2723_fgu_charger_full(fgu);
+-	if (full || ocv >= fgu->info->constant_charge_voltage_max_uv)
++	discharging = !supplied || ua < -20000;
++	if (full || ocv >= fgu->info->constant_charge_voltage_max_uv) {
++		fgu->zero_cnt = 0;
+ 		soc = 100;
+-	else if (uv < fgu->info->voltage_min_design_uv)
+-		soc = 0;
++	} else if (discharging && ocv < fgu->info->voltage_min_design_uv &&
++		   -ua <= FGU_ZERO_MAX_UA) {
++		if (fgu->zero_cnt < FGU_ZERO_POLLS)
++			fgu->zero_cnt++;
++	} else {
++		fgu->zero_cnt = 0;
++	}
+ 	soc = clamp(soc, 0, 100);
+-	if (soc == 100 || soc == 0)
+-		sc2723_fgu_anchor(fgu, soc);
++	if (fgu->zero_cnt >= FGU_ZERO_POLLS) {
++		/* really empty: report 0, anchor at 1 % so the count stays sane */
++		soc = 0;
++		sc2723_fgu_anchor(fgu, 1);
++	} else {
++		/* count used up but the OCV is not empty (yet): show 1 % */
++		soc = max(soc, 1);
++		if (soc == 100 || soc_cc < 1)
++			sc2723_fgu_anchor(fgu, soc);
++	}
++
++	if (trace)
++		dev_info(fgu->dev,
++			 "V %d mV I %d mA OCV %d mV count %d %% shown %d %% zero_cnt %d %s\n",
++			 uv / 1000, ua / 1000, ocv / 1000, soc_cc, soc,
++			 fgu->zero_cnt, discharging ? "discharging" : "supplied");
+ 
+ 	/*
+ 	 * By the current: in its 500 mA USB mode the charger can supply less
+-- 
+2.47.3
+

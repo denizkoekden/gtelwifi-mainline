@@ -1,0 +1,5492 @@
+From 100e80e8514d59febf8d412552c8ac9968f495ee Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Fri, 6 Nov 2026 22:08:51 +0000
+Subject: [PATCH 107/114] ARM: sprd: sc7730: modem core (CP) loader and SIPC
+
+Port of the modem interface of the Samsung 3.10 kernel sources for the
+SM-T561 (3G): sprd_cproc.c as arch/arm/mach-sprd/cproc.c and drivers/sipc
+as arch/arm/mach-sprd/sipc/ (smsg message rings, smem pool, sbuf and sblock
+data channels, spipe character devices, seth network devices). The tty
+driver (stty.c) is left out, the stty_w devices come from spipe.
+
+cproc keeps the userspace interface of the vendor driver (/proc/cpw/modem,
+dsp, start, stop, status, wdtirq, mem), so the Spreadtrum userspace
+(modem_control, phoneserver) can run unchanged. Ported to proc_ops,
+wakeup sources instead of wakelocks, struct net_device and
+platform_driver of 7.3, iomem pointers for the rings, and function
+pointer tables with the types the callers use (kCFI).
+
+The IPI register block needs its clock (AON_APB EB0 bit 21) before the
+first SIPC access: without it the bus hangs. Samsung sets it in every
+board init, here it goes with the counter clock in sc7730.c.
+
+Device tree: sc7730-modem.dtsi (all nodes disabled, addresses from the
+SM-T561 trees: CP memory 0x88000000, IPI 0x402c0000, IRAM1 0x50000000,
+PMU 0x402b0000, smem 0x87800000), and sc7730-samsung-gtelwifi-modem.dts
+that enables it on the SM-T560 for tests: that tablet has the same chip
+and modem partitions, only no radio.
+
+Tested on the SM-T560 in the rescue system: MODEM and WDSP written to
+/proc/cpw, start: the core runs without a watchdog event, sends its
+IPIs, all channels report ready, rmnet0-2 appear, and AT on stty_w0-15
+answers OK; AT+CGMR returns the firmware version.
+
+Assisted-by: Claude Sonnet 5.5
+---
+ arch/arm/Kconfig.platforms                    |  21 +
+ arch/arm/boot/dts/unisoc/Makefile             |   3 +-
+ arch/arm/boot/dts/unisoc/sc7730-modem.dtsi    | 123 +++
+ .../unisoc/sc7730-samsung-gtelwifi-modem.dts  |  20 +
+ arch/arm/mach-sprd/Makefile                   |   2 +
+ arch/arm/mach-sprd/cproc.c                    | 411 +++++++++
+ arch/arm/mach-sprd/sc7730.c                   |   4 +-
+ arch/arm/mach-sprd/sipc/Makefile              |   2 +
+ arch/arm/mach-sprd/sipc/sblock.c              | 848 ++++++++++++++++++
+ arch/arm/mach-sprd/sipc/sblock.h              | 103 +++
+ arch/arm/mach-sprd/sipc/sbuf.c                | 696 ++++++++++++++
+ arch/arm/mach-sprd/sipc/sbuf.h                |  82 ++
+ arch/arm/mach-sprd/sipc/seth.c                | 548 +++++++++++
+ arch/arm/mach-sprd/sipc/seth.h                |  24 +
+ arch/arm/mach-sprd/sipc/sipc.c                | 389 ++++++++
+ arch/arm/mach-sprd/sipc/sipc.h                | 417 +++++++++
+ arch/arm/mach-sprd/sipc/sipc_priv.h           |  86 ++
+ arch/arm/mach-sprd/sipc/smem.c                | 180 ++++
+ arch/arm/mach-sprd/sipc/smsg.c                | 502 +++++++++++
+ arch/arm/mach-sprd/sipc/spipe.c               | 335 +++++++
+ arch/arm/mach-sprd/sipc/spipe.h               |  26 +
+ arch/arm/mach-sprd/sipc/stty.c                | 405 +++++++++
+ arch/arm/mach-sprd/sipc/stty.h                |  24 +
+ 23 files changed, 5249 insertions(+), 2 deletions(-)
+ create mode 100644 arch/arm/boot/dts/unisoc/sc7730-modem.dtsi
+ create mode 100644 arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi-modem.dts
+ create mode 100644 arch/arm/mach-sprd/cproc.c
+ create mode 100644 arch/arm/mach-sprd/sipc/Makefile
+ create mode 100755 arch/arm/mach-sprd/sipc/sblock.c
+ create mode 100755 arch/arm/mach-sprd/sipc/sblock.h
+ create mode 100755 arch/arm/mach-sprd/sipc/sbuf.c
+ create mode 100755 arch/arm/mach-sprd/sipc/sbuf.h
+ create mode 100755 arch/arm/mach-sprd/sipc/seth.c
+ create mode 100755 arch/arm/mach-sprd/sipc/seth.h
+ create mode 100755 arch/arm/mach-sprd/sipc/sipc.c
+ create mode 100755 arch/arm/mach-sprd/sipc/sipc.h
+ create mode 100755 arch/arm/mach-sprd/sipc/sipc_priv.h
+ create mode 100755 arch/arm/mach-sprd/sipc/smem.c
+ create mode 100755 arch/arm/mach-sprd/sipc/smsg.c
+ create mode 100755 arch/arm/mach-sprd/sipc/spipe.c
+ create mode 100755 arch/arm/mach-sprd/sipc/spipe.h
+ create mode 100755 arch/arm/mach-sprd/sipc/stty.c
+ create mode 100755 arch/arm/mach-sprd/sipc/stty.h
+
+diff --git a/arch/arm/Kconfig.platforms b/arch/arm/Kconfig.platforms
+index 3524da64c..9b8bd4693 100644
+--- a/arch/arm/Kconfig.platforms
++++ b/arch/arm/Kconfig.platforms
+@@ -249,6 +249,27 @@ config SPRD_SC7730_PM_DOMAINS
+ 	  Also programs the GPU core clock on power-up. Stop-gap until
+ 	  there are power domain and clock drivers for this SoC.
+ 
++config SPRD_CPROC
++	bool "SC7730 modem (CP) loader and control"
++	depends on ARCH_SPRD && OF
++	help
++	  Loads and starts the modem core (CP) of the SC7730 through
++	  /proc/cpw (modem, dsp, start, stop, status, wdtirq, mem), as the
++	  Samsung 3.10 kernel does, for the SM-T561 (3G) and for tests on
++	  the Wi-Fi model, which carries the same modem firmware. Ported
++	  from sprd_cproc.c of the Samsung kernel sources (GPL-2.0).
++
++config SPRD_SIPC
++	bool "Spreadtrum SIPC shared-memory IPC with the modem"
++	depends on ARCH_SPRD && OF
++	select NET
++	help
++	  Message rings (smsg), the shared memory pool (smem), data
++	  channels (sbuf, sblock) and the spipe, stty and seth devices
++	  between the application processor and the modem core of the
++	  SC7730 (SM-T561 3G). Ported from the Samsung 3.10 kernel sources
++	  (GPL-2.0).
++
+ config SPRD_SC2723_PMIC
+ 	bool "SC2723 PMIC regmap and interrupts (bring-up glue)"
+ 	depends on ARCH_SPRD && OF
+diff --git a/arch/arm/boot/dts/unisoc/Makefile b/arch/arm/boot/dts/unisoc/Makefile
+index e5115ed13..2053c8f72 100644
+--- a/arch/arm/boot/dts/unisoc/Makefile
++++ b/arch/arm/boot/dts/unisoc/Makefile
+@@ -3,4 +3,5 @@ dtb-$(CONFIG_ARCH_RDA) += \
+ 	rda8810pl-orangepi-2g-iot.dtb \
+ 	rda8810pl-orangepi-i96.dtb
+ dtb-$(CONFIG_ARCH_SPRD) += \
+-	sc7730-samsung-gtelwifi.dtb
++	sc7730-samsung-gtelwifi.dtb \
++	sc7730-samsung-gtelwifi-modem.dtb
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-modem.dtsi b/arch/arm/boot/dts/unisoc/sc7730-modem.dtsi
+new file mode 100644
+index 000000000..a3f44c69f
+--- /dev/null
++++ b/arch/arm/boot/dts/unisoc/sc7730-modem.dtsi
+@@ -0,0 +1,123 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Modem core (CP) of the SC7730 and its SIPC channels, for the boards that
++ * carry the modem (SM-T561) and for tests on the Wi-Fi model (same chip,
++ * same firmware layout). Everything is disabled; a board enables the nodes
++ * and reserves the memory (cp-modem, smem) itself.
++ *
++ * Addresses as in the SM-T561 device trees of the Samsung kernel sources:
++ * CP memory at 0x88000000 (modem image at +0x300000, DSP at +0x20000),
++ * shared memory pool at 0x87800000, smsg ring in the last page of the CP
++ * area. IPI registers 0x402c0000, IRAM1 0x50000000, PMU 0x402b0000.
++ */
++#include <dt-bindings/interrupt-controller/arm-gic.h>
++
++/ {
++	sipc: sipc {
++		compatible = "sprd,sipc";
++		reg = <0x87800000 0x180000>;		/* smem pool */
++		status = "disabled";
++		#address-cells = <1>;
++		#size-cells = <1>;
++		ranges;
++
++		sipc_cpw: sipc-w {
++			sprd,name = "sipc-w";
++			sprd,dst = <2>;
++			reg = <0x402c0000 0x1000>,	/* IPI registers */
++			      <0x89bff000 0x1000>;	/* smsg ring */
++			sprd,ap2cp = <0x0>;		/* offsets in the IPI block */
++			sprd,cp2ap = <0x4>;
++			sprd,trig = <0x01>;
++			sprd,clr = <0x01>;
++			interrupts = <GIC_SPI 68 IRQ_TYPE_LEVEL_HIGH>;
++		};
++	};
++
++	spipe-cpw {
++		compatible = "sprd,spipe";
++		status = "disabled";
++		sprd,name = "spipe_w";
++		sprd,dst = <2>;
++		sprd,channel = <4>;
++		sprd,ringnr = <11>;
++		sprd,size-rxbuf = <0x1000>;
++		sprd,size-txbuf = <0x1000>;
++	};
++
++	slog-cpw {
++		compatible = "sprd,spipe";
++		status = "disabled";
++		sprd,name = "slog_w";
++		sprd,dst = <2>;
++		sprd,channel = <5>;
++		sprd,ringnr = <1>;
++		sprd,size-rxbuf = <0x40000>;
++		sprd,size-txbuf = <0x8000>;
++	};
++
++	stty-cpw {
++		compatible = "sprd,spipe";
++		status = "disabled";
++		sprd,name = "stty_w";
++		sprd,dst = <2>;
++		sprd,channel = <6>;
++		sprd,ringnr = <32>;
++		sprd,size-rxbuf = <0x0800>;
++		sprd,size-txbuf = <0x0800>;
++	};
++
++	seth0-cpw {
++		compatible = "sprd,seth";
++		status = "disabled";
++		sprd,name = "rmnet0";
++		sprd,dst = <2>;
++		sprd,channel = <7>;
++		sprd,blknum = <128>;
++	};
++
++	seth1-cpw {
++		compatible = "sprd,seth";
++		status = "disabled";
++		sprd,name = "rmnet1";
++		sprd,dst = <2>;
++		sprd,channel = <8>;
++		sprd,blknum = <64>;
++	};
++
++	seth2-cpw {
++		compatible = "sprd,seth";
++		status = "disabled";
++		sprd,name = "rmnet2";
++		sprd,dst = <2>;
++		sprd,channel = <9>;
++		sprd,blknum = <64>;
++	};
++
++	scproc_cpw: scproc {
++		compatible = "sprd,scproc";
++		status = "disabled";
++		sprd,name = "cpw";
++		reg = <0x88000000 0x1c00000>,		/* CP memory */
++		      <0x50000000 0xc>,			/* IRAM1: boot routine */
++		      <0x402b0000 0x10000>;		/* PMU */
++		interrupts = <GIC_SPI 84 IRQ_TYPE_LEVEL_HIGH>;	/* CP watchdog */
++		/* <shut_down deep_sleep reset get_status> in the PMU */
++		sprd,ctrl-reg = <0x44 0x44 0xb0 0xbc>;
++		sprd,ctrl-mask = <0x02000000 0x10000000 0x01 0xf0000>;
++		/* ldr r0, [pc]; bx r0; modem image address */
++		sprd,iram-data = <0xe59f0000 0xe12fff10 0x88300000>;
++		#address-cells = <1>;
++		#size-cells = <1>;
++		ranges;
++
++		modem {
++			cproc,name = "modem";
++			reg = <0x88300000 0x800000>;
++		};
++		dsp {
++			cproc,name = "dsp";
++			reg = <0x88020000 0x220000>;
++		};
++	};
++};
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi-modem.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi-modem.dts
+new file mode 100644
+index 000000000..5fb88da2f
+--- /dev/null
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi-modem.dts
+@@ -0,0 +1,20 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * SM-T560 with the modem core enabled, for tests of the SIPC and cproc
++ * drivers: the Wi-Fi model has the same chip and the same modem
++ * partitions (MODEM, WDSP, wfixnv) as the 3G model, only no radio.
++ */
++#include "sc7730-samsung-gtelwifi.dts"
++#include "sc7730-modem.dtsi"
++
++&sipc { status = "okay"; };
++&scproc_cpw { status = "okay"; };
++
++/ {
++	spipe-cpw { status = "okay"; };
++	slog-cpw { status = "okay"; };
++	stty-cpw { status = "okay"; };
++	seth0-cpw { status = "okay"; };
++	seth1-cpw { status = "okay"; };
++	seth2-cpw { status = "okay"; };
++};
+diff --git a/arch/arm/mach-sprd/Makefile b/arch/arm/mach-sprd/Makefile
+index 978bbaf97..58ce11bef 100644
+--- a/arch/arm/mach-sprd/Makefile
++++ b/arch/arm/mach-sprd/Makefile
+@@ -15,3 +15,5 @@ obj-$(CONFIG_SPRD_SC2723_FGU)	+= sc2723-fgu.o
+ obj-$(CONFIG_SPRD_SC2723_PMIC)	+= sc2723-pmic.o
+ obj-$(CONFIG_SPRD_SC7730_PM_DOMAINS)	+= pm-domains.o
+ obj-$(CONFIG_HW_RANDOM)		+= crng-hwrng.o
++obj-$(CONFIG_SPRD_CPROC)		+= cproc.o
++obj-$(CONFIG_SPRD_SIPC)		+= sipc/
+diff --git a/arch/arm/mach-sprd/cproc.c b/arch/arm/mach-sprd/cproc.c
+new file mode 100644
+index 000000000..a7997a513
+--- /dev/null
++++ b/arch/arm/mach-sprd/cproc.c
+@@ -0,0 +1,411 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Modem core (CP) loader and control of the SC7730, ported from
++ * drivers/misc/sprd_cproc/sprd_cproc.c of Samsung's 3.10 kernel sources
++ * (Copyright (C) 2012 Spreadtrum Communications Inc., GPL-2.0).
++ *
++ * The /proc/<name> interface is the one the Spreadtrum userspace uses
++ * (modem_control): write the firmware images to "modem" and "dsp", write
++ * "start" to boot the core, read "wdtirq" to wait for its watchdog.
++ *
++ *   start    boots the core: copies a 3-word jump routine to IRAM1 that
++ *            branches to the modem image, then releases the core in the
++ *            PMU (clear force-shutdown, clear force-deep-sleep, pulse
++ *            reset)
++ *   stop     puts the core back into reset, deep sleep and shutdown
++ *   modem    firmware image window (written at the offset of the file)
++ *   dsp      DSP image window
++ *   mem      the whole CP memory, read only
++ *   status   "started", "stopped" or "wdtirq"
++ *   wdtirq   blocks until the CP watchdog fired, then returns "wdtirq"
++ *
++ * Device tree: see Documentation/devicetree/bindings/misc/sprd,scproc.yaml.
++ */
++#include <linux/delay.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/mod_devicetable.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++#include <linux/platform_device.h>
++#include <linux/poll.h>
++#include <linux/proc_fs.h>
++#include <linux/slab.h>
++#include <linux/uaccess.h>
++#include <linux/wait.h>
++
++enum { CTRL_SHUT_DOWN, CTRL_DEEP_SLEEP, CTRL_RESET, CTRL_STATUS, CTRL_NR };
++enum { ST_STARTED, ST_STOPPED, ST_WDTIRQ };
++static const char *const st_text[] = { "started\n", "stopped\n", "wdtirq\n" };
++
++#define IRAM_WORDS	3
++#define CHUNK		SZ_64K
++
++struct cproc_seg {
++	const char *name;
++	phys_addr_t base;
++	size_t size;
++};
++
++struct cproc {
++	struct device *dev;
++	const char *name;
++	phys_addr_t base;
++	size_t size;
++	phys_addr_t iram;
++	void __iomem *pmu;
++	u32 reg[CTRL_NR];
++	u32 mask[CTRL_NR];
++	u32 iram_data[IRAM_WORDS];
++	struct cproc_seg seg[2];	/* modem, dsp */
++	int status;
++	bool wdt;
++	wait_queue_head_t wait;
++	struct mutex lock;
++	struct proc_dir_entry *dir;
++};
++
++static void cp_pmu_set(struct cproc *c, int which)
++{
++	u32 v = readl(c->pmu + c->reg[which]);
++
++	writel(v | c->mask[which], c->pmu + c->reg[which]);
++}
++
++static void cp_pmu_clr(struct cproc *c, int which)
++{
++	u32 v = readl(c->pmu + c->reg[which]);
++
++	writel(v & ~c->mask[which], c->pmu + c->reg[which]);
++}
++
++static int cp_start(struct cproc *c)
++{
++	void __iomem *iram;
++	int i;
++
++	iram = ioremap(c->iram, 0x1000);
++	if (!iram)
++		return -ENOMEM;
++	for (i = 0; i < IRAM_WORDS; i++)
++		writel(c->iram_data[i], iram + 4 * i);
++	iounmap(iram);
++
++	cp_pmu_clr(c, CTRL_SHUT_DOWN);
++	msleep(50);
++	cp_pmu_clr(c, CTRL_DEEP_SLEEP);
++	msleep(50);
++	cp_pmu_set(c, CTRL_RESET);
++	msleep(200);
++	cp_pmu_clr(c, CTRL_RESET);
++	for (i = 0; i < 1000; i++) {
++		if (!(readl(c->pmu + c->reg[CTRL_RESET]) & c->mask[CTRL_RESET]))
++			break;
++		msleep(1);
++	}
++	if (i == 1000)
++		dev_warn(c->dev, "reset bit does not clear\n");
++	c->wdt = false;
++	c->status = ST_STARTED;
++	dev_info(c->dev, "%s started\n", c->name);
++	return 0;
++}
++
++static int cp_stop(struct cproc *c)
++{
++	int i;
++
++	/* wait until the core has gone to sleep (PMU 0xb4 bit 0) */
++	for (i = 0; i < 500; i++) {
++		if (readl(c->pmu + 0xb4) & 1)
++			break;
++		msleep(1);
++	}
++	if (i == 500)
++		dev_warn(c->dev, "core does not enter sleep, stopping anyway\n");
++	cp_pmu_set(c, CTRL_RESET);
++	cp_pmu_set(c, CTRL_DEEP_SLEEP);
++	cp_pmu_set(c, CTRL_SHUT_DOWN);
++	c->status = ST_STOPPED;
++	dev_info(c->dev, "%s stopped\n", c->name);
++	return 0;
++}
++
++static irqreturn_t cp_wdt_irq(int irq, void *data)
++{
++	struct cproc *c = data;
++
++	dev_err(c->dev, "%s watchdog fired\n", c->name);
++	c->wdt = true;
++	c->status = ST_WDTIRQ;
++	wake_up_interruptible_all(&c->wait);
++	return IRQ_HANDLED;
++}
++
++/* copy between user space and CP memory, a chunk at a time */
++static ssize_t cp_copy(phys_addr_t base, size_t size, char __user *ubuf,
++		       const char __user *cbuf, size_t count, loff_t *ppos)
++{
++	loff_t pos = *ppos;
++	size_t done = 0;
++	void *tmp;
++
++	if (pos >= size)
++		return 0;
++	count = min_t(size_t, count, size - pos);
++	tmp = kmalloc(CHUNK, GFP_KERNEL);
++	if (!tmp)
++		return -ENOMEM;
++	while (done < count) {
++		size_t n = min_t(size_t, CHUNK, count - done);
++		void __iomem *m = memremap(base + pos + done, n, MEMREMAP_WC);
++
++		if (!m) {
++			kfree(tmp);
++			return done ? done : -ENOMEM;
++		}
++		if (ubuf) {
++			memcpy_fromio(tmp, m, n);
++			if (copy_to_user(ubuf + done, tmp, n)) {
++				memunmap(m);
++				kfree(tmp);
++				return done ? done : -EFAULT;
++			}
++		} else {
++			if (copy_from_user(tmp, cbuf + done, n)) {
++				memunmap(m);
++				kfree(tmp);
++				return done ? done : -EFAULT;
++			}
++			memcpy_toio(m, tmp, n);
++		}
++		memunmap(m);
++		done += n;
++	}
++	kfree(tmp);
++	*ppos += done;
++	return done;
++}
++
++enum { P_START, P_STOP, P_MODEM, P_DSP, P_STATUS, P_WDTIRQ, P_MEM, P_NR };
++static const char *const pname[P_NR] = {
++	"start", "stop", "modem", "dsp", "status", "wdtirq", "mem"
++};
++
++struct cp_file {
++	struct cproc *c;
++	int which;
++};
++
++static ssize_t cp_read(struct file *f, char __user *buf, size_t count, loff_t *ppos)
++{
++	struct cp_file *pf = pde_data(file_inode(f));
++	struct cproc *c = pf->c;
++	const char *t;
++	size_t len;
++
++	switch (pf->which) {
++	case P_MEM:
++		return cp_copy(c->base, c->size, buf, NULL, count, ppos);
++	case P_STATUS:
++		t = st_text[c->status];
++		break;
++	case P_WDTIRQ:
++		if (wait_event_interruptible(c->wait, c->wdt))
++			return -ERESTARTSYS;
++		t = st_text[ST_WDTIRQ];
++		break;
++	default:
++		return -EINVAL;
++	}
++	len = strlen(t);
++	if (*ppos >= len)
++		return 0;
++	count = min(count, len - (size_t)*ppos);
++	if (copy_to_user(buf, t + *ppos, count))
++		return -EFAULT;
++	*ppos += count;
++	return count;
++}
++
++static ssize_t cp_write(struct file *f, const char __user *buf, size_t count, loff_t *ppos)
++{
++	struct cp_file *pf = pde_data(file_inode(f));
++	struct cproc *c = pf->c;
++	struct cproc_seg *s;
++	ssize_t ret;
++
++	mutex_lock(&c->lock);
++	switch (pf->which) {
++	case P_START:
++		ret = cp_start(c);
++		break;
++	case P_STOP:
++		ret = cp_stop(c);
++		break;
++	case P_MODEM:
++	case P_DSP:
++		s = &c->seg[pf->which == P_DSP];
++		ret = cp_copy(s->base, s->size, NULL, buf, count, ppos);
++		if (ret == 0 && *ppos >= s->size) {
++			*ppos += count;	/* past the end: pretend to have written it */
++			ret = count;
++		}
++		mutex_unlock(&c->lock);
++		return ret;
++	default:
++		ret = -EINVAL;
++	}
++	mutex_unlock(&c->lock);
++	return ret ? ret : count;
++}
++
++static loff_t cp_lseek(struct file *f, loff_t off, int whence)
++{
++	struct cp_file *pf = pde_data(file_inode(f));
++	loff_t new;
++
++	switch (whence) {
++	case SEEK_SET:
++		new = off;
++		break;
++	case SEEK_CUR:
++		new = f->f_pos + off;
++		break;
++	case SEEK_END:
++		if (pf->which != P_MEM)
++			return -EINVAL;
++		new = pf->c->size + off;
++		break;
++	default:
++		return -EINVAL;
++	}
++	if (new < 0)
++		return -EINVAL;
++	f->f_pos = new;
++	return new;
++}
++
++static __poll_t cp_poll(struct file *f, poll_table *wait)
++{
++	struct cp_file *pf = pde_data(file_inode(f));
++	struct cproc *c = pf->c;
++
++	if (pf->which != P_WDTIRQ)
++		return EPOLLERR;
++	poll_wait(f, &c->wait, wait);
++	return c->wdt ? EPOLLIN | EPOLLRDNORM : 0;
++}
++
++static const struct proc_ops cp_proc_ops = {
++	.proc_read	= cp_read,
++	.proc_write	= cp_write,
++	.proc_lseek	= cp_lseek,
++	.proc_poll	= cp_poll,
++};
++
++static int cp_parse_seg(struct device_node *np, struct cproc *c)
++{
++	struct device_node *ch;
++	int n = 0;
++
++	for_each_child_of_node(np, ch) {
++		struct resource res;
++		const char *name;
++
++		if (n >= 2 || of_property_read_string(ch, "cproc,name", &name) ||
++		    of_address_to_resource(ch, 0, &res)) {
++			of_node_put(ch);
++			return -EINVAL;
++		}
++		c->seg[n].name = name;
++		c->seg[n].base = res.start;
++		c->seg[n].size = resource_size(&res);
++		n++;
++	}
++	return n == 2 ? 0 : -EINVAL;
++}
++
++static int cproc_probe(struct platform_device *pdev)
++{
++	struct device_node *np = pdev->dev.of_node;
++	struct cproc *c;
++	struct resource res;
++	struct cp_file *files;
++	int irq, i, ret;
++
++	c = devm_kzalloc(&pdev->dev, sizeof(*c), GFP_KERNEL);
++	files = devm_kcalloc(&pdev->dev, P_NR, sizeof(*files), GFP_KERNEL);
++	if (!c || !files)
++		return -ENOMEM;
++	c->dev = &pdev->dev;
++	init_waitqueue_head(&c->wait);
++	mutex_init(&c->lock);
++	c->status = ST_STOPPED;
++
++	ret = of_property_read_string(np, "sprd,name", &c->name);
++	if (ret)
++		return ret;
++	ret = of_property_read_u32_array(np, "sprd,ctrl-reg", c->reg, CTRL_NR);
++	if (!ret)
++		ret = of_property_read_u32_array(np, "sprd,ctrl-mask", c->mask, CTRL_NR);
++	if (!ret)
++		ret = of_property_read_u32_array(np, "sprd,iram-data", c->iram_data, IRAM_WORDS);
++	if (ret)
++		return ret;
++	ret = cp_parse_seg(np, c);
++	if (ret)
++		return dev_err_probe(&pdev->dev, ret, "need a modem and a dsp child node\n");
++
++	if (of_address_to_resource(np, 0, &res))
++		return -EINVAL;
++	c->base = res.start;
++	c->size = resource_size(&res);
++	if (of_address_to_resource(np, 1, &res))
++		return -EINVAL;
++	c->iram = res.start;
++	c->pmu = devm_platform_ioremap_resource(pdev, 2);
++	if (IS_ERR(c->pmu))
++		return PTR_ERR(c->pmu);
++
++	irq = platform_get_irq(pdev, 0);
++	if (irq < 0)
++		return irq;
++	ret = devm_request_irq(&pdev->dev, irq, cp_wdt_irq, 0, "cpw", c);
++	if (ret)
++		return ret;
++
++	c->dir = proc_mkdir(c->name, NULL);
++	if (!c->dir)
++		return -ENOMEM;
++	for (i = 0; i < P_NR; i++) {
++		files[i].c = c;
++		files[i].which = i;
++		if (!proc_create_data(pname[i], 0200, c->dir, &cp_proc_ops, &files[i])) {
++			remove_proc_subtree(c->name, NULL);
++			return -ENOMEM;
++		}
++	}
++	platform_set_drvdata(pdev, c);
++	dev_info(&pdev->dev, "%s: memory %pa+%zx, modem %pa+%zx, dsp %pa+%zx, /proc/%s\n",
++		 c->name, &c->base, c->size, &c->seg[0].base, c->seg[0].size,
++		 &c->seg[1].base, c->seg[1].size, c->name);
++	return 0;
++}
++
++static const struct of_device_id cproc_of_match[] = {
++	{ .compatible = "sprd,scproc" },
++	{ }
++};
++
++static struct platform_driver cproc_driver = {
++	.driver = {
++		.name = "sprd-cproc",
++		.of_match_table = cproc_of_match,
++		.suppress_bind_attrs = true,
++	},
++	.probe = cproc_probe,
++};
++builtin_platform_driver(cproc_driver);
+diff --git a/arch/arm/mach-sprd/sc7730.c b/arch/arm/mach-sprd/sc7730.c
+index da87073eb..68bd88d0a 100644
+--- a/arch/arm/mach-sprd/sc7730.c
++++ b/arch/arm/mach-sprd/sc7730.c
+@@ -62,6 +62,7 @@
+ #define AON_APB_PHYS		0x402e0000
+ #define AON_APB_EB0		0x00
+ #define AON_EB0_CA7_TS1		BIT(29)
++#define AON_EB0_IPI		BIT(21)	/* IPI registers: AP <-> modem interrupts */
+ #define AON_APB_TS_CFG		0x28
+ #define TS_CFG_CSYSREQ		(BIT(8) | BIT(10) | BIT(12))
+ #define AON_CLK_CA7_TS_CFG	0x402d004c
+@@ -96,7 +97,8 @@ static void __init sc7730_counter_init(void)
+ 	}
+ 
+ 	if (aon && clk && ts1) {
+-		writel_relaxed(readl_relaxed(aon + AON_APB_EB0) | AON_EB0_CA7_TS1,
++		/* the IPI block hangs the bus when its clock is off (SIPC, modem) */
++		writel_relaxed(readl_relaxed(aon + AON_APB_EB0) | AON_EB0_CA7_TS1 | AON_EB0_IPI,
+ 			       aon + AON_APB_EB0);
+ 		writel_relaxed((readl_relaxed(clk) & ~3) | CA7_TS_SEL_26M, clk);
+ 		writel_relaxed(readl_relaxed(aon + AON_APB_TS_CFG) | TS_CFG_CSYSREQ,
+diff --git a/arch/arm/mach-sprd/sipc/Makefile b/arch/arm/mach-sprd/sipc/Makefile
+new file mode 100644
+index 000000000..ad6b31917
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/Makefile
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: GPL-2.0-only
++obj-$(CONFIG_SPRD_SIPC)	+= sipc.o smsg.o smem.o sbuf.o sblock.o spipe.o seth.o
+diff --git a/arch/arm/mach-sprd/sipc/sblock.c b/arch/arm/mach-sprd/sipc/sblock.c
+new file mode 100755
+index 000000000..c5b0ac291
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/sblock.c
+@@ -0,0 +1,848 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/wait.h>
++#include <linux/interrupt.h>
++#include <linux/sched.h>
++#include <linux/kthread.h>
++#include <linux/delay.h>
++#include <linux/slab.h>
++#include <linux/io.h>
++#include <linux/list.h>
++#include <linux/spinlock.h>
++#include <asm/uaccess.h>
++#include <linux/debugfs.h>
++#include <linux/seq_file.h>
++#include <linux/log2.h>
++
++#include "sipc.h"
++#include "sblock.h"
++
++static struct sblock_mgr *sblocks[SIPC_ID_NR][SMSG_CH_NR];
++
++static inline uint32_t sblock_get_index(uint32_t x, uint32_t y)
++{
++	return (x / y);
++}
++
++static inline uint32_t sblock_get_ringpos(uint32_t x, uint32_t y)
++{
++	return is_power_of_2(y) ? (x & (y - 1)) : (x % y);
++}
++
++void sblock_put(uint8_t dst, uint8_t channel, struct sblock *blk)
++{
++	struct sblock_mgr *sblock = (struct sblock_mgr *)sblocks[dst][channel];
++	struct sblock_ring *ring = NULL;
++	volatile struct sblock_ring_header *poolhd = NULL;
++	unsigned long flags;
++	int txpos;
++	int index;
++
++	if (!sblock) {
++		return;
++	}
++
++	ring = sblock->ring;
++	poolhd = (volatile struct sblock_ring_header *)(&ring->header->pool);
++
++	spin_lock_irqsave(&ring->p_txlock, flags);
++	txpos = sblock_get_ringpos(poolhd->txblk_rdptr - 1, poolhd->txblk_count);
++	ring->r_txblks[txpos].addr = blk->addr - sblock->smem_virt + sblock->smem_addr;
++	ring->r_txblks[txpos].length = poolhd->txblk_size;
++	poolhd->txblk_rdptr = poolhd->txblk_rdptr - 1;
++	if ((int)(poolhd->txblk_wrptr - poolhd->txblk_rdptr) == 1) {
++		wake_up_interruptible_all(&(ring->getwait));
++	}
++	index = sblock_get_index((blk->addr - ring->txblk_virt), sblock->txblksz);
++	ring->txrecord[index] = SBLOCK_BLK_STATE_DONE;
++
++	spin_unlock_irqrestore(&ring->p_txlock, flags);
++}
++
++static int sblock_recover(uint8_t dst, uint8_t channel)
++{
++	struct sblock_mgr *sblock = (struct sblock_mgr *)sblocks[dst][channel];
++	struct sblock_ring *ring = NULL;
++	volatile struct sblock_ring_header *ringhd = NULL;
++	volatile struct sblock_ring_header *poolhd = NULL;
++	unsigned long pflags, qflags;
++	int i, j;
++
++	if (!sblock) {
++		return -ENODEV;
++	}
++
++	ring = sblock->ring;
++	ringhd = (volatile struct sblock_ring_header *)(&ring->header->ring);
++	poolhd = (volatile struct sblock_ring_header *)(&ring->header->pool);
++
++	sblock->state = SBLOCK_STATE_IDLE;
++	wake_up_interruptible_all(&ring->getwait);
++	wake_up_interruptible_all(&ring->recvwait);
++
++	spin_lock_irqsave(&ring->r_txlock, pflags);
++	/* clean txblks ring */
++	ringhd->txblk_wrptr = ringhd->txblk_rdptr;
++
++	spin_lock_irqsave(&ring->p_txlock, qflags);
++	/* recover txblks pool */
++	poolhd->txblk_rdptr = poolhd->txblk_wrptr;
++	for (i = 0, j = 0; i < poolhd->txblk_count; i++) {
++		if (ring->txrecord[i] == SBLOCK_BLK_STATE_DONE) {
++			ring->p_txblks[j].addr = i * sblock->txblksz + poolhd->txblk_addr;
++			ring->p_txblks[j].length = sblock->txblksz;
++			poolhd->txblk_wrptr = poolhd->txblk_wrptr + 1;
++			j++;
++		}
++	}
++	spin_unlock_irqrestore(&ring->p_txlock, qflags);
++	spin_unlock_irqrestore(&ring->r_txlock, pflags);
++
++
++	spin_lock_irqsave(&ring->r_rxlock, pflags);
++	/* clean rxblks ring */
++	ringhd->rxblk_rdptr = ringhd->rxblk_wrptr;
++
++	spin_lock_irqsave(&ring->p_rxlock, qflags);
++	/* recover rxblks pool */
++	poolhd->rxblk_wrptr = poolhd->rxblk_rdptr;
++	for (i = 0, j = 0; i < poolhd->rxblk_count; i++) {
++		if (ring->rxrecord[i] == SBLOCK_BLK_STATE_DONE) {
++			ring->p_rxblks[j].addr = i * sblock->rxblksz + poolhd->rxblk_addr;
++			ring->p_rxblks[j].length = sblock->rxblksz;
++			poolhd->rxblk_wrptr = poolhd->rxblk_wrptr + 1;
++			j++;
++		}
++	}
++	spin_unlock_irqrestore(&ring->p_rxlock, qflags);
++	spin_unlock_irqrestore(&ring->r_rxlock, pflags);
++
++	return 0;
++}
++
++static int sblock_thread(void *data)
++{
++	struct sblock_mgr *sblock = data;
++	struct smsg mcmd, mrecv;
++	int rval;
++	int recovery = 0;
++	struct sched_param param = {.sched_priority = 90};
++
++	/*set the thread as a real time thread, and its priority is 90*/
++	sched_setscheduler(current, SCHED_RR, &param);
++
++	/* since the channel open may hang, we call it in the sblock thread */
++	rval = smsg_ch_open(sblock->dst, sblock->channel, -1);
++	if (rval != 0) {
++		printk(KERN_ERR "Failed to open channel %d\n", sblock->channel);
++		/* assign NULL to thread poniter as failed to open channel */
++		sblock->thread = NULL;
++		return rval;
++	}
++
++	/* handle the sblock events */
++	while (!kthread_should_stop()) {
++
++		/* monitor sblock recv smsg */
++		smsg_set(&mrecv, sblock->channel, 0, 0, 0);
++		rval = smsg_recv(sblock->dst, &mrecv, -1);
++		if (rval == -EIO || rval == -ENODEV) {
++		/* channel state is FREE */
++			msleep(5);
++			continue;
++		}
++
++		pr_debug("sblock thread recv msg: dst=%d, channel=%d, "
++				"type=%d, flag=0x%04x, value=0x%08x\n",
++				sblock->dst, sblock->channel,
++				mrecv.type, mrecv.flag, mrecv.value);
++
++		switch (mrecv.type) {
++		case SMSG_TYPE_OPEN:
++			/* handle channel recovery */
++			if (recovery) {
++				if (sblock->handler) {
++					sblock->handler(SBLOCK_NOTIFY_CLOSE, sblock->data);
++				}
++				sblock_recover(sblock->dst, sblock->channel);
++			}
++			smsg_open_ack(sblock->dst, sblock->channel);
++			break;
++		case SMSG_TYPE_CLOSE:
++			/* handle channel recovery */
++			smsg_close_ack(sblock->dst, sblock->channel);
++			if (sblock->handler) {
++				sblock->handler(SBLOCK_NOTIFY_CLOSE, sblock->data);
++			}
++			sblock->state = SBLOCK_STATE_IDLE;
++			break;
++		case SMSG_TYPE_CMD:
++			/* respond cmd done for sblock init */
++			WARN_ON(mrecv.flag != SMSG_CMD_SBLOCK_INIT);
++			smsg_set(&mcmd, sblock->channel, SMSG_TYPE_DONE,
++					SMSG_DONE_SBLOCK_INIT, sblock->smem_addr);
++			smsg_send(sblock->dst, &mcmd, -1);
++			if (sblock->handler) {
++				sblock->handler(SBLOCK_NOTIFY_OPEN, sblock->data);
++			}
++			sblock->state = SBLOCK_STATE_READY;
++			pr_info("sblock-%d-%d is ready!\n", sblock->dst, sblock->channel);
++			recovery = 1;
++			break;
++		case SMSG_TYPE_EVENT:
++			/* handle sblock send/release events */
++			switch (mrecv.flag) {
++			case SMSG_EVENT_SBLOCK_SEND:
++				wake_up_interruptible_all(&sblock->ring->recvwait);
++				if (sblock->handler) {
++					sblock->handler(SBLOCK_NOTIFY_RECV, sblock->data);
++				}
++				break;
++			case SMSG_EVENT_SBLOCK_RELEASE:
++				wake_up_interruptible_all(&(sblock->ring->getwait));
++				if (sblock->handler) {
++					sblock->handler(SBLOCK_NOTIFY_GET, sblock->data);
++				}
++				break;
++			default:
++				rval = 1;
++				break;
++			}
++			break;
++		default:
++			rval = 1;
++			break;
++		};
++		if (rval) {
++			printk(KERN_WARNING "non-handled sblock msg: %d-%d, %d, %d, %d\n",
++					sblock->dst, sblock->channel,
++					mrecv.type, mrecv.flag, mrecv.value);
++			rval = 0;
++		}
++	}
++
++	printk(KERN_WARNING "sblock %d-%d thread stop", sblock->dst, sblock->channel);
++	return rval;
++}
++
++int sblock_create(uint8_t dst, uint8_t channel,
++		uint32_t txblocknum, uint32_t txblocksize,
++		uint32_t rxblocknum, uint32_t rxblocksize)
++{
++	struct sblock_mgr *sblock = NULL;
++	volatile struct sblock_ring_header *ringhd = NULL;
++	volatile struct sblock_ring_header *poolhd = NULL;
++	uint32_t hsize;
++	int i, result;
++
++	sblock = kzalloc(sizeof(struct sblock_mgr) , GFP_KERNEL);
++	if (!sblock) {
++		return -ENOMEM;
++	}
++
++	sblock->state = SBLOCK_STATE_IDLE;
++	sblock->dst = dst;
++	sblock->channel = channel;
++	sblock->txblksz = txblocksize;
++	sblock->rxblksz = rxblocksize;
++	sblock->txblknum = txblocknum;
++	sblock->rxblknum = rxblocknum;
++
++
++	/* allocate smem */
++	hsize = sizeof(struct sblock_header);
++	sblock->smem_size = hsize +						/* for header*/
++		txblocknum * txblocksize + rxblocknum * rxblocksize + 		/* for blks */
++		(txblocknum + rxblocknum) * sizeof(struct sblock_blks) + 	/* for ring*/
++		(txblocknum + rxblocknum) * sizeof(struct sblock_blks); 	/* for pool*/
++
++	sblock->smem_addr = smem_alloc(sblock->smem_size);
++	if (!sblock->smem_addr) {
++		printk(KERN_ERR "Failed to allocate smem for sblock\n");
++		kfree(sblock);
++		return -ENOMEM;
++	}
++	sblock->smem_virt = ioremap(sblock->smem_addr, sblock->smem_size);
++	if (!sblock->smem_virt) {
++		printk(KERN_ERR "Failed to map smem for sblock\n");
++		smem_free(sblock->smem_addr, sblock->smem_size);
++		kfree(sblock);
++		return -EFAULT;
++	}
++
++	/* initialize ring and header */
++	sblock->ring = kzalloc(sizeof(struct sblock_ring), GFP_KERNEL);
++	if (!sblock->ring) {
++		printk(KERN_ERR "Failed to allocate ring for sblock\n");
++		iounmap(sblock->smem_virt);
++		smem_free(sblock->smem_addr, sblock->smem_size);
++		kfree(sblock);
++		return -ENOMEM;
++	}
++	ringhd = (volatile struct sblock_ring_header *)(sblock->smem_virt);
++	ringhd->txblk_addr = sblock->smem_addr + hsize;
++	ringhd->txblk_count = txblocknum;
++	ringhd->txblk_size = txblocksize;
++	ringhd->txblk_rdptr = 0;
++	ringhd->txblk_wrptr = 0;
++	ringhd->txblk_blks = sblock->smem_addr + hsize +
++		txblocknum * txblocksize + rxblocknum * rxblocksize;
++	ringhd->rxblk_addr = ringhd->txblk_addr + txblocknum * txblocksize;
++	ringhd->rxblk_count = rxblocknum;
++	ringhd->rxblk_size = rxblocksize;
++	ringhd->rxblk_rdptr = 0;
++	ringhd->rxblk_wrptr = 0;
++	ringhd->rxblk_blks = ringhd->txblk_blks + txblocknum * sizeof(struct sblock_blks);
++
++	poolhd = (volatile struct sblock_ring_header *)(sblock->smem_virt + sizeof(struct sblock_ring_header));
++	poolhd->txblk_addr = sblock->smem_addr + hsize;
++	poolhd->txblk_count = txblocknum;
++	poolhd->txblk_size = txblocksize;
++	poolhd->txblk_rdptr = 0;
++	poolhd->txblk_wrptr = 0;
++	poolhd->txblk_blks = ringhd->rxblk_blks + rxblocknum * sizeof(struct sblock_blks);
++	poolhd->rxblk_addr = ringhd->txblk_addr + txblocknum * txblocksize;
++	poolhd->rxblk_count = rxblocknum;
++	poolhd->rxblk_size = rxblocksize;
++	poolhd->rxblk_rdptr = 0;
++	poolhd->rxblk_wrptr = 0;
++	poolhd->rxblk_blks = poolhd->txblk_blks + txblocknum * sizeof(struct sblock_blks);
++
++	sblock->ring->txrecord = kzalloc(sizeof(int) * txblocknum, GFP_KERNEL);
++	if (!sblock->ring->txrecord) {
++		printk(KERN_ERR "Failed to allocate memory for txrecord\n");
++		iounmap(sblock->smem_virt);
++		smem_free(sblock->smem_addr, sblock->smem_size);
++		kfree(sblock->ring);
++		kfree(sblock);
++		return -ENOMEM;
++	}
++
++	sblock->ring->rxrecord = kzalloc(sizeof(int) * rxblocknum, GFP_KERNEL);
++	if (!sblock->ring->rxrecord) {
++		printk(KERN_ERR "Failed to allocate memory for rxrecord\n");
++		iounmap(sblock->smem_virt);
++		smem_free(sblock->smem_addr, sblock->smem_size);
++		kfree(sblock->ring->txrecord);
++		kfree(sblock->ring);
++		kfree(sblock);
++		return -ENOMEM;
++	}
++
++	sblock->ring->header = sblock->smem_virt;
++	sblock->ring->txblk_virt = sblock->smem_virt +
++		(ringhd->txblk_addr - sblock->smem_addr);
++	sblock->ring->r_txblks = sblock->smem_virt +
++		(ringhd->txblk_blks - sblock->smem_addr);
++	sblock->ring->rxblk_virt = sblock->smem_virt +
++		(ringhd->rxblk_addr - sblock->smem_addr);
++	sblock->ring->r_rxblks = sblock->smem_virt +
++		(ringhd->rxblk_blks - sblock->smem_addr);
++	sblock->ring->p_txblks = sblock->smem_virt +
++		(poolhd->txblk_blks - sblock->smem_addr);
++	sblock->ring->p_rxblks = sblock->smem_virt +
++		(poolhd->rxblk_blks - sblock->smem_addr);
++
++
++	for (i = 0; i < txblocknum; i++) {
++		sblock->ring->p_txblks[i].addr = poolhd->txblk_addr + i * txblocksize;
++		sblock->ring->p_txblks[i].length = txblocksize;
++		sblock->ring->txrecord[i] = SBLOCK_BLK_STATE_DONE;
++		poolhd->txblk_wrptr++;
++	}
++	for (i = 0; i < rxblocknum; i++) {
++		sblock->ring->p_rxblks[i].addr = poolhd->rxblk_addr + i * rxblocksize;
++		sblock->ring->p_rxblks[i].length = rxblocksize;
++		sblock->ring->rxrecord[i] = SBLOCK_BLK_STATE_DONE;
++		poolhd->rxblk_wrptr++;
++	}
++
++	init_waitqueue_head(&sblock->ring->getwait);
++	init_waitqueue_head(&sblock->ring->recvwait);
++	spin_lock_init(&sblock->ring->r_txlock);
++	spin_lock_init(&sblock->ring->r_rxlock);
++	spin_lock_init(&sblock->ring->p_txlock);
++	spin_lock_init(&sblock->ring->p_rxlock);
++
++	sblock->thread = kthread_create(sblock_thread, sblock,
++			"sblock-%d-%d", dst, channel);
++	if (IS_ERR(sblock->thread)) {
++		printk(KERN_ERR "Failed to create kthread: sblock-%d-%d\n", dst, channel);
++		iounmap(sblock->smem_virt);
++		smem_free(sblock->smem_addr, sblock->smem_size);
++		kfree(sblock->ring->txrecord);
++		kfree(sblock->ring->rxrecord);
++		kfree(sblock->ring);
++		result = PTR_ERR(sblock->thread);
++		kfree(sblock);
++		return result;
++	}
++
++	sblocks[dst][channel]=sblock;
++	wake_up_process(sblock->thread);
++
++	return 0;
++}
++
++void sblock_destroy(uint8_t dst, uint8_t channel)
++{
++	struct sblock_mgr *sblock = sblocks[dst][channel];
++
++	if (sblock == NULL) {
++		return;
++	}
++
++	sblock->state = SBLOCK_STATE_IDLE;
++	smsg_ch_close(dst, channel, -1);
++
++	/* stop sblock thread if it's created successfully and still alive */
++	if (!IS_ERR_OR_NULL(sblock->thread)) {
++		kthread_stop(sblock->thread);
++	}
++
++	if (sblock->ring) {
++		wake_up_interruptible_all(&sblock->ring->recvwait);
++		wake_up_interruptible_all(&sblock->ring->getwait);
++		if (sblock->ring->txrecord) {
++			kfree(sblock->ring->txrecord);
++		}
++		if (sblock->ring->rxrecord) {
++			kfree(sblock->ring->rxrecord);
++		}
++		kfree(sblock->ring);
++	}
++	if (sblock->smem_virt) {
++		iounmap(sblock->smem_virt);
++	}
++	smem_free(sblock->smem_addr, sblock->smem_size);
++	kfree(sblock);
++
++	sblocks[dst][channel]=NULL;
++}
++
++int sblock_register_notifier(uint8_t dst, uint8_t channel,
++		void (*handler)(int event, void *data), void *data)
++{
++	struct sblock_mgr *sblock = sblocks[dst][channel];
++
++	if (!sblock) {
++		printk(KERN_ERR "sblock-%d-%d not ready!\n", dst, channel);
++		return -ENODEV;
++	}
++#ifndef CONFIG_SIPC_WCN
++	if (sblock->handler) {
++		printk(KERN_ERR "sblock handler already registered\n");
++		return -EBUSY;
++	}
++#endif
++	sblock->handler = handler;
++	sblock->data = data;
++
++	return 0;
++}
++
++int sblock_get(uint8_t dst, uint8_t channel, struct sblock *blk, int timeout)
++{
++	struct sblock_mgr *sblock = (struct sblock_mgr *)sblocks[dst][channel];
++	struct sblock_ring *ring = NULL;
++	volatile struct sblock_ring_header *ringhd = NULL;
++	volatile struct sblock_ring_header *poolhd = NULL;
++	int txpos, index;
++	int rval = 0;
++	unsigned long flags;
++
++	if (!sblock || sblock->state != SBLOCK_STATE_READY) {
++		printk(KERN_ERR "sblock-%d-%d not ready!\n", dst, channel);
++		return sblock ? -EIO : -ENODEV;
++	}
++
++	ring = sblock->ring;
++	ringhd = (volatile struct sblock_ring_header *)(&ring->header->ring);
++	poolhd = (volatile struct sblock_ring_header *)(&ring->header->pool);
++
++	if (poolhd->txblk_rdptr == poolhd->txblk_wrptr) {
++		if (timeout == 0) {
++			/* no wait */
++			pr_debug("sblock_get %d-%d is empty!\n",
++				dst, channel);
++			rval = -ENODATA;
++		} else if (timeout < 0) {
++			/* wait forever */
++			rval = wait_event_interruptible(ring->getwait,
++					poolhd->txblk_rdptr != poolhd->txblk_wrptr ||
++					sblock->state == SBLOCK_STATE_IDLE);
++			if (rval < 0) {
++				printk(KERN_WARNING "sblock_get wait interrupted!\n");
++			}
++
++			if (sblock->state == SBLOCK_STATE_IDLE) {
++				printk(KERN_ERR "sblock_get sblock state is idle!\n");
++				rval = -EIO;
++			}
++		} else {
++			/* wait timeout */
++			rval = wait_event_interruptible_timeout(ring->getwait,
++					poolhd->txblk_rdptr != poolhd->txblk_wrptr ||
++					sblock == SBLOCK_STATE_IDLE,
++					timeout);
++			if (rval < 0) {
++				printk(KERN_WARNING "sblock_get wait interrupted!\n");
++			} else if (rval == 0) {
++				printk(KERN_WARNING "sblock_get wait timeout!\n");
++				rval = -ETIME;
++			}
++
++			if(sblock->state == SBLOCK_STATE_IDLE) {
++				printk(KERN_ERR "sblock_get sblock state is idle!\n");
++				rval = -EIO;
++			}
++		}
++	}
++
++	if (rval < 0) {
++		return rval;
++	}
++
++	/* multi-gotter may cause got failure */
++	spin_lock_irqsave(&ring->p_txlock, flags);
++	if (poolhd->txblk_rdptr != poolhd->txblk_wrptr &&
++			sblock->state == SBLOCK_STATE_READY) {
++		txpos = sblock_get_ringpos(poolhd->txblk_rdptr, poolhd->txblk_count);
++		blk->addr = sblock->smem_virt + (ring->p_txblks[txpos].addr - sblock->smem_addr);
++		blk->length = poolhd->txblk_size;
++		poolhd->txblk_rdptr = poolhd->txblk_rdptr + 1;
++		index = sblock_get_index((blk->addr - ring->txblk_virt), sblock->txblksz);
++		ring->txrecord[index] = SBLOCK_BLK_STATE_PENDING;
++	} else {
++		rval = sblock->state == SBLOCK_STATE_READY ? -EAGAIN : -EIO;
++	}
++	spin_unlock_irqrestore(&ring->p_txlock, flags);
++
++	return rval;
++}
++
++static int sblock_send_ex(uint8_t dst, uint8_t channel, struct sblock *blk, bool yell)
++{
++	struct sblock_mgr *sblock = (struct sblock_mgr *)sblocks[dst][channel];
++	struct sblock_ring *ring;
++	volatile struct sblock_ring_header *ringhd;
++	struct smsg mevt;
++	int txpos, index;
++	int rval = 0;
++	unsigned long flags;
++
++	if (!sblock || sblock->state != SBLOCK_STATE_READY) {
++		printk(KERN_ERR "sblock-%d-%d not ready!\n", dst, channel);
++		return sblock ? -EIO : -ENODEV;
++	}
++
++	pr_debug("sblock_send: dst=%d, channel=%d, addr=%p, len=%d\n",
++			dst, channel, blk->addr, blk->length);
++
++	ring = sblock->ring;
++	ringhd = (volatile struct sblock_ring_header *)(&ring->header->ring);
++
++	spin_lock_irqsave(&ring->r_txlock, flags);
++
++	txpos = sblock_get_ringpos(ringhd->txblk_wrptr, ringhd->txblk_count);
++	ring->r_txblks[txpos].addr = blk->addr - sblock->smem_virt + sblock->smem_addr;
++	ring->r_txblks[txpos].length = blk->length;
++	pr_debug("sblock_send: channel=%d, wrptr=%d, txpos=%d, addr=%x\n",
++			channel, ringhd->txblk_wrptr, txpos, ring->r_txblks[txpos].addr);
++	ringhd->txblk_wrptr = ringhd->txblk_wrptr + 1;
++	if (yell && sblock->state == SBLOCK_STATE_READY) {
++		smsg_set(&mevt, channel, SMSG_TYPE_EVENT, SMSG_EVENT_SBLOCK_SEND, 0);
++		rval = smsg_send(dst, &mevt, 0);
++	}
++	index = sblock_get_index((blk->addr - ring->txblk_virt), sblock->txblksz);
++	ring->txrecord[index] = SBLOCK_BLK_STATE_DONE;
++
++	spin_unlock_irqrestore(&ring->r_txlock, flags);
++
++	return rval ;
++}
++
++int sblock_send(uint8_t dst, uint8_t channel, struct sblock *blk)
++{
++	return sblock_send_ex(dst, channel, blk, true);
++}
++
++int sblock_send_prepare(uint8_t dst, uint8_t channel, struct sblock *blk)
++{
++	return sblock_send_ex(dst, channel, blk, false);
++}
++
++int sblock_send_finish(uint8_t dst, uint8_t channel)
++{
++	struct sblock_mgr *sblock = (struct sblock_mgr *)sblocks[dst][channel];
++	struct sblock_ring *ring;
++	volatile struct sblock_ring_header *ringhd;
++	struct smsg mevt;
++	int rval = 0;
++
++	if (!sblock || sblock->state != SBLOCK_STATE_READY) {
++		printk(KERN_ERR "sblock-%d-%d not ready!\n", dst, channel);
++		return sblock ? -EIO : -ENODEV;
++	}
++
++	ring = sblock->ring;
++	ringhd = (volatile struct sblock_ring_header *)(&ring->header->ring);
++
++	if (ringhd->txblk_wrptr != ringhd->txblk_rdptr) {
++		smsg_set(&mevt, channel, SMSG_TYPE_EVENT, SMSG_EVENT_SBLOCK_SEND, 0);
++		rval = smsg_send(dst, &mevt, 0);
++	}
++
++	return rval;
++}
++
++int sblock_receive(uint8_t dst, uint8_t channel, struct sblock *blk, int timeout)
++{
++	struct sblock_mgr *sblock = sblocks[dst][channel];
++	struct sblock_ring *ring;
++	volatile struct sblock_ring_header *ringhd;
++	int rxpos, index, rval = 0;
++	unsigned long flags;
++
++	if (!sblock || sblock->state != SBLOCK_STATE_READY) {
++		printk(KERN_ERR "sblock-%d-%d not ready!\n", dst, channel);
++		return sblock ? -EIO : -ENODEV;
++	}
++
++	ring = sblock->ring;
++	ringhd = (volatile struct sblock_ring_header *)(&ring->header->ring);
++
++	pr_debug("sblock_receive: dst=%d, channel=%d, timeout=%d\n",
++			dst, channel, timeout);
++	pr_debug("sblock_receive: channel=%d, wrptr=%d, rdptr=%d",
++			channel, ringhd->rxblk_wrptr, ringhd->rxblk_rdptr);
++
++	if (ringhd->rxblk_wrptr == ringhd->rxblk_rdptr) {
++		if (timeout == 0) {
++			/* no wait */
++			pr_debug("sblock_receive %d-%d is empty!\n",
++				dst, channel);
++			rval = -ENODATA;
++		} else if (timeout < 0) {
++			/* wait forever */
++			rval = wait_event_interruptible(ring->recvwait,
++				ringhd->rxblk_wrptr != ringhd->rxblk_rdptr);
++			if (rval < 0) {
++				printk(KERN_WARNING "sblock_receive wait interrupted!\n");
++			}
++
++			if (sblock->state == SBLOCK_STATE_IDLE) {
++				printk(KERN_ERR "sblock_receive sblock state is idle!\n");
++				rval = -EIO;
++			}
++
++		} else {
++			/* wait timeout */
++			rval = wait_event_interruptible_timeout(ring->recvwait,
++				ringhd->rxblk_wrptr != ringhd->rxblk_rdptr, timeout);
++			if (rval < 0) {
++				printk(KERN_WARNING "sblock_receive wait interrupted!\n");
++			} else if (rval == 0) {
++				printk(KERN_WARNING "sblock_receive wait timeout!\n");
++				rval = -ETIME;
++			}
++
++			if (sblock->state == SBLOCK_STATE_IDLE) {
++				printk(KERN_ERR "sblock_receive sblock state is idle!\n");
++				rval = -EIO;
++			}
++		}
++	}
++
++	if (rval < 0) {
++		return rval;
++	}
++
++	/* multi-receiver may cause recv failure */
++	spin_lock_irqsave(&ring->r_rxlock, flags);
++
++	if (ringhd->rxblk_wrptr != ringhd->rxblk_rdptr &&
++			sblock->state == SBLOCK_STATE_READY) {
++		rxpos = sblock_get_ringpos(ringhd->rxblk_rdptr, ringhd->rxblk_count);
++		blk->addr = ring->r_rxblks[rxpos].addr - sblock->smem_addr + sblock->smem_virt;
++		blk->length = ring->r_rxblks[rxpos].length;
++		ringhd->rxblk_rdptr = ringhd->rxblk_rdptr + 1;
++		pr_debug("sblock_receive: channel=%d, rxpos=%d, addr=%p, len=%d\n",
++			channel, rxpos, blk->addr, blk->length);
++		index = sblock_get_index((blk->addr - ring->rxblk_virt), sblock->rxblksz);
++		ring->rxrecord[index] = SBLOCK_BLK_STATE_PENDING;
++	} else {
++		rval = sblock->state == SBLOCK_STATE_READY ? -EAGAIN : -EIO;
++	}
++	spin_unlock_irqrestore(&ring->r_rxlock, flags);
++
++	return rval;
++}
++
++int sblock_get_free_count(uint8_t dst, uint8_t channel)
++{
++	struct sblock_mgr *sblock = (struct sblock_mgr *)sblocks[dst][channel];
++	struct sblock_ring *ring = NULL;
++	volatile struct sblock_ring_header *poolhd = NULL;
++	int blk_count = 0;
++	unsigned long flags;
++
++	if (!sblock || sblock->state != SBLOCK_STATE_READY) {
++		printk(KERN_ERR "sblock-%d-%d not ready!\n", dst, channel);
++		return -ENODEV;
++	}
++
++	ring = sblock->ring;
++	poolhd = (volatile struct sblock_ring_header *)(&ring->header->pool);
++
++	spin_lock_irqsave(&ring->p_txlock, flags);
++	blk_count = (int)(poolhd->txblk_wrptr - poolhd->txblk_rdptr);
++	spin_unlock_irqrestore(&ring->p_txlock, flags);
++
++	return blk_count;
++}
++
++int sblock_release(uint8_t dst, uint8_t channel, struct sblock *blk)
++{
++	struct sblock_mgr *sblock = (struct sblock_mgr *)sblocks[dst][channel];
++	struct sblock_ring *ring = NULL;
++	volatile struct sblock_ring_header *ringhd = NULL;
++	volatile struct sblock_ring_header *poolhd = NULL;
++	struct smsg mevt;
++	unsigned long flags;
++	int rxpos;
++	int index;
++
++	if (!sblock || sblock->state != SBLOCK_STATE_READY) {
++		printk(KERN_ERR "sblock-%d-%d not ready!\n", dst, channel);
++		return -ENODEV;
++	}
++
++	pr_debug("sblock_release: dst=%d, channel=%d, addr=%p, len=%d\n",
++			dst, channel, blk->addr, blk->length);
++
++	ring = sblock->ring;
++	ringhd = (volatile struct sblock_ring_header *)(&ring->header->ring);
++	poolhd = (volatile struct sblock_ring_header *)(&ring->header->pool);
++
++	spin_lock_irqsave(&ring->p_rxlock, flags);
++	rxpos = sblock_get_ringpos(poolhd->rxblk_wrptr, poolhd->rxblk_count);
++	ring->p_rxblks[rxpos].addr = blk->addr - sblock->smem_virt + sblock->smem_addr;
++	ring->p_rxblks[rxpos].length = poolhd->rxblk_size;
++	poolhd->rxblk_wrptr = poolhd->rxblk_wrptr + 1;
++	pr_debug("sblock_release: addr=%x\n", ring->p_rxblks[rxpos].addr);
++
++	if((int)(poolhd->rxblk_wrptr - poolhd->rxblk_rdptr) == 1 &&
++			sblock->state == SBLOCK_STATE_READY) {
++		/* send smsg to notify the peer side */
++		smsg_set(&mevt, channel, SMSG_TYPE_EVENT, SMSG_EVENT_SBLOCK_RELEASE, 0);
++		smsg_send(dst, &mevt, -1);
++	}
++
++	index = sblock_get_index((blk->addr - ring->rxblk_virt), sblock->rxblksz);
++	ring->rxrecord[index] = SBLOCK_BLK_STATE_DONE;
++
++	spin_unlock_irqrestore(&ring->p_rxlock, flags);
++
++	return 0;
++}
++
++#if defined(CONFIG_DEBUG_FS)
++static int sblock_debug_show(struct seq_file *m, void *private)
++{
++	struct sblock_mgr *sblock = NULL;
++	struct sblock_ring  *ring = NULL;
++	volatile struct sblock_ring_header *ringhd = NULL;
++	volatile struct sblock_ring_header *poolhd = NULL;
++	int i, j;
++
++	for (i = 0; i < SIPC_ID_NR; i++) {
++		for (j=0;  j < SMSG_CH_NR; j++) {
++			sblock = sblocks[i][j];
++			if (!sblock) {
++				continue;
++			}
++			ring = sblock->ring;
++			ringhd = (volatile struct sblock_ring_header *)(&sblock->ring->header->ring);
++			poolhd = (volatile struct sblock_ring_header *)(&sblock->ring->header->pool);
++
++			seq_printf(m, "sblock dst 0x%0x, channel: 0x%0x, state: %d, smem_virt: 0x%0x, smem_addr: 0x%0x, smem_size: 0x%0x, txblksz: %d, rxblksz: %d \n",
++				sblock->dst, sblock->channel, sblock->state,
++				(uint32_t)sblock->smem_virt, sblock->smem_addr,
++				sblock->smem_size, sblock->txblksz, sblock->rxblksz );
++			seq_printf(m, "sblock ring: txblk_virt :0x%0x, rxblk_virt :0x%0x \n",
++				(uint32_t)ring->txblk_virt, (uint32_t)ring->rxblk_virt);
++			seq_printf(m, "sblock ring header: rxblk_addr :0x%0x, rxblk_rdptr :0x%0x, rxblk_wrptr :0x%0x, rxblk_size :%d, rxblk_count :%d, rxblk_blks: 0x%0x \n",
++				ringhd->rxblk_addr, ringhd->rxblk_rdptr,
++				ringhd->rxblk_wrptr, ringhd->rxblk_size,
++				ringhd->rxblk_count, ringhd->rxblk_blks);
++			seq_printf(m, "sblock ring header: txblk_addr :0x%0x, txblk_rdptr :0x%0x, txblk_wrptr :0x%0x, txblk_size :%d, txblk_count :%d, txblk_blks: 0x%0x \n",
++				ringhd->txblk_addr, ringhd->txblk_rdptr,
++				ringhd->txblk_wrptr, ringhd->txblk_size,
++				ringhd->txblk_count, ringhd->txblk_blks );
++			seq_printf(m, "sblock pool header: rxblk_addr :0x%0x, rxblk_rdptr :0x%0x, rxblk_wrptr :0x%0x, rxblk_size :%d, rxpool_count :%d, rxblk_blks: 0x%0x \n",
++				poolhd->rxblk_addr, poolhd->rxblk_rdptr,
++				poolhd->rxblk_wrptr, poolhd->rxblk_size,
++				(int)(poolhd->rxblk_wrptr - poolhd->rxblk_rdptr),
++				poolhd->rxblk_blks);
++			seq_printf(m, "sblock pool header: txblk_addr :0x%0x, txblk_rdptr :0x%0x, txblk_wrptr :0x%0x, txblk_size :%d, txpool_count :%d, txblk_blks: 0x%0x \n",
++				poolhd->txblk_addr, poolhd->txblk_rdptr,
++				poolhd->txblk_wrptr, poolhd->txblk_size,
++				(int)(poolhd->txblk_wrptr - poolhd->txblk_rdptr),
++				poolhd->txblk_blks );
++		}
++	}
++	return 0;
++
++}
++
++static int sblock_debug_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, sblock_debug_show, inode->i_private);
++}
++
++static const struct file_operations sblock_debug_fops = {
++	.open = sblock_debug_open,
++	.read = seq_read,
++	.llseek = seq_lseek,
++	.release = single_release,
++};
++
++int  sblock_init_debugfs(void *root )
++{
++	if (!root)
++		return -ENXIO;
++	debugfs_create_file("sblock", S_IRUGO, (struct dentry *)root, NULL, &sblock_debug_fops);
++	return 0;
++}
++
++#endif /* CONFIG_DEBUG_FS */
++
++EXPORT_SYMBOL(sblock_put);
++EXPORT_SYMBOL(sblock_create);
++EXPORT_SYMBOL(sblock_destroy);
++EXPORT_SYMBOL(sblock_register_notifier);
++EXPORT_SYMBOL(sblock_get);
++EXPORT_SYMBOL(sblock_send);
++EXPORT_SYMBOL(sblock_send_prepare);
++EXPORT_SYMBOL(sblock_send_finish);
++EXPORT_SYMBOL(sblock_receive);
++EXPORT_SYMBOL(sblock_get_free_count);
++EXPORT_SYMBOL(sblock_release);
++
++MODULE_AUTHOR("Chen Gaopeng");
++MODULE_DESCRIPTION("SIPC/SBLOCK driver");
++MODULE_LICENSE("GPL");
+diff --git a/arch/arm/mach-sprd/sipc/sblock.h b/arch/arm/mach-sprd/sipc/sblock.h
+new file mode 100755
+index 000000000..af4887310
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/sblock.h
+@@ -0,0 +1,103 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#ifndef __SBLOCK_H
++#define __SBLOCK_H
++
++/* flag for CMD/DONE msg type */
++#define SMSG_CMD_SBLOCK_INIT		0x0001
++#define SMSG_DONE_SBLOCK_INIT		0x0002
++
++/* flag for EVENT msg type */
++#define SMSG_EVENT_SBLOCK_SEND		0x0001
++#define SMSG_EVENT_SBLOCK_RELEASE	0x0002
++
++#define SBLOCK_STATE_IDLE		0
++#define SBLOCK_STATE_READY		1
++
++#define SBLOCK_BLK_STATE_DONE 		0
++#define SBLOCK_BLK_STATE_PENDING 	1
++
++struct sblock_blks {
++	uint32_t		addr; /*phy address*/
++	uint32_t		length;
++};
++
++/* ring block header */
++struct sblock_ring_header {
++	/* get|send-block info */
++	uint32_t		txblk_addr;
++	uint32_t		txblk_count;
++	uint32_t		txblk_size;
++	uint32_t		txblk_blks;
++	uint32_t		txblk_rdptr;
++	uint32_t		txblk_wrptr;
++
++	/* release|recv-block info */
++	uint32_t		rxblk_addr;
++	uint32_t		rxblk_count;
++	uint32_t		rxblk_size;
++	uint32_t		rxblk_blks;
++	uint32_t		rxblk_rdptr;
++	uint32_t		rxblk_wrptr;
++};
++
++struct sblock_header {
++	struct sblock_ring_header ring;
++	struct sblock_ring_header pool;
++};
++
++struct sblock_ring {
++	struct sblock_header	*header;
++	void			*txblk_virt; /* virt of header->txblk_addr */
++	void			*rxblk_virt; /* virt of header->rxblk_addr */
++
++	struct sblock_blks	*r_txblks;     /* virt of header->ring->txblk_blks */
++	struct sblock_blks	*r_rxblks;     /* virt of header->ring->rxblk_blks */
++	struct sblock_blks 	*p_txblks;     /* virt of header->pool->txblk_blks */
++	struct sblock_blks 	*p_rxblks;     /* virt of header->pool->rxblk_blks */
++
++	int 			*txrecord; /* record the state of every txblk */
++	int 			*rxrecord; /* record the state of every rxblk */
++
++	spinlock_t		r_txlock; /* send */
++	spinlock_t		r_rxlock; /* recv */
++	spinlock_t 		p_txlock; /* get */
++	spinlock_t 		p_rxlock; /* release */
++
++	wait_queue_head_t	getwait;
++	wait_queue_head_t	recvwait;
++};
++
++struct sblock_mgr {
++	uint8_t			dst;
++	uint8_t			channel;
++	uint32_t		state;
++
++	void			*smem_virt;
++	uint32_t		smem_addr;
++	uint32_t		smem_size;
++
++	uint32_t		txblksz;
++	uint32_t		rxblksz;
++	uint32_t		txblknum;
++	uint32_t		rxblknum;
++
++	struct sblock_ring	*ring;
++	struct task_struct	*thread;
++
++	void			(*handler)(int event, void *data);
++	void			*data;
++};
++
++#endif
+diff --git a/arch/arm/mach-sprd/sipc/sbuf.c b/arch/arm/mach-sprd/sipc/sbuf.c
+new file mode 100755
+index 000000000..d4e7247c3
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/sbuf.c
+@@ -0,0 +1,696 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/wait.h>
++#include <linux/interrupt.h>
++#include <linux/sched.h>
++#include <linux/kthread.h>
++#include <linux/delay.h>
++#include <linux/slab.h>
++#include <linux/io.h>
++#include <asm/uaccess.h>
++#include <linux/debugfs.h>
++#include <linux/seq_file.h>
++
++
++#include "sipc.h"
++#include "sbuf.h"
++
++/* For enable all sbuf packet dump */
++#define ENABLE_SBUF_IPC_DUMP
++/* #undef ENABLE_SBUF_IPC_DUMP */
++
++static struct sbuf_mgr *sbufs[SIPC_ID_NR][SMSG_CH_NR];
++
++static int sbuf_thread(void *data)
++{
++	struct sbuf_mgr *sbuf = data;
++	struct smsg mcmd, mrecv;
++	int rval, bufid;
++	struct sched_param param = {.sched_priority = 90};
++
++	/*set the thread as a real time thread, and its priority is 90*/
++	sched_setscheduler(current, SCHED_RR, &param);
++
++	/* since the channel open may hang, we call it in the sbuf thread */
++	rval = smsg_ch_open(sbuf->dst, sbuf->channel, -1);
++	if (rval != 0) {
++		printk(KERN_ERR "Failed to open channel %d\n", sbuf->channel);
++		/* assign NULL to thread poniter as failed to open channel */
++		sbuf->thread = NULL;
++		return rval;
++	}
++
++	/* sbuf init done, handle the ring rx events */
++	while (!kthread_should_stop()) {
++		/* monitor sbuf rdptr/wrptr update smsg */
++		smsg_set(&mrecv, sbuf->channel, 0, 0, 0);
++		rval = smsg_recv(sbuf->dst, &mrecv, -1);
++
++		if (rval == -EIO) {
++		/* channel state is free */
++			msleep(5);
++			continue;
++		}
++
++		pr_debug("sbuf thread recv msg: dst=%d, channel=%d, "
++				"type=%d, flag=0x%04x, value=0x%08x\n",
++				sbuf->dst, sbuf->channel,
++				mrecv.type, mrecv.flag, mrecv.value);
++
++		switch (mrecv.type) {
++		case SMSG_TYPE_OPEN:
++			/* handle channel recovery */
++			smsg_open_ack(sbuf->dst, sbuf->channel);
++			break;
++		case SMSG_TYPE_CLOSE:
++			/* handle channel recovery */
++			smsg_close_ack(sbuf->dst, sbuf->channel);
++			sbuf->state = SBUF_STATE_IDLE;
++			break;
++		case SMSG_TYPE_CMD:
++			/* respond cmd done for sbuf init */
++			WARN_ON(mrecv.flag != SMSG_CMD_SBUF_INIT);
++			smsg_set(&mcmd, sbuf->channel, SMSG_TYPE_DONE,
++					SMSG_DONE_SBUF_INIT, sbuf->smem_addr);
++			smsg_send(sbuf->dst, &mcmd, -1);
++			sbuf->state = SBUF_STATE_READY;
++			pr_info("sbuf-%d-%d is ready!\n", sbuf->dst, sbuf->channel);
++			break;
++		case SMSG_TYPE_EVENT:
++			bufid = mrecv.value;
++			WARN_ON(bufid >= sbuf->ringnr);
++			switch (mrecv.flag) {
++			case SMSG_EVENT_SBUF_RDPTR:
++				wake_up_interruptible_all(&(sbuf->rings[bufid].txwait));
++				if (sbuf->rings[bufid].handler) {
++					sbuf->rings[bufid].handler(SBUF_NOTIFY_WRITE, sbuf->rings[bufid].data);
++				}
++				break;
++			case SMSG_EVENT_SBUF_WRPTR:
++				wake_up_interruptible_all(&(sbuf->rings[bufid].rxwait));
++				if (sbuf->rings[bufid].handler) {
++					sbuf->rings[bufid].handler(SBUF_NOTIFY_READ, sbuf->rings[bufid].data);
++				}
++				break;
++			default:
++				rval = 1;
++				break;
++			}
++			break;
++		default:
++			rval = 1;
++			break;
++		};
++		if (rval) {
++			printk(KERN_WARNING "non-handled sbuf msg: %d-%d, %d, %d, %d\n",
++					sbuf->dst, sbuf->channel,
++					mrecv.type, mrecv.flag, mrecv.value);
++			rval = 0;
++		}
++	}
++
++	return 0;
++}
++
++int sbuf_create(uint8_t dst, uint8_t channel, uint32_t bufnum,
++		uint32_t txbufsize, uint32_t rxbufsize)
++{
++	struct sbuf_mgr *sbuf;
++	volatile struct sbuf_smem_header *smem;
++	volatile struct sbuf_ring_header *ringhd;
++	int hsize, i, result;
++
++	sbuf = kzalloc(sizeof(struct sbuf_mgr), GFP_KERNEL);
++	if (!sbuf) {
++		printk(KERN_ERR "Failed to allocate mgr for sbuf\n");
++		return -ENOMEM;
++	}
++
++	sbuf->state = SBUF_STATE_IDLE;
++	sbuf->dst = dst;
++	sbuf->channel = channel;
++	sbuf->ringnr = bufnum;
++
++	/* allocate smem */
++	hsize = sizeof(struct sbuf_smem_header) + sizeof(struct sbuf_ring_header) * bufnum;
++	sbuf->smem_size = hsize + (txbufsize + rxbufsize) * bufnum;
++	sbuf->smem_addr = smem_alloc(sbuf->smem_size);
++	if (!sbuf->smem_addr) {
++		printk(KERN_ERR "Failed to allocate smem for sbuf\n");
++		kfree(sbuf);
++		return -ENOMEM;
++	}
++	sbuf->smem_virt = ioremap(sbuf->smem_addr, sbuf->smem_size);
++	if (!sbuf->smem_virt) {
++		printk(KERN_ERR "Failed to map smem for sbuf\n");
++		smem_free(sbuf->smem_addr, sbuf->smem_size);
++		kfree(sbuf);
++		return -EFAULT;
++	}
++
++	/* allocate rings description */
++	sbuf->rings = kzalloc(sizeof(struct sbuf_ring) * bufnum, GFP_KERNEL);
++	if (!sbuf->rings) {
++		printk(KERN_ERR "Failed to allocate rings for sbuf\n");
++		iounmap(sbuf->smem_virt);
++		smem_free(sbuf->smem_addr, sbuf->smem_size);
++		kfree(sbuf);
++		return -ENOMEM;
++	}
++
++	/* initialize all ring bufs */
++	smem = (volatile struct sbuf_smem_header *)sbuf->smem_virt;
++	smem->ringnr = bufnum;
++	for (i = 0; i < bufnum; i++) {
++		ringhd = (volatile struct sbuf_ring_header *)&(smem->headers[i]);
++		ringhd->txbuf_addr = sbuf->smem_addr + hsize +
++				(txbufsize + rxbufsize) * i;
++		ringhd->txbuf_size = txbufsize;
++		ringhd->txbuf_rdptr = 0;
++		ringhd->txbuf_wrptr = 0;
++		ringhd->rxbuf_addr = smem->headers[i].txbuf_addr + txbufsize;
++		ringhd->rxbuf_size = rxbufsize;
++		ringhd->rxbuf_rdptr = 0;
++		ringhd->rxbuf_wrptr = 0;
++
++		sbuf->rings[i].header = ringhd;
++		sbuf->rings[i].txbuf_virt = sbuf->smem_virt + hsize +
++				(txbufsize + rxbufsize) * i;
++		sbuf->rings[i].rxbuf_virt = sbuf->rings[i].txbuf_virt + txbufsize;
++		init_waitqueue_head(&(sbuf->rings[i].txwait));
++		init_waitqueue_head(&(sbuf->rings[i].rxwait));
++		mutex_init(&(sbuf->rings[i].txlock));
++		mutex_init(&(sbuf->rings[i].rxlock));
++	}
++
++	sbuf->thread = kthread_create(sbuf_thread, sbuf,
++			"sbuf-%d-%d", dst, channel);
++	if (IS_ERR(sbuf->thread)) {
++		printk(KERN_ERR "Failed to create kthread: sbuf-%d-%d\n", dst, channel);
++		kfree(sbuf->rings);
++		iounmap(sbuf->smem_virt);
++		smem_free(sbuf->smem_addr, sbuf->smem_size);
++		result = PTR_ERR(sbuf->thread);
++		kfree(sbuf);
++
++		return result;
++	}
++
++	sbufs[dst][channel] = sbuf;
++	wake_up_process(sbuf->thread);
++
++	return 0;
++}
++
++void sbuf_destroy(uint8_t dst, uint8_t channel)
++{
++	struct sbuf_mgr *sbuf = sbufs[dst][channel];
++	int i;
++
++	if (sbuf == NULL) {
++		return;
++	}
++
++	sbuf->state = SBUF_STATE_IDLE;
++	smsg_ch_close(dst, channel, -1);
++
++	/* stop sbuf thread if it's created successfully and still alive */
++	if (!IS_ERR_OR_NULL(sbuf->thread)) {
++		kthread_stop(sbuf->thread);
++	}
++
++	if (sbuf->rings) {
++		for (i = 0; i < sbuf->ringnr; i++) {
++			wake_up_interruptible_all(&sbuf->rings[i].txwait);
++			wake_up_interruptible_all(&sbuf->rings[i].rxwait);
++		}
++		kfree(sbuf->rings);
++	}
++
++	if (sbuf->smem_virt) {
++		iounmap(sbuf->smem_virt);
++	}
++	smem_free(sbuf->smem_addr, sbuf->smem_size);
++	kfree(sbuf);
++
++	sbufs[dst][channel] = NULL;
++}
++
++int sbuf_write(uint8_t dst, uint8_t channel, uint32_t bufid,
++		void *buf, uint32_t len, int timeout)
++{
++	struct sbuf_mgr *sbuf = sbufs[dst][channel];
++	struct sbuf_ring *ring = NULL;
++	volatile struct sbuf_ring_header *ringhd = NULL;
++	struct smsg mevt;
++	void *txpos;
++	int rval, left, tail, txsize;
++
++#ifdef ENABLE_SBUF_IPC_DUMP
++	char ipc_dump_prefix[64];
++#endif
++
++	if (!sbuf) {
++		return -ENODEV;
++	}
++        ring = &(sbuf->rings[bufid]);
++        ringhd = ring->header;
++	if (sbuf->state != SBUF_STATE_READY) {
++		printk(KERN_ERR "sbuf-%d-%d not ready to write!\n", dst, channel);
++		return -ENODEV;
++	}
++
++	pr_debug("sbuf_write: dst=%d, channel=%d, bufid=%d, len=%d, timeout=%d\n",
++			dst, channel, bufid, len, timeout);
++	pr_debug("sbuf_write: channel=%d, wrptr=%d, rdptr=%d",
++			channel, ringhd->txbuf_wrptr, ringhd->txbuf_rdptr);
++
++	rval = 0;
++	left = len;
++
++	if (timeout) {
++		mutex_lock(&ring->txlock);
++	} else {
++		if (!mutex_trylock(&(ring->txlock))) {
++			printk(KERN_INFO "sbuf_write busy!\n");
++			return -EBUSY;
++		}
++	}
++
++	if (timeout == 0) {
++		/* no wait */
++		if ((int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) >=
++				ringhd->txbuf_size) {
++			printk(KERN_WARNING "sbuf %d-%d ring %d txbuf is full!\n",
++				dst, channel, bufid);
++			rval = -EBUSY;
++		}
++	} else if (timeout < 0) {
++		/* wait forever */
++		rval = wait_event_interruptible(ring->txwait,
++			(int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) <
++			ringhd->txbuf_size || sbuf->state == SBUF_STATE_IDLE);
++		if (rval < 0) {
++			printk(KERN_WARNING "sbuf_write wait interrupted!\n");
++		}
++
++		if (sbuf->state == SBUF_STATE_IDLE) {
++			printk(KERN_ERR "sbuf_write sbuf state is idle!\n");
++			rval = -EIO;
++		}
++	} else {
++		/* wait timeout */
++		rval = wait_event_interruptible_timeout(ring->txwait,
++			(int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) <
++			ringhd->txbuf_size || sbuf->state == SBUF_STATE_IDLE,
++			timeout);
++		if (rval < 0) {
++			printk(KERN_WARNING "sbuf_write wait interrupted!\n");
++		} else if (rval == 0) {
++			printk(KERN_WARNING "sbuf_write wait timeout!\n");
++			rval = -ETIME;
++		}
++
++		if (sbuf->state == SBUF_STATE_IDLE) {
++			printk(KERN_ERR "sbuf_write sbuf state is idle!\n");
++			rval = -EIO;
++		}
++
++	}
++
++	while (left && (int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr) < ringhd->txbuf_size &&
++			sbuf->state == SBUF_STATE_READY) {
++		/* calc txpos & txsize */
++		txpos = ring->txbuf_virt + ringhd->txbuf_wrptr % ringhd->txbuf_size;
++		txsize = ringhd->txbuf_size - (int)(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr);
++		txsize = min(txsize, left);
++
++		tail = txpos + txsize - (ring->txbuf_virt + ringhd->txbuf_size);
++		if (tail > 0) {
++			/* ring buffer is rounded */
++			if ((uint32_t)buf > TASK_SIZE) {
++				memcpy(txpos, buf, txsize - tail);
++				memcpy(ring->txbuf_virt, buf + txsize - tail, tail);
++			} else {
++				if(copy_from_user(txpos, (void __user *)buf, txsize - tail) ||
++				    copy_from_user(ring->txbuf_virt,
++				    (void __user *)(buf + txsize - tail), tail)) {
++					printk(KERN_ERR "sbuf_write: failed to copy from user!\n");
++					rval = -EFAULT;
++					break;
++				}
++			}
++
++#ifdef ENABLE_SBUF_IPC_DUMP
++		        sprintf(ipc_dump_prefix, "sbuf-%d-%d-tx-%d(r): ", dst, channel, txsize);
++		        print_hex_dump(KERN_INFO, ipc_dump_prefix, DUMP_PREFIX_NONE, 1, 1, (void *)txpos,
++					(txsize - tail) < 16 ? (size_t)(txsize - tail) : 16, false);
++#endif
++
++		} else {
++			if ((uint32_t)buf > TASK_SIZE) {
++				memcpy(txpos, buf, txsize);
++			} else {
++				/* handle the user space address */
++				if(copy_from_user(txpos, (void __user *)buf, txsize)) {
++					printk(KERN_ERR "sbuf_write: failed to copy from user!\n");
++					rval = -EFAULT;
++					break;
++				}
++			}
++
++#ifdef ENABLE_SBUF_IPC_DUMP
++		        sprintf(ipc_dump_prefix, "sbuf-%d-%d-tx-%d: ", dst, channel, txsize);
++		        print_hex_dump(KERN_INFO, ipc_dump_prefix, DUMP_PREFIX_NONE, 1, 1,(void *)txpos,
++					txsize < 16 ? (size_t)txsize : 16, false);
++#endif
++
++		}
++
++
++		pr_debug("sbuf_write: channel=%d, txpos=%p, txsize=%d\n", channel, txpos, txsize);
++
++		/* update tx wrptr */
++		ringhd->txbuf_wrptr = ringhd->txbuf_wrptr + txsize;
++		/* tx ringbuf is empty, so need to notify peer side */
++		if(ringhd->txbuf_wrptr - ringhd->txbuf_rdptr == txsize) {
++			smsg_set(&mevt, channel, SMSG_TYPE_EVENT, SMSG_EVENT_SBUF_WRPTR, bufid);
++			smsg_send(dst, &mevt, -1);
++		}
++
++		left -= txsize;
++		buf += txsize;
++	}
++
++	mutex_unlock(&ring->txlock);
++
++	pr_debug("sbuf_write done: channel=%d, len=%d\n", channel, len - left);
++
++	if (len == left) {
++		return rval;
++	} else {
++		return (len - left);
++	}
++}
++
++int sbuf_read(uint8_t dst, uint8_t channel, uint32_t bufid,
++		void *buf, uint32_t len, int timeout)
++{
++	struct sbuf_mgr *sbuf = sbufs[dst][channel];
++	struct sbuf_ring *ring = NULL;
++	volatile struct sbuf_ring_header *ringhd = NULL;
++	struct smsg mevt;
++	void *rxpos;
++	int rval, left, tail, rxsize;
++
++#ifdef ENABLE_SBUF_IPC_DUMP
++	char ipc_dump_prefix[64];
++#endif
++
++	if (!sbuf) {
++		return -ENODEV;
++	}
++        ring = &(sbuf->rings[bufid]);
++        ringhd = ring->header;
++
++	if (sbuf->state != SBUF_STATE_READY) {
++		printk(KERN_ERR "sbuf-%d-%d not ready to read!\n", dst, channel);
++		return -ENODEV;
++	}
++
++	pr_debug("sbuf_read: dst=%d, channel=%d, bufid=%d, len=%d, timeout=%d\n",
++			dst, channel, bufid, len, timeout);
++	pr_debug("sbuf_read: channel=%d, wrptr=%d, rdptr=%d",
++			channel, ringhd->rxbuf_wrptr, ringhd->rxbuf_rdptr);
++
++	rval = 0;
++	left = len;
++
++	if (timeout) {
++		mutex_lock(&ring->rxlock);
++	} else {
++		if (!mutex_trylock(&(ring->rxlock))) {
++			printk(KERN_INFO "sbuf_read busy!\n");
++			return -EBUSY;
++		}
++	}
++
++	if (ringhd->rxbuf_wrptr == ringhd->rxbuf_rdptr) {
++		if (timeout == 0) {
++			/* no wait */
++			printk(KERN_WARNING "sbuf %d-%d ring %d rxbuf is empty!\n",
++				dst, channel, bufid);
++			rval = -ENODATA;
++		} else if (timeout < 0) {
++			/* wait forever */
++			rval = wait_event_interruptible(ring->rxwait,
++				ringhd->rxbuf_wrptr != ringhd->rxbuf_rdptr ||
++				sbuf->state == SBUF_STATE_IDLE);
++			if (rval < 0) {
++				printk(KERN_WARNING "sbuf_read wait interrupted!\n");
++			}
++
++			if (sbuf->state == SBUF_STATE_IDLE) {
++				printk(KERN_ERR "sbuf_read sbuf state is idle!\n");
++				rval = -EIO;
++			}
++		} else {
++			/* wait timeout */
++			rval = wait_event_interruptible_timeout(ring->rxwait,
++				ringhd->rxbuf_wrptr != ringhd->rxbuf_rdptr ||
++				sbuf->state == SBUF_STATE_IDLE, timeout);
++			if (rval < 0) {
++				printk(KERN_WARNING "sbuf_read wait interrupted!\n");
++			} else if (rval == 0) {
++				printk(KERN_WARNING "sbuf_read wait timeout!\n");
++				rval = -ETIME;
++			}
++
++			if (sbuf->state == SBUF_STATE_IDLE) {
++				printk(KERN_ERR "sbuf_read sbuf state is idle!\n");
++				rval = -EIO;
++			}
++		}
++	}
++
++	while (left && (ringhd->rxbuf_wrptr != ringhd->rxbuf_rdptr) &&
++			sbuf->state == SBUF_STATE_READY) {
++		/* calc rxpos & rxsize */
++		rxpos = ring->rxbuf_virt + ringhd->rxbuf_rdptr % ringhd->rxbuf_size;
++		rxsize = (int)(ringhd->rxbuf_wrptr - ringhd->rxbuf_rdptr);
++		/* check overrun */
++		WARN_ON(rxsize > ringhd->rxbuf_size);
++		rxsize = min(rxsize, left);
++
++		pr_debug("sbuf_read: channel=%d, buf=%p, rxpos=%p, rxsize=%d\n", channel, buf, rxpos, rxsize);
++
++		tail = rxpos + rxsize - (ring->rxbuf_virt + ringhd->rxbuf_size);
++		if (tail > 0) {
++			/* ring buffer is rounded */
++			if ((uint32_t)buf > TASK_SIZE) {
++				memcpy(buf, rxpos, rxsize - tail);
++				memcpy(buf + rxsize - tail, ring->rxbuf_virt, tail);
++			} else {
++				/* handle the user space address */
++				if(copy_to_user((void __user *)buf, rxpos, rxsize - tail) ||
++				    copy_to_user((void __user *)(buf + rxsize - tail),
++				    ring->rxbuf_virt, tail)) {
++					printk(KERN_ERR "sbuf_read: failed to copy to user!\n");
++					rval = -EFAULT;
++					break;
++				}
++			}
++
++#ifdef ENABLE_SBUF_IPC_DUMP
++		        sprintf(ipc_dump_prefix, "sbuf-%d-%d-rx-%d(r): ", dst, channel, rxsize);
++		        print_hex_dump(KERN_INFO, ipc_dump_prefix, DUMP_PREFIX_NONE, 1, 1, (void *)rxpos,
++					(rxsize - tail) < 16 ? (size_t)(rxsize - tail) : 16, false);
++#endif
++
++		} else {
++			if ((uint32_t)buf > TASK_SIZE) {
++				memcpy(buf, rxpos, rxsize);
++			} else {
++				/* handle the user space address */
++				if (copy_to_user((void __user *)buf, rxpos, rxsize)) {
++					printk(KERN_ERR "sbuf_read: failed to copy to user!\n");
++					rval = -EFAULT;
++					break;
++				}
++			}
++
++#ifdef ENABLE_SBUF_IPC_DUMP
++		        sprintf(ipc_dump_prefix, "sbuf-%d-%d-rx-%d: ", dst, channel, rxsize);
++		        print_hex_dump(KERN_INFO, ipc_dump_prefix, DUMP_PREFIX_NONE, 1, 1, (void *)rxpos,
++					rxsize < 16 ? (size_t)rxsize : 16, false);
++#endif
++
++		}
++
++		/* update rx rdptr */
++		ringhd->rxbuf_rdptr = ringhd->rxbuf_rdptr + rxsize;
++		/* rx ringbuf is full ,so need to notify peer side */
++		if(ringhd->rxbuf_wrptr - ringhd->rxbuf_rdptr == ringhd->rxbuf_size - rxsize) {
++			smsg_set(&mevt, channel, SMSG_TYPE_EVENT, SMSG_EVENT_SBUF_RDPTR, bufid);
++			smsg_send(dst, &mevt, -1);
++		}
++
++		left -= rxsize;
++		buf += rxsize;
++	}
++
++	mutex_unlock(&ring->rxlock);
++
++	pr_debug("sbuf_read done: channel=%d, len=%d", channel, len - left);
++
++	if (len == left) {
++		return rval;
++	} else {
++		return (len - left);
++	}
++}
++
++int sbuf_poll_wait(uint8_t dst, uint8_t channel, uint32_t bufid,
++		struct file *filp, poll_table *wait)
++{
++	struct sbuf_mgr *sbuf = sbufs[dst][channel];
++	struct sbuf_ring *ring = NULL;
++	volatile struct sbuf_ring_header *ringhd = NULL;
++	unsigned int mask = 0;
++
++	if (!sbuf) {
++		return -ENODEV;
++	}
++        ring = &(sbuf->rings[bufid]);
++	ringhd = ring->header;
++	if (sbuf->state != SBUF_STATE_READY) {
++		printk(KERN_ERR "sbuf-%d-%d not ready to poll !\n", dst, channel);
++		return -ENODEV;
++	}
++
++	poll_wait(filp, &ring->txwait, wait);
++	poll_wait(filp, &ring->rxwait, wait);
++
++	if (ringhd->rxbuf_wrptr != ringhd->rxbuf_rdptr) {
++		mask |= POLLIN | POLLRDNORM;
++	}
++
++	if (ringhd->txbuf_wrptr - ringhd->txbuf_rdptr < ringhd->txbuf_size) {
++		mask |= POLLOUT | POLLWRNORM;
++	}
++
++	return mask;
++}
++
++int sbuf_status(uint8_t dst, uint8_t channel)
++{
++	struct sbuf_mgr *sbuf = sbufs[dst][channel];
++
++	if (!sbuf) {
++		return -ENODEV;
++	}
++	if (sbuf->state != SBUF_STATE_READY) {
++		return -ENODEV;
++	}
++
++	return 0;
++}
++
++int sbuf_register_notifier(uint8_t dst, uint8_t channel, uint32_t bufid,
++		void (*handler)(int event, void *data), void *data)
++{
++	struct sbuf_mgr *sbuf = sbufs[dst][channel];
++	struct sbuf_ring *ring = NULL;
++
++	if (!sbuf) {
++		return -ENODEV;
++	}
++        ring = &(sbuf->rings[bufid]);
++
++	if (!ring) {
++		printk(KERN_ERR "sbuf-%d-%d not ready!\n", dst, channel);
++		return -ENODEV;
++	}
++
++	ring->handler = handler;
++	ring->data = data;
++
++	return 0;
++}
++
++#if defined(CONFIG_DEBUG_FS)
++
++static int sbuf_debug_show(struct seq_file *m, void *private)
++{
++	struct sbuf_mgr *sbuf = NULL;
++	struct sbuf_ring	*rings = NULL;
++	volatile struct sbuf_ring_header  *ring = NULL;
++	int i, j, n;
++
++	for (i = 0; i < SIPC_ID_NR; i++) {
++		for (j=0;  j< SMSG_CH_NR; j++) {
++			sbuf = sbufs[i][j];
++			if (!sbuf) {
++				continue;
++			}
++			seq_printf(m, "sbuf dst 0x%0x, channel: 0x%0x, state: %d, smem_virt: 0x%0x, smem_addr: 0x%0x, smem_size: 0x%0x, ringnr: %d \n",
++				   sbuf->dst, sbuf->channel, sbuf->state, (uint32_t)sbuf->smem_virt, sbuf->smem_addr, sbuf->smem_size, sbuf->ringnr);
++
++			for (n=0;  n < sbuf->ringnr;  n++) {
++				rings = &(sbuf->rings[n]);
++				ring = rings->header;
++				seq_printf(m, "sbuf ring[%d]: rxbuf_addr :0x%0x, rxbuf_rdptr :0x%0x, rxbuf_wrptr :0x%0x, rxbuf_size :0x%0x \n", n,  ring->rxbuf_addr, ring->rxbuf_rdptr, ring->rxbuf_wrptr, ring->rxbuf_size);
++				seq_printf(m, "sbuf ring[%d]: txbuf_addr :0x%0x, txbuf_rdptr :0x%0x, txbuf_wrptr :0x%0x, txbuf_size :0x%0x \n", n,  ring->txbuf_addr, ring->txbuf_rdptr, ring->txbuf_wrptr, ring->txbuf_size);
++			}
++		}
++	}
++	return 0;
++}
++
++static int sbuf_debug_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, sbuf_debug_show, inode->i_private);
++}
++
++static const struct file_operations sbuf_debug_fops = {
++	.open = sbuf_debug_open,
++	.read = seq_read,
++	.llseek = seq_lseek,
++	.release = single_release,
++};
++
++int  sbuf_init_debugfs( void *root )
++{
++	if (!root)
++		return -ENXIO;
++	debugfs_create_file("sbuf", S_IRUGO, (struct dentry *)root, NULL, &sbuf_debug_fops);
++	return 0;
++}
++
++#endif /* CONFIG_DEBUG_FS */
++
++
++EXPORT_SYMBOL(sbuf_create);
++EXPORT_SYMBOL(sbuf_destroy);
++EXPORT_SYMBOL(sbuf_write);
++EXPORT_SYMBOL(sbuf_read);
++EXPORT_SYMBOL(sbuf_poll_wait);
++EXPORT_SYMBOL(sbuf_status);
++EXPORT_SYMBOL(sbuf_register_notifier);
++
++MODULE_AUTHOR("Chen Gaopeng");
++MODULE_DESCRIPTION("SIPC/SBUF driver");
++MODULE_LICENSE("GPL");
+diff --git a/arch/arm/mach-sprd/sipc/sbuf.h b/arch/arm/mach-sprd/sipc/sbuf.h
+new file mode 100755
+index 000000000..cb14a7830
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/sbuf.h
+@@ -0,0 +1,82 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#ifndef __SBUF_H
++#define __SBUF_H
++
++/* flag for CMD/DONE msg type */
++#define SMSG_CMD_SBUF_INIT	0x0001
++#define SMSG_DONE_SBUF_INIT	0x0002
++
++/* flag for EVENT msg type */
++#define SMSG_EVENT_SBUF_WRPTR	0x0001
++#define SMSG_EVENT_SBUF_RDPTR	0x0002
++
++/* ring buf header */
++struct sbuf_ring_header {
++	/* send-buffer info */
++	uint32_t		txbuf_addr;
++	uint32_t		txbuf_size;
++	uint32_t		txbuf_rdptr;
++	uint32_t		txbuf_wrptr;
++
++	/* recv-buffer info */
++	uint32_t		rxbuf_addr;
++	uint32_t		rxbuf_size;
++	uint32_t		rxbuf_rdptr;
++	uint32_t		rxbuf_wrptr;
++};
++
++/* sbuf_mem is the structure of smem for rings */
++struct sbuf_smem_header {
++	uint32_t		ringnr;
++
++	struct sbuf_ring_header	headers[0];
++};
++
++struct sbuf_ring {
++	/* tx/rx buffer info */
++	volatile struct sbuf_ring_header	*header;
++
++	void			*txbuf_virt;
++	void			*rxbuf_virt;
++
++	/* send/recv wait queue */
++	wait_queue_head_t	txwait;
++	wait_queue_head_t	rxwait;
++
++	/* send/recv mutex */
++	struct mutex		txlock;
++	struct mutex		rxlock;
++
++	void			(*handler)(int event, void *data);
++	void			*data;
++};
++
++#define SBUF_STATE_IDLE		0
++#define SBUF_STATE_READY	1
++
++struct sbuf_mgr {
++	uint8_t			dst;
++	uint8_t			channel;
++	uint32_t		state;
++
++	void			*smem_virt;
++	uint32_t		smem_addr;
++	uint32_t		smem_size;
++	uint32_t		ringnr;
++	struct sbuf_ring	*rings;
++	struct task_struct	*thread;
++};
++
++#endif
+diff --git a/arch/arm/mach-sprd/sipc/seth.c b/arch/arm/mach-sprd/sipc/seth.c
+new file mode 100755
+index 000000000..307351cf4
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/seth.c
+@@ -0,0 +1,548 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/module.h>
++#include <linux/kernel.h>
++#include <linux/string.h>
++#include <linux/of.h>
++#include <linux/delay.h>
++#include <linux/errno.h>
++#include <linux/interrupt.h>
++#include <linux/init.h>
++#include <linux/netdevice.h>
++#include <linux/etherdevice.h>
++#include <linux/skbuff.h>
++#include <linux/workqueue.h>
++#include <linux/ipv6.h>
++#include <linux/ip.h>
++#include <asm/byteorder.h>
++#include <linux/tty.h>
++#include <linux/platform_device.h>
++#ifdef CONFIG_OF
++#include <linux/of_device.h>
++#endif
++
++#include "sipc.h"
++#include "seth.h"
++
++/* debugging macros */
++#define SETH_INFO(x...)		pr_info("SETH: " x)
++#define SETH_DEBUG(x...)	pr_debug("SETH: " x)
++#define SETH_ERR(x...)		pr_err("SETH: Error: " x)
++
++#define SETH_BLOCK_SIZE	(ETH_HLEN + ETH_DATA_LEN + NET_IP_ALIGN)
++
++#define DEV_ON 1
++#define DEV_OFF 0
++
++#define SETH_RESEND_MAX_NUM	10
++/*
++ * Device instance data.
++ */
++typedef struct SEth {
++	struct net_device_stats stats;	/* net statistics */
++	struct net_device* netdev;	/* Linux net device */
++	struct seth_init_data* pdata;	/* platform data */
++	int state;			/* device state */
++	int txstate;			/* device txstate */
++	int stopped;		/* sblock indicator */
++	int txrcnt;			/* seth tx resend count*/
++} SEth;
++
++/*
++ * Tx_ready handler.
++ */
++static void
++seth_tx_ready_handler (void* data)
++{
++	SEth* seth = (SEth*) data;
++
++	printk(KERN_INFO "seth_tx_ready_handler state %0x\n", seth->state);
++	if (seth->state != DEV_ON) {
++		seth->state = DEV_ON;
++		seth->txstate = DEV_ON;
++		if (!netif_carrier_ok (seth->netdev)) {
++			netif_carrier_on (seth->netdev);
++		}
++	}
++	else {
++		seth->state = DEV_OFF;
++		seth->txstate = DEV_OFF;
++		if (netif_carrier_ok (seth->netdev)) {
++		netif_carrier_off (seth->netdev);
++		/*
++		netif_carrier_on (seth->netdev);
++		*/
++		}
++	}
++}
++
++/*
++ * Tx_open handler.
++ */
++static void
++seth_tx_open_handler (void* data)
++{
++	SEth* seth = (SEth*) data;
++
++	printk(KERN_INFO "seth_tx_open_handler state %0x\n", seth->state);
++	if (seth->state != DEV_ON) {
++		seth->state = DEV_ON;
++		seth->txstate = DEV_ON;
++		if (!netif_carrier_ok (seth->netdev)) {
++			netif_carrier_on (seth->netdev);
++		}
++	}
++}
++
++/*
++ * Tx_close handler.
++ */
++static void
++seth_tx_close_handler (void* data)
++{
++	SEth* seth = (SEth*) data;
++
++	printk(KERN_INFO "seth_tx_close_handler state %0x\n", seth->state);
++	if (seth->state != DEV_OFF) {
++		seth->state = DEV_OFF;
++		seth->txstate = DEV_OFF;
++		if (netif_carrier_ok (seth->netdev)) {
++			netif_carrier_off (seth->netdev);
++		}
++	}
++}
++
++static void
++seth_rx_handler (void* data)
++{
++	SEth* seth = (SEth *)data;
++	struct seth_init_data *pdata = seth->pdata;
++	struct sblock blk;
++	struct sk_buff* skb;
++	int ret;
++
++	if (seth->state != DEV_ON) {
++		SETH_ERR ("rx_handler the state of %s is off!\n", seth->netdev->name);
++		seth->stats.rx_errors++;
++		ret = sblock_receive(pdata->dst, pdata->channel, &blk, -1);
++		if (ret) {
++			SETH_ERR ("receive sblock failed (%d)\n", ret);
++			seth->stats.rx_errors++;
++			return;
++		}
++		goto rx_failed;
++	}
++
++	ret = sblock_receive(pdata->dst, pdata->channel, &blk, -1);
++	if (ret) {
++		SETH_ERR ("receive sblock failed (%d)\n", ret);
++		seth->stats.rx_errors++;
++		goto rx_failed;
++	}
++	
++	skb = dev_alloc_skb (blk.length + NET_IP_ALIGN); //16 bytes align
++	if (!skb) {
++		SETH_ERR ("alloc skbuff failed!\n");
++		seth->stats.rx_dropped++;
++		goto rx_failed;
++	}
++
++	skb_reserve(skb, NET_IP_ALIGN);
++
++	memcpy(skb->data, blk.addr, blk.length);
++
++	skb_put (skb, blk.length);
++
++	skb->dev = seth->netdev;
++	skb->protocol  = eth_type_trans (skb, seth->netdev);
++	skb->ip_summed = CHECKSUM_NONE;
++
++	seth->stats.rx_packets++;
++	seth->stats.rx_bytes += skb->len;
++
++	netif_rx (skb);
++
++rx_failed:
++	ret = sblock_release(pdata->dst, pdata->channel, &blk);
++	if (ret) {
++		SETH_ERR ("release sblock failed (%d)\n", ret);
++	}
++	return;
++}
++
++/*
++ * Tx_close handler.
++ */
++static void
++seth_tx_pre_handler (void* data)
++{
++	SEth* seth = (SEth*) data;
++
++	if (seth->txstate != DEV_ON) {
++		seth->txstate = DEV_ON;
++		SETH_INFO ("seth_tx_ready_handler txstate %0x\n", seth->txstate );
++		netif_trans_update(seth->netdev);
++		netif_wake_queue(seth->netdev);
++	}
++}
++
++
++static void
++seth_handler (int event, void* data)
++{
++	SEth *seth = (SEth *)data;
++
++	switch(event) {
++		case SBLOCK_NOTIFY_GET:
++			SETH_DEBUG ("SBLOCK_NOTIFY_GET is received\n");
++			seth_tx_pre_handler(seth);
++			break;
++		case SBLOCK_NOTIFY_RECV:
++			SETH_DEBUG ("SBLOCK_NOTIFY_RECV is received\n");
++			seth_rx_handler(seth);
++			break;
++		case SBLOCK_NOTIFY_STATUS:
++			SETH_DEBUG ("SBLOCK_NOTIFY_STATUS is received\n");
++			seth_tx_ready_handler(seth);
++			break;
++		case SBLOCK_NOTIFY_OPEN:
++			SETH_DEBUG ("SBLOCK_NOTIFY_OPEN is received\n");
++			seth_tx_open_handler(seth);
++			break;
++		case SBLOCK_NOTIFY_CLOSE:
++			SETH_DEBUG ("SBLOCK_NOTIFY_CLOSE is received\n");
++			seth_tx_close_handler(seth);
++			break;
++		default:
++			SETH_ERR ("Received event is invalid(event=%d)\n", event);
++	}
++}
++
++/*
++ * Transmit interface
++ */
++static int
++seth_start_xmit (struct sk_buff* skb, struct net_device* dev)
++{
++	SEth* seth    = netdev_priv (dev);
++	struct seth_init_data *pdata = seth->pdata;
++	struct sblock blk;
++	int ret;
++
++	if (seth->state != DEV_ON) {
++		SETH_ERR ("xmit the state of %s is off\n", dev->name);
++		netif_carrier_off (dev);
++		seth->stats.tx_carrier_errors++;
++		dev_kfree_skb_any(skb);
++		return NETDEV_TX_OK;
++	}
++	/*
++	 * Get a free sblock.
++	 */
++
++	ret = sblock_get(pdata->dst, pdata->channel, &blk, 0);
++	if(ret) {
++		SETH_INFO("Get free sblock failed(%d), drop data!\n", ret);
++		seth->stats.tx_fifo_errors++;
++		netif_stop_queue (dev);
++		seth->txstate = DEV_OFF;
++		return NETDEV_TX_BUSY;
++	}
++
++	if(blk.length < skb->len) {
++		SETH_ERR("The size of sblock is so tiny!\n");
++		sblock_put(pdata->dst, pdata->channel, &blk);
++		seth->stats.tx_fifo_errors++;
++		dev_kfree_skb_any(skb);
++		seth->txrcnt = 0;
++		return NETDEV_TX_OK;
++	}
++
++	blk.length = skb->len;
++	memcpy (blk.addr, skb->data, skb->len);
++	ret = sblock_send(pdata->dst, pdata->channel, &blk);
++	if(ret) {
++		SETH_INFO("send sblock failed(%d)!\n", ret);
++		sblock_put(pdata->dst, pdata->channel, &blk);
++		seth->stats.tx_fifo_errors++;
++		if (seth->txrcnt > SETH_RESEND_MAX_NUM) {
++			netif_stop_queue (dev);
++			seth->txstate = DEV_OFF;
++		}
++		seth->txrcnt ++;
++		return NETDEV_TX_BUSY;
++	}
++
++	/*
++	 * Statistics.
++	 */
++	seth->stats.tx_bytes += skb->len;
++	seth->stats.tx_packets++;
++	netif_trans_update(dev);
++	seth->txrcnt = 0;
++
++	dev_kfree_skb_any(skb);
++
++	return NETDEV_TX_OK;
++}
++
++/*
++ * Open interface
++ */
++static int seth_open (struct net_device *dev)
++{
++	SEth* seth = netdev_priv(dev);
++
++	/* Reset stats */
++	memset(&seth->stats, 0, sizeof(seth->stats));
++
++	if (seth->state == DEV_ON && !netif_carrier_ok(seth->netdev)) {
++		SETH_INFO("seth_open netif_carrier_on\n");
++		netif_carrier_on(seth->netdev);
++	}
++
++	seth->txstate = DEV_ON;
++
++	netif_start_queue(dev);
++
++	return 0;
++}
++
++/*
++ * Close interface
++ */
++static int seth_close (struct net_device *dev)
++{
++	SEth* seth = netdev_priv(dev);
++
++	netif_stop_queue(dev);
++
++	/*
++	seth->state = DEV_OFF;
++	*/
++
++	seth->txstate = DEV_OFF;
++
++	return 0;
++}
++
++static struct net_device_stats * seth_get_stats(struct net_device *dev)
++{
++	SEth * seth = netdev_priv(dev);
++	return &(seth->stats);
++}
++
++static void seth_tx_timeout(struct net_device *dev, unsigned int txqueue)
++{
++	SEth * seth = netdev_priv(dev);
++
++	SETH_INFO ("seth_tx_timeout()\n");
++	if (seth->txstate != DEV_ON) {
++		seth->txstate = DEV_ON;
++		netif_trans_update(dev);
++		netif_wake_queue(dev);
++	}
++}
++
++static const struct net_device_ops seth_ops = {
++	.ndo_open = seth_open,
++	.ndo_stop = seth_close,
++	.ndo_start_xmit = seth_start_xmit,
++	.ndo_get_stats = seth_get_stats,
++	.ndo_tx_timeout = seth_tx_timeout,
++};
++
++static int seth_parse_dt(struct seth_init_data **init, struct device *dev)
++{
++#ifdef CONFIG_OF
++	struct seth_init_data *pdata = NULL;
++	struct device_node *np = dev->of_node;
++	int ret;
++	uint32_t data;
++
++	pdata = kzalloc(sizeof(struct seth_init_data), GFP_KERNEL);
++	if (!pdata) {
++		return -ENOMEM;
++	}
++
++	ret = of_property_read_string(np, "sprd,name", (const char**)&pdata->name);
++	if (ret) {
++		goto error;
++	}
++
++	ret = of_property_read_u32(np, "sprd,dst", (uint32_t *)&data);
++	if (ret) {
++		goto error;
++	}
++	pdata->dst = (uint8_t)data;
++
++	ret = of_property_read_u32(np, "sprd,channel", (uint32_t *)&data);
++	if (ret) {
++		goto error;
++	}
++	pdata->channel = (uint8_t)data;
++
++	ret = of_property_read_u32(np, "sprd,blknum", (uint32_t *)&pdata->blocknum);
++	if (ret) {
++		goto error;
++	}
++
++	*init = pdata;
++	return 0;
++error:
++	kfree(pdata);
++	*init = NULL;
++	return ret;
++#else
++	return -ENODEV;
++#endif
++}
++
++static inline void seth_destroy_pdata(struct seth_init_data **init)
++{
++#ifdef CONFIG_OF
++	struct seth_init_data *pdata = *init;
++
++	if (pdata) {
++		kfree(pdata);
++	}
++	*init = NULL;
++#else
++	return;
++#endif
++}
++
++static int  seth_probe(struct platform_device *pdev)
++{
++	struct seth_init_data *pdata = pdev->dev.platform_data;
++	struct net_device* netdev;
++	SEth* seth;
++	char ifname[IFNAMSIZ];
++	int ret;
++
++	if (pdev->dev.of_node && !pdata) {
++		ret = seth_parse_dt(&pdata, &pdev->dev);
++		if (ret) {
++			printk(KERN_ERR "failed to parse seth device tree, ret=%d\n", ret);
++			return ret;
++		}
++	}
++	SETH_INFO("after parse device tree, name=%s, dst=%u, channel=%u, blocknum=%u\n",
++		pdata->name, pdata->dst, pdata->channel, pdata->blocknum);
++
++	if(pdata->name[0])
++		strscpy(ifname, pdata->name, IFNAMSIZ);
++	else
++		strcpy(ifname, "veth%d");
++
++	netdev = alloc_netdev(sizeof(SEth), ifname, NET_NAME_UNKNOWN, ether_setup);
++	if (!netdev) {
++		seth_destroy_pdata(&pdata);
++		SETH_ERR ("alloc_netdev() failed.\n");
++		return -ENOMEM;
++	}
++	seth = netdev_priv (netdev);
++	seth->pdata = pdata;
++	seth->netdev = netdev;
++	seth->state = DEV_OFF;
++	seth->stopped = 0;
++
++	netdev->netdev_ops = &seth_ops;
++	netdev->watchdog_timeo = 1*HZ;
++	netdev->irq = 0;
++
++	eth_hw_addr_random(netdev);
++
++	ret = sblock_create(pdata->dst, pdata->channel,
++		pdata->blocknum, SETH_BLOCK_SIZE,
++		pdata->blocknum, SETH_BLOCK_SIZE);
++	if (ret) {
++		SETH_ERR ("create sblock failed (%d)\n", ret);
++		free_netdev(netdev);
++		seth_destroy_pdata(&pdata);
++		return ret;
++	}
++
++	ret = sblock_register_notifier(pdata->dst, pdata->channel, seth_handler, seth);
++	if (ret) {
++		SETH_ERR ("regitster notifier failed (%d)\n", ret);
++		free_netdev(netdev);
++		sblock_destroy(pdata->dst, pdata->channel);
++		return ret;
++	}
++
++	/* register new Ethernet interface */
++	if ((ret = register_netdev (netdev))) {
++		SETH_ERR ("register_netdev() failed (%d)\n", ret);
++		free_netdev(netdev);
++		sblock_destroy(pdata->dst, pdata->channel);
++		seth_destroy_pdata(&pdata);
++		return ret;
++	}
++
++	/* set link as disconnected */
++	netif_carrier_off (netdev);
++
++	platform_set_drvdata(pdev, seth);
++	return 0;
++}
++
++/*
++ * Cleanup Ethernet device driver.
++ */
++static void seth_remove(struct platform_device *pdev)
++{
++	struct SEth* seth = platform_get_drvdata(pdev);
++	struct seth_init_data *pdata = seth->pdata;
++
++	sblock_destroy(pdata->dst, pdata->channel);
++	seth_destroy_pdata(&pdata);
++	unregister_netdev(seth->netdev);
++	free_netdev(seth->netdev);
++
++	platform_set_drvdata(pdev, NULL);
++
++}
++
++static const struct of_device_id seth_match_table[] = {
++	{ .compatible = "sprd,seth", },
++	{ },
++};
++
++static struct platform_driver seth_driver = {
++	.probe = seth_probe,
++	.remove = seth_remove,
++	.driver = {
++		.name = "seth",
++		.of_match_table = seth_match_table,
++	},
++};
++
++static int __init seth_init(void)
++{
++	return platform_driver_register(&seth_driver);
++}
++
++static void __exit seth_exit(void)
++{
++	platform_driver_unregister(&seth_driver);
++}
++
++module_init (seth_init);
++module_exit (seth_exit);
++
++MODULE_DESCRIPTION ("Spreadtrum Ethernet device driver");
++MODULE_LICENSE ("GPL");
++
++
+diff --git a/arch/arm/mach-sprd/sipc/seth.h b/arch/arm/mach-sprd/sipc/seth.h
+new file mode 100755
+index 000000000..74839a843
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/seth.h
+@@ -0,0 +1,24 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#ifndef __SETH_H
++#define __SETH_H
++
++struct seth_init_data {
++	char *name;
++	uint8_t dst;
++	uint8_t	channel;
++	uint32_t blocknum;
++};
++
++#endif
+diff --git a/arch/arm/mach-sprd/sipc/sipc.c b/arch/arm/mach-sprd/sipc/sipc.c
+new file mode 100755
+index 000000000..b531fbe57
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/sipc.c
+@@ -0,0 +1,389 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/wait.h>
++#include <linux/spinlock.h>
++#include <linux/interrupt.h>
++#include <linux/sched.h>
++#include <linux/io.h>
++#include <linux/slab.h>
++#include <linux/debugfs.h>
++#include <linux/platform_device.h>
++#include <linux/of_device.h>
++#include <linux/of_address.h>
++#include <linux/of_irq.h>
++
++
++#include "sipc.h"
++#include "sipc_priv.h"
++
++#define SMSG_TXBUF_ADDR		(0)
++#define SMSG_TXBUF_SIZE		(SZ_1K)
++#define SMSG_RXBUF_ADDR		(SMSG_TXBUF_SIZE)
++#define SMSG_RXBUF_SIZE		(SZ_1K)
++
++#define SMSG_RINGHDR		(SMSG_TXBUF_SIZE + SMSG_RXBUF_SIZE)
++#define SMSG_TXBUF_RDPTR	(SMSG_RINGHDR + 0)
++#define SMSG_TXBUF_WRPTR	(SMSG_RINGHDR + 4)
++#define SMSG_RXBUF_RDPTR	(SMSG_RINGHDR + 8)
++#define SMSG_RXBUF_WRPTR	(SMSG_RINGHDR + 12)
++
++
++#define DEFINE_SIPC_RXIRQ_STATUS_FN(id) \
++static uint32_t sipc_rxirq_status##id(void) \
++{ \
++	return 1;\
++}
++
++#define DEFINE_SIPC_RXIRQ_CLEAR_FN(id) \
++static void sipc_rxirq_clear##id(void) \
++{ \
++	struct sipc_child_node_info *info = &sipc_dev->pdata->info_table[id];\
++	writel(info->ap2cp_bit_clr, info->ipi + info->cp2ap_int_ctrl);\
++}
++
++#define DEFINE_SIPC_TXIRQ_TRIGGER_FN(id) \
++static void sipc_txirq_trigger##id(void) \
++{ \
++	struct sipc_child_node_info *info = &sipc_dev->pdata->info_table[id];\
++	writel(info->ap2cp_bit_trig, info->ipi + info->ap2cp_int_ctrl);\
++}
++
++
++struct sipc_child_node_info {
++	uint8_t dst;
++	char * name;
++
++	uint32_t cp_base;
++	uint32_t cp_size;
++
++	uint32_t ring_base;
++	uint32_t ring_size;
++
++	uint32_t smem_base;
++	uint32_t smem_size;
++
++	void __iomem *ipi;
++	uint32_t ap2cp_int_ctrl;
++	uint32_t cp2ap_int_ctrl;
++	uint32_t ap2cp_bit_trig;
++	uint32_t ap2cp_bit_clr;
++
++	uint32_t irq;
++};
++
++struct sipc_init_data {
++	int is_alloc;
++	uint32_t chd_nr;
++	uint32_t smem_base;
++	uint32_t smem_size;
++	struct sipc_child_node_info info_table[0];
++};
++
++struct sipc_device {
++	int status;
++	uint32_t inst_nr;
++	struct sipc_init_data *pdata;
++	struct smsg_ipc *smsg_inst;
++};
++
++struct sipc_device *sipc_dev;
++
++DEFINE_SIPC_TXIRQ_TRIGGER_FN(0)
++DEFINE_SIPC_TXIRQ_TRIGGER_FN(1)
++DEFINE_SIPC_TXIRQ_TRIGGER_FN(2)
++DEFINE_SIPC_RXIRQ_CLEAR_FN(0)
++DEFINE_SIPC_RXIRQ_CLEAR_FN(1)
++DEFINE_SIPC_RXIRQ_CLEAR_FN(2)
++DEFINE_SIPC_RXIRQ_STATUS_FN(0)
++DEFINE_SIPC_RXIRQ_STATUS_FN(1)
++DEFINE_SIPC_RXIRQ_STATUS_FN(2)
++
++static uint32_t (*const sipc_rxirq_status_fn[])(void) = {
++	sipc_rxirq_status0, sipc_rxirq_status1, sipc_rxirq_status2,
++};
++static void (*const sipc_rxirq_clear_fn[])(void) = {
++	sipc_rxirq_clear0, sipc_rxirq_clear1, sipc_rxirq_clear2,
++};
++static void (*const sipc_txirq_trigger_fn[])(void) = {
++	sipc_txirq_trigger0, sipc_txirq_trigger1, sipc_txirq_trigger2,
++};
++
++static int sipc_create(struct sipc_device *sipc)
++{
++	struct sipc_init_data *pdata = sipc->pdata;
++	struct smsg_ipc *inst;
++	struct sipc_child_node_info *info;
++	void __iomem *base;
++	uint32_t num;
++	int ret, i;
++
++	if (!pdata) {
++		return -ENODEV;
++	}
++
++	num = pdata->chd_nr;
++	inst = sipc->smsg_inst;
++	info = pdata->info_table;
++
++	for (i = 0; i < num; i++) {
++		base = ioremap(info[i].ring_base, info[i].ring_size);
++		if (!base)
++			return -ENOMEM;
++
++		inst[i].txbuf_size = SMSG_TXBUF_SIZE / sizeof(struct smsg);
++		inst[i].txbuf_addr = base + SMSG_TXBUF_ADDR;
++		inst[i].txbuf_rdptr = base + SMSG_TXBUF_RDPTR;
++		inst[i].txbuf_wrptr = base + SMSG_TXBUF_WRPTR;
++
++		inst[i].rxbuf_size = SMSG_RXBUF_SIZE / sizeof(struct smsg);
++		inst[i].rxbuf_addr = base + SMSG_RXBUF_ADDR;
++		inst[i].rxbuf_rdptr = base + SMSG_RXBUF_RDPTR;
++		inst[i].rxbuf_wrptr = base + SMSG_RXBUF_WRPTR;
++
++		ret = smsg_ipc_create(inst[i].dst, &inst[i]);
++
++		pr_info("sipc:[%d] created\n", i);
++		if (ret) {
++			break;
++		}
++	}
++	return ret;
++}
++
++
++static int sipc_parse_dt(struct sipc_init_data **init, struct device *dev)
++{
++	struct device_node *np = dev->of_node, *nchd;
++	struct sipc_init_data *pdata;
++	struct sipc_child_node_info *info;
++	struct resource res;
++	uint32_t data, nr;
++	int ret, i;
++
++	nr = of_get_child_count(np);
++	if (nr == 0 || nr >= SIPC_ID_NR) {
++		return (!nr ? -ENODEV : -EINVAL);
++	}
++	pdata = kzalloc(sizeof(struct sipc_init_data) + nr*sizeof(struct sipc_child_node_info), GFP_KERNEL);
++	if (!pdata) {
++		pr_err("sipc: failed to alloc mem for pdata\n");
++		return -ENOMEM;
++	}
++	pdata->is_alloc = 1;
++
++	ret = of_address_to_resource(np, 0, &res);
++	if (ret) {
++		goto error;
++	}
++	pdata->chd_nr = nr;
++	pdata->smem_base = (uint32_t)res.start;
++	pdata->smem_size = (uint32_t)(res.end - res.start + 1);
++	pr_info("sipc: chd_nr=%d smem_base=0x%x, smem_size=0x%x\n", pdata->chd_nr, pdata->smem_base, pdata->smem_size);
++
++	i = 0;
++	info = pdata->info_table;
++
++	for_each_child_of_node(np, nchd) {
++		ret = of_property_read_string(nchd, "sprd,name", (const char **)&info[i].name);
++		if (ret) {
++			goto error;
++		}
++		pr_info("sipc:[%d] name=%s\n", i, info[i].name);
++
++		ret = of_property_read_u32(nchd, "sprd,dst", &data);
++		if (ret) {
++			goto error;
++		}
++		info[i].dst = (uint8_t)data;
++		pr_info("sipc:[%d] dst=%u\n", i, info[i].dst);
++
++		/* get ipi base addr */
++		ret = of_property_read_u32(nchd, "sprd,ap2cp", &info[i].ap2cp_int_ctrl);
++		if (ret) {
++			goto error;
++		}
++
++		ret = of_property_read_u32(nchd, "sprd,cp2ap", &info[i].cp2ap_int_ctrl);
++		if (ret) {
++			goto error;
++		}
++		pr_info("sipc:[%d] ap2cp_int_ctrl=0x%x, cp2ap_int_ctrl=0x%x\n",
++			i, info[i].ap2cp_int_ctrl, info[i].cp2ap_int_ctrl);
++
++		ret = of_property_read_u32(nchd, "sprd,trig", &info[i].ap2cp_bit_trig);
++		if (ret) {
++			goto error;
++		}
++
++		ret = of_property_read_u32(nchd, "sprd,clr", &info[i].ap2cp_bit_clr);
++		if (ret) {
++			goto error;
++		}
++		pr_info("sipc:[%d] ap2cp_bit_trig=0x%x, ap2cp_bit_clr=0x%x\n",
++			i, info[i].ap2cp_bit_trig, info[i].ap2cp_bit_clr);
++
++		/* IPI register block, then the smsg ring in shared memory */
++		ret = of_address_to_resource(nchd, 0, &res);
++		if (ret)
++			goto error;
++		info[i].ipi = ioremap(res.start, resource_size(&res));
++		if (!info[i].ipi) {
++			ret = -ENOMEM;
++			goto error;
++		}
++		ret = of_address_to_resource(nchd, 1, &res);
++		if (ret)
++			goto error;
++		info[i].ring_base = (uint32_t)res.start;
++		info[i].ring_size = (uint32_t)resource_size(&res);
++		pr_info("sipc:[%d] ring_base=0x%x, ring_size=0x%x\n", i, info[i].ring_base, info[i].ring_size);
++		/* get irq */
++		info[i].irq = irq_of_parse_and_map(nchd, 0);
++		if (!info[i].irq) {
++			ret = -EINVAL;
++			goto error;
++		}
++		pr_info("sipc:[%d] irq=%d\n", i, info[i].irq);
++
++		i++;
++	}
++	*init = pdata;
++	return 0;
++error:
++	kfree(pdata);
++	return ret;
++}
++
++static void sipc_destroy_pdata(struct sipc_init_data **ppdata)
++{
++	struct sipc_init_data *pdata = *ppdata;
++	if (pdata && pdata->is_alloc) {
++		kfree(pdata);
++	}
++	return;
++}
++
++static int sipc_probe(struct platform_device *pdev)
++{
++	struct sipc_init_data *pdata = pdev->dev.platform_data;
++	struct sipc_device *sipc;
++	struct sipc_child_node_info *info;
++	struct smsg_ipc *smsg;
++	uint32_t num;
++	int ret, i;
++
++
++
++
++	if (!pdata && pdev->dev.of_node) {
++		ret = sipc_parse_dt(&pdata, &pdev->dev);
++		if (ret) {
++			pr_err("sipc: failed to parse dt, ret=%d\n", ret);
++			return -ENODEV;
++		}
++	}
++
++	if (!pdata) {
++		pr_err("sipc: pdata is NULL!!\n");
++		return -ENOMEM;
++	}
++
++	sipc = kzalloc(sizeof(struct sipc_device), GFP_KERNEL);
++	if (!sipc) {
++		sipc_destroy_pdata(&pdata);
++		return -ENOMEM;
++	}
++
++	num = pdata->chd_nr;
++	smsg = kzalloc(num * sizeof(struct smsg_ipc), GFP_KERNEL);
++	if (!smsg)
++	{
++		sipc_destroy_pdata(&pdata);
++		kfree(sipc);
++		return -ENOMEM;
++	}
++	pr_info("sipc: num=%d\n", num);
++	info = pdata->info_table;
++	for (i = 0; i < num; i++) {
++		smsg[i].name = info[i].name;
++		smsg[i].dst = info[i].dst;
++		smsg[i].irq = info[i].irq;
++		smsg[i].rxirq_status = sipc_rxirq_status_fn[i];
++		smsg[i].rxirq_clear = sipc_rxirq_clear_fn[i];
++		smsg[i].txirq_trigger = sipc_txirq_trigger_fn[i];
++
++		pr_info("sipc: [%d] fn status=0x%x, clear=0x%x, trigger=0x%x\n",
++			i, (uint32_t)smsg[i].rxirq_status, (uint32_t)smsg[i].rxirq_clear,
++			(uint32_t)smsg[i].txirq_trigger);
++		pr_info("sipc:[%d] smsg name=%s, dst=%u, irq=%d\n",
++			i, smsg[i].name, smsg[i].dst, smsg[i].irq);
++	}
++
++	sipc->pdata = pdata;
++	sipc->smsg_inst = smsg;
++	sipc_dev = sipc;
++
++	smsg_suspend_init();
++
++	sipc_create(sipc);
++
++	pr_info("sipc: smem_base=0x%x, smem_size=0x%x\n", pdata->smem_base, pdata->smem_size);
++	smem_init(pdata->smem_base, pdata->smem_size);
++
++	platform_set_drvdata(pdev, sipc);
++	return 0;
++}
++
++static void sipc_remove(struct platform_device *pdev)
++{
++	struct sipc_device *sipc = platform_get_drvdata(pdev);
++
++	sipc_destroy_pdata(&sipc->pdata);
++	kfree(sipc->smsg_inst);
++	kfree(sipc);
++}
++
++
++static const struct of_device_id sipc_match_table[] = {
++        {.compatible = "sprd,sipc", },
++        { },
++};
++
++static struct platform_driver sipc_driver = {
++        .driver = {
++                .name = "sipc",
++                .of_match_table = sipc_match_table,
++        },
++        .probe = sipc_probe,
++        .remove = sipc_remove,
++};
++
++static int __init sipc_init(void)
++{
++	return platform_driver_register(&sipc_driver);
++}
++
++static void __exit sipc_exit(void)
++{
++        platform_driver_unregister(&sipc_driver);
++}
++
++arch_initcall(sipc_init);
++module_exit(sipc_exit);
++
++MODULE_AUTHOR("Chen Gaopeng");
++MODULE_DESCRIPTION("SIPC module driver");
++MODULE_LICENSE("GPL");
+diff --git a/arch/arm/mach-sprd/sipc/sipc.h b/arch/arm/mach-sprd/sipc/sipc.h
+new file mode 100755
+index 000000000..1f7bf3414
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/sipc.h
+@@ -0,0 +1,417 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#ifndef __SIPC_H
++#define __SIPC_H
++
++#include <linux/poll.h>
++
++/* ****************************************************************** */
++/* SMSG interfaces */
++
++/* sipc processor ID definition */
++enum {
++	SIPC_ID_AP = 0,		/* Application Processor */
++	SIPC_ID_CPT,		/* TD processor */
++	SIPC_ID_CPW,		/* WCDMA processor */
++	SIPC_ID_WCN,		/* Wireless Connectivity */
++	SIPC_ID_NR,		/* total processor number */
++};
++
++/* share-mem ring buffer short message */
++struct smsg {
++	uint8_t			channel;	/* channel index */
++	uint8_t			type;		/* msg type */
++	uint16_t		flag;		/* msg flag */
++	uint32_t		value;		/* msg value */
++};
++
++/* smsg channel definition */
++enum {
++	SMSG_CH_CTRL = 0,	/* some emergency control */
++	SMSG_CH_COMM,		/* general communication channel */
++	SMSG_CH_RPC_AP,		/* RPC server channel in AP side */
++	SMSG_CH_RPC_CP,		/* RPC server channel in CP side */
++	SMSG_CH_PIPE,		/* general pipe channel */
++	SMSG_CH_PLOG,		/* pipe for debug log/dump */
++	SMSG_CH_TTY,		/* virtual serial for telephony */
++	SMSG_CH_DATA0,		/* 2G/3G wirleless data */
++	SMSG_CH_DATA1,		/* 2G/3G wirleless data */
++	SMSG_CH_DATA2,		/* 2G/3G wirleless data */
++	SMSG_CH_VBC,		/* audio conrol channel */
++	SMSG_CH_PLAYBACK, 	/* audio playback channel */
++	SMSG_CH_CAPTURE,	/* audio capture channel */
++	SMSG_CH_MONITOR_AUDIO,	/* audio monitor channel */
++	SMSG_CH_CTRL_VOIP,	/* audio voip conrol channel */
++	SMSG_CH_PLAYBACK_VOIP, 	/* audio voip playback channel */
++	SMSG_CH_CAPTURE_VOIP,	/* audio voip capture channel */
++	SMSG_CH_MONITOR_VOIP,	/* audio voip monitor channel */
++	SMSG_CH_NR,		/* total channel number */
++};
++
++/* smsg type definition */
++enum {
++	SMSG_TYPE_NONE = 0,
++	SMSG_TYPE_OPEN,		/* first msg to open a channel */
++	SMSG_TYPE_CLOSE,	/* last msg to close a channel */
++	SMSG_TYPE_DATA,		/* data, value=addr, no ack */
++	SMSG_TYPE_EVENT,	/* event with value, no ack */
++	SMSG_TYPE_CMD,		/* command, value=cmd */
++	SMSG_TYPE_DONE,		/* return of command */
++	SMSG_TYPE_SMEM_ALLOC,	/* allocate smem, flag=order */
++	SMSG_TYPE_SMEM_FREE,	/* free smem, flag=order, value=addr */
++	SMSG_TYPE_SMEM_DONE,	/* return of alloc/free smem */
++	SMSG_TYPE_FUNC_CALL,	/* RPC func, value=addr */
++	SMSG_TYPE_FUNC_RETURN,	/* return of RPC func */
++	SMSG_TYPE_DIE,
++	SMSG_TYPE_NR,		/* total type number */
++};
++
++/* flag for OPEN/CLOSE msg type */
++#define	SMSG_OPEN_MAGIC		0xBEEE
++#define	SMSG_CLOSE_MAGIC	0xEDDD
++
++/**
++ * smsg_ch_open -- open a channel for smsg
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @timeout: milliseconds, 0 means no wait, -1 means unlimited
++ * @return: 0 on success, <0 on failue
++ */
++int smsg_ch_open(uint8_t dst, uint8_t channel, int timeout);
++
++/**
++ * smsg_ch_close -- close a channel for smsg
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @timeout: milliseconds, 0 means no wait, -1 means unlimited
++ * @return: 0 on success, <0 on failue
++ */
++int smsg_ch_close(uint8_t dst, uint8_t channel, int timeout);
++
++/**
++ * smsg_send -- send smsg
++ *
++ * @dst: dest processor ID
++ * @msg: smsg body to be sent
++ * @timeout: milliseconds, 0 means no wait, -1 means unlimited
++ * @return: 0 on success, <0 on failue
++ */
++int smsg_send(uint8_t dst, struct smsg *msg, int timeout);
++
++/**
++ * smsg_recv -- poll and recv smsg
++ *
++ * @dst: dest processor ID
++ * @msg: smsg body to be received, channel should be filled as input
++ * @timeout: milliseconds, 0 means no wait, -1 means unlimited
++ * @return: 0 on success, <0 on failue
++ */
++int smsg_recv(uint8_t dst, struct smsg *msg, int timeout);
++
++/* quickly fill a smsg body */
++static inline void smsg_set(struct smsg *msg, uint8_t channel,
++		uint8_t type, uint16_t flag, uint32_t value)
++{
++	msg->channel = channel;
++	msg->type = type;
++	msg->flag = flag;
++	msg->value = value;
++}
++
++/* ack an open msg for modem recovery */
++static inline void smsg_open_ack(uint8_t dst, uint16_t channel)
++{
++	struct smsg mopen;
++	smsg_set(&mopen, channel, SMSG_TYPE_OPEN, SMSG_OPEN_MAGIC, 0);
++	smsg_send(dst, &mopen, -1);
++}
++
++/* ack an close msg for modem recovery */
++static inline void smsg_close_ack(uint8_t dst, uint16_t channel)
++{
++	struct smsg mclose;
++	smsg_set(&mclose, channel, SMSG_TYPE_CLOSE, SMSG_CLOSE_MAGIC, 0);
++	smsg_send(dst, &mclose, -1);
++}
++/* ****************************************************************** */
++/* SMEM interfaces */
++
++/**
++ * smem_alloc -- allocate shared memory block
++ *
++ * @size: size to be allocated, page-aligned
++ * @return: phys addr or 0 if failed
++ */
++uint32_t smem_alloc(uint32_t size);
++
++/**
++ * smem_free -- free shared memory block
++ *
++ * @addr: smem phys addr to be freed
++ * @order: size to be freed
++ */
++void smem_free(uint32_t addr, uint32_t size);
++
++/* ****************************************************************** */
++/* SBUF Interfaces */
++
++/**
++ * sbuf_create -- create pipe ring buffers on a channel
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @txbufsize: tx buffer size
++ * @rxbufsize: rx buffer size
++ * @bufnum: how many buffers to be created
++ * @return: 0 on success, <0 on failue
++ */
++int sbuf_create(uint8_t dst, uint8_t channel, uint32_t bufnum,
++		uint32_t txbufsize, uint32_t rxbufsize);
++
++/**
++ * sbuf_destroy -- destroy the pipe ring buffers on a channel
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @return: 0 on success, <0 on failue
++ */
++void sbuf_destroy(uint8_t dst, uint8_t channel);
++
++/**
++ * sbuf_write -- write data to a sbuf
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @bufid: buffer ID
++ * @buf: data to be written
++ * @len: data length
++ * @timeout: milliseconds, 0 means no wait, -1 means unlimited
++ * @return: written bytes on success, <0 on failue
++ */
++int sbuf_write(uint8_t dst, uint8_t channel, uint32_t bufid,
++		void *buf, uint32_t len, int timeout);
++
++/**
++ * sbuf_read -- write data to a sbuf
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @bufid: buffer ID
++ * @buf: data to be written
++ * @len: data length
++ * @timeout: milliseconds, 0 means no wait, -1 means unlimited
++ * @return: read bytes on success, <0 on failue
++ */
++int sbuf_read(uint8_t dst, uint8_t channel, uint32_t bufid,
++		void *buf, uint32_t len, int timeout);
++
++/**
++ * sbuf_poll_wait -- poll sbuf read/write, used in spipe driver
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @bufid: buffer ID
++ * @file: struct file handler
++ * @wait: poll table
++ * @return: POLLIN or POLLOUT
++ */
++int sbuf_poll_wait(uint8_t dst, uint8_t channel, uint32_t bufid,
++		struct file *file, poll_table *wait);
++
++/**
++ * sbuf_status -- get sbuf status
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @return: 0 when ready, <0 when broken
++ */
++int sbuf_status(uint8_t dst, uint8_t channel);
++
++#define	SBUF_NOTIFY_READ	0x01
++#define	SBUF_NOTIFY_WRITE	0x02
++/**
++ * sbuf_register_notifier -- register a callback that's called
++ * 		when a tx sbuf is available or a rx sbuf is received.
++ * 		non-blocked sbuf_read can be called.
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @bufid: buf ID
++ * @handler: a callback handler
++ * @event: NOTIFY_READ, NOTIFY_WRITE, or both
++ * @data: opaque data passed to the receiver
++ * @return: 0 on success, <0 on failue
++ */
++int sbuf_register_notifier(uint8_t dst, uint8_t channel, uint32_t bufid,
++		void (*handler)(int event, void *data), void *data);
++
++/* ****************************************************************** */
++/* SBLOCK interfaces */
++
++/* sblock structure: addr is the uncached virtual address */
++struct sblock {
++	void		*addr;
++	uint32_t	length;
++};
++
++/**
++ * sblock_create -- create sblock manager on a channel
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @txblocknum: tx block number
++ * @txblocksize: tx block size
++ * @rxblocknum: rx block number
++ * @rxblocksize: rx block size
++ * @return: 0 on success, <0 on failue
++ */
++int sblock_create(uint8_t dst, uint8_t channel,
++		uint32_t txblocknum, uint32_t txblocksize,
++		uint32_t rxblocknum, uint32_t rxblocksize);
++
++/**
++ * sblock_destroy -- destroy sblock manager on a channel
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ */
++void sblock_destroy(uint8_t dst, uint8_t channel);
++
++#define	SBLOCK_NOTIFY_GET	0x01
++#define	SBLOCK_NOTIFY_RECV	0x02
++#define	SBLOCK_NOTIFY_STATUS	0x03
++#define	SBLOCK_NOTIFY_OPEN	0x04
++#define	SBLOCK_NOTIFY_CLOSE	0x05
++/**
++ * sblock_register_notifier -- register a callback that's called
++ * 		when a tx sblock is available or a rx block is received.
++ * 		non-blocked sblock_get or sblock_receive can be called.
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @handler: a callback handler
++ * @event: SBLOCK_NOTIFY_GET, SBLOCK_NOTIFY_RECV, or both
++ * @data: opaque data passed to the receiver
++ * @return: 0 on success, <0 on failue
++ */
++int sblock_register_notifier(uint8_t dst, uint8_t channel,
++		void (*handler)(int event, void *data), void *data);
++
++/**
++ * sblock_get  -- get a free sblock for sender
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @blk: return a gotten sblock pointer
++ * @timeout: milliseconds, 0 means no wait, -1 means unlimited
++ * @return: 0 on success, <0 on failue
++ */
++int sblock_get(uint8_t dst, uint8_t channel, struct sblock *blk, int timeout);
++
++/**
++ * sblock_send  -- send a sblock with smsg, it should be from sblock_get
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @blk: the sblock to be sent
++ * @return: 0 on success, <0 on failue
++ */
++int sblock_send(uint8_t dst, uint8_t channel, struct sblock *blk);
++
++/**
++ * sblock_send_prepare  -- send a sblock without smsg, it should be from sblock_get
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @blk: the sblock to be sent
++ * @return: 0 on success, <0 on failue
++ */
++int sblock_send_prepare(uint8_t dst, uint8_t channel, struct sblock *blk);
++
++/**
++ * sblock_send_finish  -- trigger an smsg to notify that sblock has been sent
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @return: 0 on success, <0 on failue
++ */
++int sblock_send_finish(uint8_t dst, uint8_t channel);
++
++/**
++ * sblock_receive  -- receive a sblock, it should be released after it's handled
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @blk: return a received sblock pointer
++ * @timeout: milliseconds, 0 means no wait, -1 means unlimited
++ * @return: 0 on success, <0 on failue
++ */
++int sblock_receive(uint8_t dst, uint8_t channel, struct sblock *blk, int timeout);
++
++/**
++ * sblock_release  -- release a sblock from reveiver
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @return: 0 on success, <0 on failue
++ */
++int sblock_release(uint8_t dst, uint8_t channel, struct sblock *blk);
++
++
++/**
++ * sblock_get_free_count  -- the count of free(empty) block
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @return: >=0  the count of free(empty) block
++ */
++int sblock_get_free_count(uint8_t dst, uint8_t channel);
++
++
++/**
++ * sblock_put  -- put a free sblock for sender
++ *
++ * @dst: dest processor ID
++ * @channel: channel ID
++ * @blk: sblock pointer
++ * @return: void
++ */
++void sblock_put(uint8_t dst, uint8_t channel, struct sblock *blk);
++
++/* ****************************************************************** */
++/* TODO: SRPC interfaces */
++
++enum {
++	SPRC_ID_NONE = 0,
++	SPRC_ID_XXX,
++	SPRC_ID_NR,
++};
++
++struct srpc_server {
++	uint32_t		id;
++	/* TODO */
++};
++
++struct srpc_client {
++	uint32_t		id;
++	/* TODO */
++};
++
++int srpc_init(uint8_t dst);
++int srpc_server_register(uint8_t dst, struct srpc_server *server);
++int srpc_client_call(uint8_t dst, struct srpc_client *client);
++
++#endif
+diff --git a/arch/arm/mach-sprd/sipc/sipc_priv.h b/arch/arm/mach-sprd/sipc/sipc_priv.h
+new file mode 100755
+index 000000000..4b02eb53b
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/sipc_priv.h
+@@ -0,0 +1,86 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#ifndef __SIPC_PRIV_H
++#define __SIPC_PRIV_H
++
++#define SMSG_CACHE_NR		256
++
++struct smsg_channel {
++	/* wait queue for recv-buffer */
++	wait_queue_head_t	rxwait;
++	struct mutex		rxlock;
++
++	/* cached msgs for recv */
++	uint32_t		wrptr[1];
++	uint32_t		rdptr[1];
++	struct smsg		caches[SMSG_CACHE_NR];
++};
++
++/* smsg ring-buffer between AP/CP ipc */
++struct smsg_ipc {
++	char			*name;
++	uint8_t			dst;
++	uint8_t			padding[3];
++
++	/* send-buffer info */
++	void __iomem		*txbuf_addr;
++	uint32_t		txbuf_size;	/* must be 2^n */
++	void __iomem		*txbuf_rdptr;
++	void __iomem		*txbuf_wrptr;
++
++	/* recv-buffer info */
++	void __iomem		*rxbuf_addr;
++	uint32_t		rxbuf_size;	/* must be 2^n */
++	void __iomem		*rxbuf_rdptr;
++	void __iomem		*rxbuf_wrptr;
++
++	/* sipc irq related */
++	int			irq;
++	irq_handler_t		irq_handler;
++	irq_handler_t		irq_threadfn;
++
++	uint32_t 		(*rxirq_status)(void);
++	void			(*rxirq_clear)(void);
++	void			(*txirq_trigger)(void);
++
++	/* sipc ctrl thread */
++	struct task_struct	*thread;
++
++	/* lock for send-buffer */
++	spinlock_t		txpinlock;
++
++	/* all fixed channels receivers */
++	struct smsg_channel	*channels[SMSG_CH_NR];
++
++	/* record the runtime status of smsg channel */
++	atomic_t 		busy[SMSG_CH_NR];
++
++	/* all channel states: 0 unused, 1 opened */
++	uint8_t			states[SMSG_CH_NR];
++};
++
++#define CHAN_STATE_UNUSED	0
++#define CHAN_STATE_WAITING 	1
++#define CHAN_STATE_OPENED	2
++#define CHAN_STATE_FREE 	3
++
++/* create/destroy smsg ipc between AP/CP */
++int smsg_ipc_create(uint8_t dst, struct smsg_ipc *ipc);
++int smsg_ipc_destroy(uint8_t dst);
++int  smsg_suspend_init(void);
++
++/* initialize smem pool for AP/CP */
++int smem_init(uint32_t addr, uint32_t size);
++
++#endif
+diff --git a/arch/arm/mach-sprd/sipc/smem.c b/arch/arm/mach-sprd/sipc/smem.c
+new file mode 100755
+index 000000000..5b529ae3a
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/smem.c
+@@ -0,0 +1,180 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/genalloc.h>
++#include <linux/mm.h>
++#include <linux/debugfs.h>
++#include <linux/seq_file.h>
++#include <linux/slab.h>
++#include <linux/list.h>
++#include <linux/sched.h>
++
++#include "sipc.h"
++
++struct smem_pool {
++	struct list_head 	smem_head;
++	spinlock_t 		lock;
++
++	uint32_t		addr;
++	uint32_t		size;
++	atomic_t 		used;
++
++	struct gen_pool		*gen;
++};
++
++struct smem_record {
++	struct list_head smem_list;
++	struct task_struct *task;
++	uint32_t size;
++	uint32_t addr;
++};
++
++static struct smem_pool		mem_pool;
++
++int smem_init(uint32_t addr, uint32_t size)
++{
++	struct smem_pool *spool = &mem_pool;
++
++	spool->addr = addr;
++	spool->size = PAGE_ALIGN(size);
++	atomic_set(&spool->used, 0);
++	spin_lock_init(&spool->lock);
++	INIT_LIST_HEAD(&spool->smem_head);
++
++	/* allocator block size is times of pages */
++	spool->gen = gen_pool_create(PAGE_SHIFT, -1);
++	if (!spool->gen) {
++		printk(KERN_ERR "Failed to create smem gen pool!\n");
++		return -1;
++	}
++
++	if (gen_pool_add(spool->gen, spool->addr, spool->size, -1) != 0) {
++		printk(KERN_ERR "Failed to add smem gen pool!\n");
++		return -1;
++	}
++
++	return 0;
++}
++
++/* ****************************************************************** */
++
++uint32_t smem_alloc(uint32_t size)
++{
++	struct smem_pool *spool = &mem_pool;
++	struct smem_record *recd;
++	unsigned long flags;
++	uint32_t addr;
++
++	recd = kzalloc(sizeof(struct smem_record), GFP_KERNEL);
++	if (!recd) {
++		printk(KERN_ERR "failed to alloc smem record\n");
++		addr = 0;
++		goto error;
++	}
++
++	size = PAGE_ALIGN(size);
++	addr = gen_pool_alloc(spool->gen, size);
++	if (!addr) {
++		printk(KERN_ERR "failed to alloc smem from gen pool\n");
++		kfree(recd);
++		goto error;
++	}
++
++	/* record smem alloc info */
++	atomic_add(size, &spool->used);
++	recd->size = size;
++	recd->task = current;
++	recd->addr = addr;
++	spin_lock_irqsave(&spool->lock, flags);
++	list_add_tail(&recd->smem_list, &spool->smem_head);
++	spin_unlock_irqrestore(&spool->lock, flags);
++
++error:
++	return addr;
++}
++
++void smem_free(uint32_t addr, uint32_t size)
++{
++	struct smem_pool *spool = &mem_pool;
++	struct smem_record *recd, *next;
++	unsigned long flags;
++
++	size = PAGE_ALIGN(size);
++	atomic_sub(size, &spool->used);
++	gen_pool_free(spool->gen, addr, size);
++	/* delete record node from list */
++	spin_lock_irqsave(&spool->lock, flags);
++	list_for_each_entry_safe(recd, next, &spool->smem_head, smem_list) {
++		if (recd->addr == addr) {
++			list_del(&recd->smem_list);
++			kfree(recd);
++			break;
++		}
++	}
++	spin_unlock_irqrestore(&spool->lock, flags);
++}
++
++#ifdef CONFIG_DEBUG_FS
++static int smem_debug_show(struct seq_file *m, void *private)
++{
++	struct smem_pool *spool = &mem_pool;
++	struct smem_record *recd;
++	uint32_t fsize;
++	unsigned long flags;
++
++	fsize = gen_pool_avail(spool->gen);
++
++	seq_printf(m, "smem pool infomation:\n");
++	seq_printf(m, "phys_addr=0x%x, total=0x%x, used=0x%x, free=0x%x\n",
++		spool->addr, spool->size, spool->used, fsize);
++	seq_printf(m, "smem record list:\n");
++
++	spin_lock_irqsave(&spool->lock, flags);
++	list_for_each_entry(recd, &spool->smem_head, smem_list) {
++		seq_printf(m, "task %s: pid=%u, addr=0x%x, size=0x%x\n",
++			recd->task->comm, recd->task->pid, recd->addr, recd->size);
++	}
++	spin_unlock_irqrestore(&spool->lock, flags);
++	return 0;
++}
++
++static int smem_debug_open(struct inode *inode, struct file *file)
++{
++        return single_open(file, smem_debug_show, inode->i_private);
++}
++
++static const struct file_operations smem_debug_fops = {
++        .open = smem_debug_open,
++        .read = seq_read,
++        .llseek = seq_lseek,
++        .release = single_release,
++};
++
++int smem_init_debugfs(void *root)
++{
++        if (!root)
++                return -ENXIO;
++        debugfs_create_file("smem", S_IRUGO, (struct dentry *)root, NULL, &smem_debug_fops);
++        return 0;
++}
++
++#endif //endof CONFIG_DEBUG_FS
++
++EXPORT_SYMBOL(smem_alloc);
++EXPORT_SYMBOL(smem_free);
++
++MODULE_AUTHOR("Chen Gaopeng");
++MODULE_DESCRIPTION("SIPC/SMEM driver");
++MODULE_LICENSE("GPL");
+diff --git a/arch/arm/mach-sprd/sipc/smsg.c b/arch/arm/mach-sprd/sipc/smsg.c
+new file mode 100755
+index 000000000..d7a92dac6
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/smsg.c
+@@ -0,0 +1,502 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/sched.h>
++#include <linux/kthread.h>
++#include <linux/wait.h>
++#include <linux/interrupt.h>
++#include <linux/delay.h>
++#include <linux/slab.h>
++#include <linux/io.h>
++#include <linux/debugfs.h>
++#include <linux/seq_file.h>
++
++
++#include "sipc.h"
++#include "sipc_priv.h"
++#include <linux/pm_wakeup.h>
++#include <linux/syscore_ops.h>
++
++static struct smsg_ipc *smsg_ipcs[SIPC_ID_NR];
++
++static ushort debug_enable = 0;
++
++static struct wakeup_source *sipc_wake_lock;
++
++module_param_named(debug_enable, debug_enable, ushort, 0644);
++
++irqreturn_t smsg_irq_handler(int irq, void *dev_id)
++{
++	struct smsg_ipc *ipc = (struct smsg_ipc *)dev_id;
++	struct smsg *msg;
++	struct smsg_channel *ch;
++	void __iomem *rxpos;
++	uint32_t wr;
++
++	if (ipc->rxirq_status()) {
++		ipc->rxirq_clear();
++	}
++
++	while (readl(ipc->rxbuf_wrptr) != readl(ipc->rxbuf_rdptr)) {
++		rxpos = (readl(ipc->rxbuf_rdptr) & (ipc->rxbuf_size - 1)) *
++			sizeof (struct smsg) + ipc->rxbuf_addr;
++		msg = (struct smsg __force *)rxpos;
++
++		pr_debug("irq get smsg: wrptr=%d, rdptr=%d, rxpos=%p\n",
++			readl(ipc->rxbuf_wrptr), readl(ipc->rxbuf_rdptr), rxpos);
++		pr_debug("irq read smsg: channel=%d, type=%d, flag=0x%04x, value=0x%08x\n",
++			msg->channel, msg->type, msg->flag, msg->value);
++		if(msg->type == SMSG_TYPE_DIE) {
++			if(debug_enable)
++				panic("cpcrash");
++			else {
++				/* update smsg rdptr */
++				writel(readl(ipc->rxbuf_rdptr) + 1, ipc->rxbuf_rdptr);
++
++				continue;
++			}
++		}
++		if (msg->channel >= SMSG_CH_NR || msg->type >= SMSG_TYPE_NR) {
++			/* invalid msg */
++			printk(KERN_ERR "invalid smsg: channel=%d, type=%d, flag=0x%04x, value=0x%08x\n",
++				msg->channel, msg->type, msg->flag, msg->value);
++
++			/* update smsg rdptr */
++			writel(readl(ipc->rxbuf_rdptr) + 1, ipc->rxbuf_rdptr);
++
++			continue;
++		}
++
++		ch = ipc->channels[msg->channel];
++		if (!ch) {
++			if (ipc->states[msg->channel] == CHAN_STATE_UNUSED &&
++					msg->type == SMSG_TYPE_OPEN &&
++					msg->flag == SMSG_OPEN_MAGIC) {
++
++				ipc->states[msg->channel] = CHAN_STATE_WAITING;
++			} else {
++				/* drop this bad msg since channel is not opened */
++				printk(KERN_ERR "smsg channel %d not opened! "
++					"drop smsg: type=%d, flag=0x%04x, value=0x%08x\n",
++					msg->channel, msg->type, msg->flag, msg->value);
++			}
++			/* update smsg rdptr */
++			writel(readl(ipc->rxbuf_rdptr) + 1, ipc->rxbuf_rdptr);
++
++			continue;
++		}
++
++		atomic_inc(&(ipc->busy[msg->channel]));
++
++		if ((int)(readl(ch->wrptr) - readl(ch->rdptr)) >= SMSG_CACHE_NR) {
++			/* msg cache is full, drop this msg */
++			printk(KERN_ERR "smsg channel %d recv cache is full! "
++				"drop smsg: type=%d, flag=0x%04x, value=0x%08x\n",
++				msg->channel, msg->type, msg->flag, msg->value);
++		} else {
++			/* write smsg to cache */
++			wr = readl(ch->wrptr) & (SMSG_CACHE_NR - 1);
++			memcpy(&(ch->caches[wr]), msg, sizeof(struct smsg));
++			writel(readl(ch->wrptr) + 1, ch->wrptr);
++		}
++
++		/* update smsg rdptr */
++		writel(readl(ipc->rxbuf_rdptr) + 1, ipc->rxbuf_rdptr);
++
++		wake_up_interruptible_all(&(ch->rxwait));
++
++		atomic_dec(&(ipc->busy[msg->channel]));
++	}
++
++	__pm_wakeup_event(sipc_wake_lock, 500);
++
++	return IRQ_HANDLED;
++}
++
++int smsg_ipc_create(uint8_t dst, struct smsg_ipc *ipc)
++{
++	int rval;
++
++	if (!ipc->irq_handler) {
++		ipc->irq_handler = smsg_irq_handler;
++	}
++
++	spin_lock_init(&(ipc->txpinlock));
++
++	smsg_ipcs[dst] = ipc;
++
++	/* explicitly call irq handler in case of missing irq on boot */
++	ipc->irq_handler(ipc->irq, ipc);
++
++	/* register IPI irq */
++	rval = request_irq(ipc->irq, ipc->irq_handler,
++			IRQF_NO_SUSPEND, ipc->name, ipc);
++	if (rval != 0) {
++		printk(KERN_ERR "Failed to request irq %s: %d\n",
++				ipc->name, ipc->irq);
++		return rval;
++	}
++
++	return 0;
++}
++
++int smsg_ipc_destroy(uint8_t dst)
++{
++	struct smsg_ipc *ipc = smsg_ipcs[dst];
++
++	kthread_stop(ipc->thread);
++	free_irq(ipc->irq, ipc);
++	smsg_ipcs[dst] = NULL;
++
++	return 0;
++}
++
++/* ****************************************************************** */
++
++int smsg_ch_open(uint8_t dst, uint8_t channel, int timeout)
++{
++	struct smsg_ipc *ipc = smsg_ipcs[dst];
++	struct smsg_channel *ch;
++	struct smsg mopen, mrecv;
++	uint32_t rval = 0;
++
++	if(!ipc) {
++	    return -ENODEV;
++	}
++
++	ch = kzalloc(sizeof(struct smsg_channel), GFP_KERNEL);
++	if (!ch) {
++		return -ENOMEM;
++	}
++
++	atomic_set(&(ipc->busy[channel]), 1);
++	init_waitqueue_head(&(ch->rxwait));
++	mutex_init(&(ch->rxlock));
++	ipc->channels[channel] = ch;
++
++	smsg_set(&mopen, channel, SMSG_TYPE_OPEN, SMSG_OPEN_MAGIC, 0);
++	rval = smsg_send(dst, &mopen, timeout);
++	if (rval != 0) {
++		printk(KERN_ERR "smsg_ch_open smsg send error, errno %d!\n", rval);
++		ipc->states[channel] = CHAN_STATE_UNUSED;
++		ipc->channels[channel] = NULL;
++		atomic_dec(&(ipc->busy[channel]));
++		/* guarantee that channel resource isn't used in irq handler  */
++		while(atomic_read(&(ipc->busy[channel]))) {
++			;
++		}
++		kfree(ch);
++
++		return rval;
++	}
++
++	/* open msg might be got before */
++	if (ipc->states[channel] == CHAN_STATE_WAITING) {
++		goto open_done;
++	}
++
++	smsg_set(&mrecv, channel, 0, 0, 0);
++	rval = smsg_recv(dst, &mrecv, timeout);
++	if (rval != 0) {
++		printk(KERN_ERR "smsg_ch_open smsg receive error, errno %d!\n", rval);
++		ipc->states[channel] = CHAN_STATE_UNUSED;
++		ipc->channels[channel] = NULL;
++		atomic_dec(&(ipc->busy[channel]));
++		/* guarantee that channel resource isn't used in irq handler  */
++		while(atomic_read(&(ipc->busy[channel]))) {
++			;
++		}
++		kfree(ch);
++
++		return rval;
++	}
++
++	if (mrecv.type != SMSG_TYPE_OPEN || mrecv.flag != SMSG_OPEN_MAGIC) {
++		printk(KERN_ERR "Got bad open msg on channel %d-%d\n", dst, channel);
++		ipc->states[channel] = CHAN_STATE_UNUSED;
++		ipc->channels[channel] = NULL;
++		atomic_dec(&(ipc->busy[channel]));
++		/* guarantee that channel resource isn't used in irq handler  */
++		while(atomic_read(&(ipc->busy[channel]))) {
++			;
++		}
++		kfree(ch);
++
++		return -EIO;
++	}
++
++open_done:
++	ipc->states[channel] = CHAN_STATE_OPENED;
++	atomic_dec(&(ipc->busy[channel]));
++
++	return 0;
++}
++
++int smsg_ch_close(uint8_t dst, uint8_t channel,  int timeout)
++{
++	struct smsg_ipc *ipc = smsg_ipcs[dst];
++	struct smsg_channel *ch = ipc->channels[channel];
++	struct smsg mclose;
++
++	if (!ch) {
++		return 0;
++	}
++
++	smsg_set(&mclose, channel, SMSG_TYPE_CLOSE, SMSG_CLOSE_MAGIC, 0);
++	smsg_send(dst, &mclose, timeout);
++
++	ipc->states[channel] = CHAN_STATE_FREE;
++	wake_up_interruptible_all(&(ch->rxwait));
++
++	/* wait for the channel beeing unused */
++	while(atomic_read(&(ipc->busy[channel]))) {
++		;
++	}
++
++	/* maybe channel has been free for smsg_ch_open failed */
++	if (ipc->channels[channel]){
++		ipc->channels[channel] = NULL;
++		/* guarantee that channel resource isn't used in irq handler */
++		while(atomic_read(&(ipc->busy[channel]))) {
++			;
++		}
++		kfree(ch);
++	}
++
++	/* finally, update the channel state*/
++	ipc->states[channel] = CHAN_STATE_UNUSED;
++
++	return 0;
++}
++
++int smsg_send(uint8_t dst, struct smsg *msg, int timeout)
++{
++	struct smsg_ipc *ipc = smsg_ipcs[dst];
++	void __iomem *txpos;
++	int rval = 0;
++	unsigned long flags;
++
++	if(!ipc) {
++	    return -ENODEV;
++	}
++
++	if (!ipc->channels[msg->channel]) {
++		printk(KERN_ERR "channel %d not inited!\n", msg->channel);
++		return -ENODEV;
++	}
++
++	if (ipc->states[msg->channel] != CHAN_STATE_OPENED &&
++		msg->type != SMSG_TYPE_OPEN &&
++		msg->type != SMSG_TYPE_CLOSE) {
++		printk(KERN_ERR "channel %d not opened!\n", msg->channel);
++		return -EINVAL;
++	}
++
++	pr_debug("smsg_send: dst=%d, channel=%d, timeout=%d\n",
++			dst, msg->channel, timeout);
++	pr_debug("send smsg: channel=%d, type=%d, flag=0x%04x, value=0x%08x\n",
++			msg->channel, msg->type, msg->flag, msg->value);
++
++	spin_lock_irqsave(&(ipc->txpinlock), flags);
++	if ((int)(readl(ipc->txbuf_wrptr) -
++		readl(ipc->txbuf_rdptr)) >= ipc->txbuf_size) {
++		printk(KERN_WARNING "smsg txbuf is full!\n");
++		rval = -EBUSY;
++		goto send_failed;
++	}
++
++	/* calc txpos and write smsg */
++	txpos = (readl(ipc->txbuf_wrptr) & (ipc->txbuf_size - 1)) *
++		sizeof(struct smsg) + ipc->txbuf_addr;
++	memcpy_toio(txpos, msg, sizeof(struct smsg));
++
++	pr_debug("write smsg: wrptr=%d, rdptr=%d, txpos=%p\n",
++			readl(ipc->txbuf_wrptr),
++			readl(ipc->txbuf_rdptr), txpos);
++
++	/* update wrptr */
++	writel(readl(ipc->txbuf_wrptr) + 1, ipc->txbuf_wrptr);
++	ipc->txirq_trigger();
++
++send_failed:
++	spin_unlock_irqrestore(&(ipc->txpinlock), flags);
++
++	return rval;
++}
++
++int smsg_recv(uint8_t dst, struct smsg *msg, int timeout)
++{
++	struct smsg_ipc *ipc = smsg_ipcs[dst];
++	struct smsg_channel *ch;
++	uint32_t rd;
++	int rval = 0;
++
++	if(!ipc) {
++	    return -ENODEV;
++	}
++
++	atomic_inc(&(ipc->busy[msg->channel]));
++
++	ch = ipc->channels[msg->channel];
++
++	if (!ch) {
++		printk(KERN_ERR "channel %d not opened!\n", msg->channel);
++		atomic_dec(&(ipc->busy[msg->channel]));
++		return -ENODEV;
++	}
++
++	pr_debug("smsg_recv: dst=%d, channel=%d, timeout=%d\n",
++			dst, msg->channel, timeout);
++
++
++	if (timeout == 0) {
++		if (!mutex_trylock(&(ch->rxlock))) {
++			printk(KERN_INFO "recv smsg busy!\n");
++			atomic_dec(&(ipc->busy[msg->channel]));
++
++			return -EBUSY;
++		}
++
++		/* no wait */
++		if (readl(ch->wrptr) == readl(ch->rdptr)) {
++			printk(KERN_WARNING "smsg rx cache is empty!\n");
++			rval = -ENODATA;
++
++			goto recv_failed;
++		}
++	} else if (timeout < 0) {
++		mutex_lock(&(ch->rxlock));
++		/* wait forever */
++		rval = wait_event_interruptible(ch->rxwait,
++				(readl(ch->wrptr) != readl(ch->rdptr)) ||
++				(ipc->states[msg->channel] == CHAN_STATE_FREE));
++		if (rval < 0) {
++			printk(KERN_WARNING "smsg_recv wait interrupted!\n");
++
++			goto recv_failed;
++		}
++
++		if (ipc->states[msg->channel] == CHAN_STATE_FREE) {
++			printk(KERN_WARNING "smsg_recv smsg channel is free!\n");
++			rval = -EIO;
++
++			goto recv_failed;
++		}
++	} else {
++		mutex_lock(&(ch->rxlock));
++		/* wait timeout */
++		rval = wait_event_interruptible_timeout(ch->rxwait,
++			(readl(ch->wrptr) != readl(ch->rdptr)) ||
++			(ipc->states[msg->channel] == CHAN_STATE_FREE), timeout);
++		if (rval < 0) {
++			printk(KERN_WARNING "smsg_recv wait interrupted!\n");
++
++			goto recv_failed;
++		} else if (rval == 0) {
++			printk(KERN_WARNING "smsg_recv wait timeout!\n");
++			rval = -ETIME;
++
++			goto recv_failed;
++		}
++
++		if (ipc->states[msg->channel] == CHAN_STATE_FREE) {
++			printk(KERN_ERR "smsg_recv smsg channel is free!\n");
++			rval = -EIO;
++
++			goto recv_failed;
++		}
++	}
++
++	/* read smsg from cache */
++	rd = readl(ch->rdptr) & (SMSG_CACHE_NR - 1);
++	memcpy(msg, &(ch->caches[rd]), sizeof(struct smsg));
++	writel(readl(ch->rdptr) + 1, ch->rdptr);
++
++	pr_debug("read smsg: wrptr=%d, rdptr=%d, rd=%d\n",
++			readl(ch->wrptr), readl(ch->rdptr), rd);
++	pr_debug("recv smsg: channel=%d, type=%d, flag=0x%04x, value=0x%08x\n",
++			msg->channel, msg->type, msg->flag, msg->value);
++
++recv_failed:
++	mutex_unlock(&(ch->rxlock));
++	atomic_dec(&(ipc->busy[msg->channel]));
++	return rval;
++}
++
++
++#if defined(CONFIG_DEBUG_FS)
++static int smsg_debug_show(struct seq_file *m, void *private)
++{
++	struct smsg_ipc *smsg_sipc = NULL;
++	int i, j;
++
++	for (i = 0; i < SIPC_ID_NR; i++) {
++		smsg_sipc = smsg_ipcs[i];
++		if (!smsg_sipc) {
++			continue;
++		}
++		seq_printf(m, "sipc: %s: \n", smsg_sipc->name);
++		seq_printf(m, "dst: 0x%0x, irq: 0x%0x\n",
++			   smsg_sipc->dst, smsg_sipc->irq);
++		seq_printf(m, "txbufAddr: %p, txbufsize: 0x%0x, txbufrdptr: %lu, txbufwrptr: %lu\n",
++			   smsg_sipc->txbuf_addr, smsg_sipc->txbuf_size, (unsigned long)readl(smsg_sipc->txbuf_rdptr), (unsigned long)readl(smsg_sipc->txbuf_wrptr));
++		seq_printf(m, "rxbufAddr: %p, rxbufsize: 0x%0x, rxbufrdptr: %lu, rxbufwrptr: %lu\n",
++			   smsg_sipc->rxbuf_addr, smsg_sipc->rxbuf_size, (unsigned long)readl(smsg_sipc->rxbuf_rdptr), (unsigned long)readl(smsg_sipc->rxbuf_wrptr));
++
++		for (j=0;  j<SMSG_CH_NR; j++) {
++			seq_printf(m, "channel[%d] states: %d\n", j, smsg_sipc->states[j]);
++		}
++	}
++	return 0;
++}
++
++static int smsg_debug_open(struct inode *inode, struct file *file)
++{
++	return single_open(file, smsg_debug_show, inode->i_private);
++}
++
++static const struct file_operations smsg_debug_fops = {
++	.open = smsg_debug_open,
++	.read = seq_read,
++	.llseek = seq_lseek,
++	.release = single_release,
++};
++
++int smsg_init_debugfs(void *root )
++{
++	if (!root)
++		return -ENXIO;
++	debugfs_create_file("smsg", S_IRUGO, (struct dentry *)root, NULL, &smsg_debug_fops);
++	return 0;
++}
++
++#endif /* CONFIG_DEBUG_FS */
++
++int  smsg_suspend_init(void)
++{
++	/* a message from the modem keeps the system awake for half a second */
++	sipc_wake_lock = wakeup_source_register(NULL, "sipc-smsg");
++	return sipc_wake_lock ? 0 : -ENOMEM;
++}
++
++
++EXPORT_SYMBOL(smsg_ch_open);
++EXPORT_SYMBOL(smsg_ch_close);
++EXPORT_SYMBOL(smsg_send);
++EXPORT_SYMBOL(smsg_recv);
++
++MODULE_AUTHOR("Chen Gaopeng");
++MODULE_DESCRIPTION("SIPC/SMSG driver");
++MODULE_LICENSE("GPL");
+diff --git a/arch/arm/mach-sprd/sipc/spipe.c b/arch/arm/mach-sprd/sipc/spipe.c
+new file mode 100755
+index 000000000..50797a15f
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/spipe.c
+@@ -0,0 +1,335 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/kernel.h>
++#include <linux/of.h>
++#include <linux/of_device.h>
++#include <linux/module.h>
++#include <linux/cdev.h>
++#include <linux/poll.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++#ifdef CONFIG_OF
++#include <linux/of_device.h>
++#endif
++
++#include "sipc.h"
++#include "spipe.h"
++
++struct spipe_device {
++	struct spipe_init_data	*init;
++	int			major;
++	int			minor;
++	struct cdev		cdev;
++};
++
++struct spipe_sbuf {
++	uint8_t			dst;
++	uint8_t			channel;
++	uint32_t		bufid;
++};
++
++static struct class		*spipe_class;
++
++static int spipe_open(struct inode *inode, struct file *filp)
++{
++	int minor = iminor(filp->f_path.dentry->d_inode);
++	struct spipe_device *spipe;
++	struct spipe_sbuf *sbuf;
++
++	spipe = container_of(inode->i_cdev, struct spipe_device, cdev);
++	if (sbuf_status(spipe->init->dst, spipe->init->channel) != 0) {
++		printk(KERN_ERR "spipe %d-%d not ready to open!\n", spipe->init->dst, spipe->init->channel);
++		filp->private_data = NULL;
++		return -ENODEV;
++	}
++
++	sbuf = kmalloc(sizeof(struct spipe_sbuf), GFP_KERNEL);
++	if (!sbuf) {
++		return -ENOMEM;
++	}
++	filp->private_data = sbuf;
++
++	sbuf->dst = spipe->init->dst;
++	sbuf->channel = spipe->init->channel;
++	sbuf->bufid = minor - spipe->minor;
++
++	return 0;
++}
++
++static int spipe_release(struct inode *inode, struct file *filp)
++{
++	struct spipe_sbuf *sbuf = filp->private_data;
++
++	if (sbuf) {
++		kfree(sbuf);
++	}
++
++	return 0;
++}
++
++static ssize_t spipe_read(struct file *filp,
++		char __user *buf, size_t count, loff_t *ppos)
++{
++	struct spipe_sbuf *sbuf = filp->private_data;
++	int timeout = -1;
++
++	if (filp->f_flags & O_NONBLOCK) {
++		timeout = 0;
++	}
++
++	return sbuf_read(sbuf->dst, sbuf->channel, sbuf->bufid,
++			(void *)buf, count, timeout);
++}
++
++static ssize_t spipe_write(struct file *filp,
++		const char __user *buf, size_t count, loff_t *ppos)
++{
++	struct spipe_sbuf *sbuf = filp->private_data;
++	int timeout = -1;
++
++	if (filp->f_flags & O_NONBLOCK) {
++		timeout = 0;
++	}
++
++	return sbuf_write(sbuf->dst, sbuf->channel, sbuf->bufid,
++			(void *)buf, count, timeout);
++}
++
++static __poll_t spipe_poll(struct file *filp, poll_table *wait)
++{
++	struct spipe_sbuf *sbuf = filp->private_data;
++
++	return sbuf_poll_wait(sbuf->dst, sbuf->channel, sbuf->bufid,
++			filp, wait);
++}
++
++static long spipe_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
++{
++	return 0;
++}
++
++static const struct file_operations spipe_fops = {
++	.open		= spipe_open,
++	.release	= spipe_release,
++	.read		= spipe_read,
++	.write		= spipe_write,
++	.poll		= spipe_poll,
++	.unlocked_ioctl	= spipe_ioctl,
++	.owner		= THIS_MODULE,
++	.llseek		= default_llseek,
++};
++
++static int spipe_parse_dt(struct spipe_init_data **init, struct device *dev)
++{
++#ifdef CONFIG_OF
++	struct device_node *np = dev->of_node;
++	struct spipe_init_data *pdata = NULL;
++	int ret;
++	uint32_t data;
++
++	pdata = kzalloc(sizeof(struct spipe_init_data), GFP_KERNEL);
++	if (!pdata) {
++		printk(KERN_ERR "Failed to allocate pdata memory\n");
++		return -ENOMEM;
++	}
++
++	ret = of_property_read_string(np, "sprd,name", (const char**)&pdata->name);
++	if (ret) {
++		goto error;
++	}
++
++	ret = of_property_read_u32(np, "sprd,dst", (uint32_t *)&data);
++	if (ret) {
++		goto error;
++	}
++	pdata->dst = (uint8_t)data;
++
++	ret = of_property_read_u32(np, "sprd,channel", (uint32_t *)&data);
++	if (ret) {
++		goto error;
++	}
++	pdata->channel = (uint8_t)data;
++
++	ret = of_property_read_u32(np, "sprd,ringnr", (uint32_t *)&pdata->ringnr);
++	if (ret) {
++		goto error;
++	}
++
++	ret = of_property_read_u32(np, "sprd,size-rxbuf", (uint32_t *)&pdata->rxbuf_size);
++	if (ret) {
++		goto error;
++	}
++
++	ret = of_property_read_u32(np, "sprd,size-txbuf", (uint32_t *)&pdata->txbuf_size);
++	if (ret) {
++		goto error;
++	}
++	*init = pdata;
++	return ret;
++error:
++	kfree(pdata);
++	*init = NULL;
++	return ret;
++#else
++	return -ENODEV;
++#endif
++}
++
++static inline void spipe_destroy_pdata(struct spipe_init_data **init)
++{
++#ifdef CONFIG_OF
++	struct spipe_init_data *pdata = *init;
++
++	if (pdata) {
++		kfree(pdata);
++	}
++
++	*init = NULL;
++#else
++	return;
++#endif
++}
++
++static int spipe_probe(struct platform_device *pdev)
++{
++	struct spipe_init_data *init = pdev->dev.platform_data;
++	struct spipe_device *spipe;
++	dev_t devid;
++	int i, rval;
++
++	if (pdev->dev.of_node && !init) {
++		rval = spipe_parse_dt(&init, &pdev->dev);
++		if (rval) {
++			printk(KERN_ERR "Failed to parse spipe device tree, ret=%d\n", rval);
++			return rval;
++		}
++	}
++	pr_info("spipe: after parse device tree, name=%s, dst=%u, channel=%u, ringnr=%u, rxbuf_size=%u, txbuf_size=%u\n",
++		init->name, init->dst, init->channel, init->ringnr, init->rxbuf_size, init->txbuf_size);
++
++
++	rval = sbuf_create(init->dst, init->channel, init->ringnr,
++		init->txbuf_size, init->rxbuf_size);
++	if (rval != 0) {
++		printk(KERN_ERR "Failed to create sbuf: %d\n", rval);
++		spipe_destroy_pdata(&init);
++		return rval;
++	}
++
++	spipe = kzalloc(sizeof(struct spipe_device), GFP_KERNEL);
++	if (spipe == NULL) {
++		sbuf_destroy(init->dst, init->channel);
++		spipe_destroy_pdata(&init);
++		printk(KERN_ERR "Failed to allocate spipe_device\n");
++		return -ENOMEM;
++	}
++
++	rval = alloc_chrdev_region(&devid, 0, init->ringnr, init->name);
++	if (rval != 0) {
++		sbuf_destroy(init->dst, init->channel);
++		kfree(spipe);
++		spipe_destroy_pdata(&init);
++		printk(KERN_ERR "Failed to alloc spipe chrdev\n");
++		return rval;
++	}
++
++	cdev_init(&(spipe->cdev), &spipe_fops);
++	rval = cdev_add(&(spipe->cdev), devid, init->ringnr);
++	if (rval != 0) {
++		sbuf_destroy(init->dst, init->channel);
++		kfree(spipe);
++		unregister_chrdev_region(devid, init->ringnr);
++		spipe_destroy_pdata(&init);
++		printk(KERN_ERR "Failed to add spipe cdev\n");
++		return rval;
++	}
++
++	spipe->major = MAJOR(devid);
++	spipe->minor = MINOR(devid);
++	if (init->ringnr > 1) {
++		for (i = 0; i < init->ringnr; i++) {
++			device_create(spipe_class, NULL,
++				MKDEV(spipe->major, spipe->minor + i),
++				NULL, "%s%d", init->name, i);
++		}
++	} else {
++		device_create(spipe_class, NULL,
++			MKDEV(spipe->major, spipe->minor),
++			NULL, "%s", init->name);
++	}
++
++	spipe->init = init;
++
++	platform_set_drvdata(pdev, spipe);
++
++	return 0;
++}
++
++static void spipe_remove(struct platform_device *pdev)
++{
++	struct spipe_device *spipe = platform_get_drvdata(pdev);
++	int i;
++
++	for (i = 0; i < spipe->init->ringnr; i++) {
++		device_destroy(spipe_class,
++				MKDEV(spipe->major, spipe->minor + i));
++	}
++	cdev_del(&(spipe->cdev));
++	unregister_chrdev_region(
++		MKDEV(spipe->major, spipe->minor), spipe->init->ringnr);
++
++	sbuf_destroy(spipe->init->dst, spipe->init->channel);
++
++	spipe_destroy_pdata(&spipe->init);
++
++	kfree(spipe);
++
++
++}
++
++static const struct of_device_id spipe_match_table[] = {
++	{.compatible = "sprd,spipe", },
++	{ },
++};
++
++static struct platform_driver spipe_driver = {
++	.driver = {
++		.name = "spipe",
++		.of_match_table = spipe_match_table,
++	},
++	.probe = spipe_probe,
++	.remove = spipe_remove,
++};
++
++static int __init spipe_init(void)
++{
++	spipe_class = class_create("spipe");
++	if (IS_ERR(spipe_class))
++		return PTR_ERR(spipe_class);
++
++	return platform_driver_register(&spipe_driver);
++}
++
++static void __exit spipe_exit(void)
++{
++	class_destroy(spipe_class);
++	platform_driver_unregister(&spipe_driver);
++}
++
++module_init(spipe_init);
++module_exit(spipe_exit);
++
++MODULE_AUTHOR("Chen Gaopeng");
++MODULE_DESCRIPTION("SIPC/SPIPE driver");
++MODULE_LICENSE("GPL");
+diff --git a/arch/arm/mach-sprd/sipc/spipe.h b/arch/arm/mach-sprd/sipc/spipe.h
+new file mode 100755
+index 000000000..661116eb5
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/spipe.h
+@@ -0,0 +1,26 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#ifndef __SPIPE_H
++#define __SPIPE_H
++
++struct spipe_init_data {
++	char			*name;
++	uint8_t			dst;
++	uint8_t			channel;
++	uint32_t		ringnr;
++	uint32_t		txbuf_size;
++	uint32_t		rxbuf_size;
++};
++
++#endif
+diff --git a/arch/arm/mach-sprd/sipc/stty.c b/arch/arm/mach-sprd/sipc/stty.c
+new file mode 100755
+index 000000000..dc47f60d9
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/stty.c
+@@ -0,0 +1,405 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/platform_device.h>
++#include <linux/slab.h>
++
++#include "sipc.h"
++#include "stty.h"
++#include <linux/types.h>
++#include <linux/kdev_t.h>
++#include <linux/tty.h>
++#include <linux/vt_kern.h>
++#include <linux/init.h>
++#include <linux/console.h>
++#include <linux/delay.h>
++#ifdef CONFIG_OF
++#include <linux/of_device.h>
++#endif
++
++#include <linux/compat.h>
++#include <linux/tty_flip.h>
++#include <linux/kthread.h>
++
++#ifdef CONFIG_SPRD_2351
++#include <linux/sprd_2351.h>
++#endif
++
++#define STTY_DEV_MAX_NR 	1
++#define STTY_MAX_DATA_LEN 		4096
++
++#define STTY_STATE_OPEN 	1
++#define STTY_STATE_CLOSE 	0
++
++struct stty_device {
++	struct stty_init_data	*pdata;
++	struct tty_port 		*port;
++	struct tty_struct 		*tty;
++	struct tty_driver 		*driver;
++
++	/* stty state */
++	uint32_t 		state;
++	struct mutex 		stat_lock;
++};
++
++static void stty_handler (int event, void* data)
++{
++	struct stty_device *stty = data;
++	int i, cnt = 0;
++	unsigned char buf[STTY_MAX_DATA_LEN] = {0};
++
++	pr_debug("stty handler event=%d \n", event);
++
++	switch(event) {
++		case SBUF_NOTIFY_WRITE:
++			break;
++		case SBUF_NOTIFY_READ:
++			cnt = sbuf_read(stty->pdata->dst, stty->pdata->channel,
++					stty->pdata->bufid,(void *)buf, STTY_MAX_DATA_LEN, 0);
++			pr_debug("stty handler read data len =%d \n", cnt);
++			mutex_lock(&(stty->stat_lock));
++			if ((stty->state == STTY_STATE_OPEN) && (cnt > 0)) {
++				for(i = 0; i < cnt; i++) {
++					tty_insert_flip_char(stty->port, buf[i], TTY_NORMAL);
++				}
++				tty_schedule_flip(stty->port);
++			}
++			mutex_unlock(&(stty->stat_lock));
++			break;
++		default:
++			printk(KERN_ERR "Received event is invalid(event=%d)\n", event);
++	}
++
++	return;
++}
++
++static int stty_open(struct tty_struct *tty, struct file * filp)
++{
++	struct stty_device *stty = NULL;
++	struct tty_driver *driver = NULL;
++
++	if (tty == NULL) {
++		printk(KERN_ERR "stty open input tty is NULL!\n");
++		return -ENOMEM;
++	}
++	driver = tty->driver;
++	stty = (struct stty_device *)driver->driver_state;
++
++	if(stty == NULL) {
++		printk(KERN_ERR "stty open input stty NULL!\n");
++		return -ENOMEM;
++	}
++
++	if (sbuf_status(stty->pdata->dst, stty->pdata->channel) != 0) {
++		printk(KERN_ERR "stty_open sbuf not ready to open!dst=%d,channel=%d\n"
++			,stty->pdata->dst,stty->pdata->channel);
++		return -ENODEV;
++	}
++	stty->tty = tty;
++	tty->driver_data = (void *)stty;
++
++	mutex_lock(&(stty->stat_lock));
++	stty->state = STTY_STATE_OPEN;
++	mutex_unlock(&(stty->stat_lock));
++
++#ifdef CONFIG_SPRD_2351
++    rf2351_gpio_ctrl_power_enable(1);
++#endif
++
++	pr_debug("stty_open device success! \n");
++
++	return 0;
++}
++
++static void stty_close(struct tty_struct *tty, struct file * filp)
++{
++	struct stty_device *stty = NULL;
++
++	if (tty == NULL) {
++		printk(KERN_ERR "stty close input tty is NULL!\n");
++		return;
++	}
++	stty = (struct stty_device *) tty->driver_data;
++	if (stty == NULL) {
++		printk(KERN_ERR "stty close s tty is NULL!\n");
++		return;
++	}
++
++	mutex_lock(&(stty->stat_lock));
++	stty->state = STTY_STATE_CLOSE;
++	mutex_unlock(&(stty->stat_lock));
++
++	pr_debug("stty_close device success !\n");
++
++#ifdef CONFIG_SPRD_2351
++    rf2351_gpio_ctrl_power_enable(0);
++#endif
++
++	return;
++}
++
++static int stty_write(struct tty_struct * tty,
++	      const unsigned char *buf, int count)
++{
++	struct stty_device *stty = tty->driver_data;
++	int cnt;
++	pr_debug("stty write count=%d \n", count);
++
++	cnt = sbuf_write(stty->pdata->dst, stty->pdata->channel,
++					stty->pdata->bufid, (void *)buf, count, -1);
++	return cnt;
++}
++
++
++static void stty_flush_chars(struct tty_struct *tty)
++{
++	return;
++}
++
++static int stty_write_room(struct tty_struct *tty)
++{
++	return INT_MAX;
++}
++
++static const struct tty_operations stty_ops = {
++	.open  = stty_open,
++	.close = stty_close,
++	.write = stty_write,
++	.flush_chars = stty_flush_chars,
++	.write_room  = stty_write_room,
++};
++
++static struct tty_port *stty_port_init()
++{
++	struct tty_port *port = NULL;
++
++	port = kzalloc(sizeof(struct tty_port),GFP_KERNEL);
++	if (port == NULL) {
++		printk(KERN_ERR "stty_port_init Failed to allocate device!\n");
++		return NULL;
++	}
++	tty_port_init(port);
++	return port;
++}
++
++static int stty_driver_init(struct stty_device *device)
++{
++	struct tty_driver *driver;
++	int ret = 0;
++
++	mutex_init(&(device->stat_lock));
++
++	device->port = stty_port_init();
++	if (!device->port) {
++		return -ENOMEM;
++	}
++
++	driver = alloc_tty_driver(STTY_DEV_MAX_NR);
++	if (!driver)
++		return -ENOMEM;
++	/*
++	 * Initialize the tty_driver structure
++	 * Entries in stty_driver that are NOT initialized:
++	 * proc_entry, set_termios, flush_buffer, set_ldisc, write_proc
++	 */
++	driver->owner = THIS_MODULE;
++	driver->driver_name = device->pdata->name;
++	driver->name = device->pdata->name;
++	driver->major = 0;
++	driver->type = TTY_DRIVER_TYPE_SYSTEM;
++	driver->subtype = SYSTEM_TYPE_TTY;
++	driver->init_termios = tty_std_termios;
++	driver->driver_state = (void*)device;
++	device->driver = driver;
++	 /* initialize the tty driver */
++	tty_set_operations(driver, &stty_ops);
++	tty_port_link_device(device->port, driver, 0);
++	ret = tty_register_driver(driver);
++	if (ret) {
++		put_tty_driver(driver);
++		tty_port_destroy(device->port);
++		return ret;
++	}
++	return ret;
++}
++
++static void stty_driver_exit(struct stty_device *device)
++{
++	struct tty_driver *driver = device->driver;
++	tty_unregister_driver(driver);
++	tty_port_destroy(device->port);
++}
++
++static int stty_parse_dt(struct stty_init_data **init, struct device *dev)
++{
++#ifdef CONFIG_OF
++	struct of_device_node *np = dev->of_node;
++	struct stty_init_data *pdata = NULL;
++	int ret;
++	uint32_t data;
++
++	pdata = kzalloc(sizeof(struct stty_init_data), GFP_KERNEL);
++	if (!pdata) {
++		return -ENOMEM;
++	}
++
++	ret = of_property_read_string(np, "sprd,name", (const char **)&pdata->name);
++	if (ret) {
++		goto error;
++	}
++
++	ret = of_property_read_u32(np, "sprd,dst", (uint32_t *)&data);
++	if (ret) {
++		goto error;
++	}
++	pdata->dst = (uint8_t)data;
++
++	ret = of_property_read_u32(np, "sprd,channel", (uint32_t *)&data);
++	if (ret) {
++		goto error;
++	}
++	pdata->channel = (uint8_t)data;
++
++	ret = of_property_read_u32(np, "sprd,bufid", (uint32_t *)&pdata->bufid);
++	if (ret) {
++		goto error;
++	}
++
++	*init = pdata;
++	return 0;
++error:
++	kfree(pdata);
++	*init = NULL;
++	return ret;
++#else
++	return -ENODEV;
++#endif
++}
++
++static inline void stty_destroy_pdata(struct stty_init_data **init)
++{
++#ifdef CONFIG_OF
++	struct stty_init_data *pdata = *init;
++
++	if (pdata) {
++		kfree(pdata);
++	}
++
++	*init = NULL;
++#else
++	return;
++#endif
++}
++
++
++static int  stty_probe(struct platform_device *pdev)
++{
++	struct stty_init_data *pdata = (struct stty_init_data*)pdev->dev.platform_data;
++	struct stty_device *stty;
++	int rval= 0;
++
++	if (pdev->dev.of_node && !pdata) {
++		rval = stty_parse_dt(&pdata, &pdev->dev);
++		if (rval) {
++			printk(KERN_ERR "failed to parse styy device tree, ret=%d\n", rval);
++			return rval;
++		}
++	}
++	pr_info("stty: after parse device tree, name=%s, dst=%u, channel=%u, bufid=%u\n",
++		pdata->name, pdata->dst, pdata->channel, pdata->bufid);
++
++	stty = kzalloc(sizeof(struct stty_device),GFP_KERNEL);
++	if (stty == NULL) {
++		stty_destroy_pdata(&pdata);
++		printk(KERN_ERR "stty Failed to allocate device!\n");
++		return -ENOMEM;
++	}
++
++	stty->pdata = pdata;
++	rval = stty_driver_init(stty);
++	if (rval) {
++		kfree(stty);
++		stty_destroy_pdata(&pdata);
++		printk(KERN_ERR "stty driver init error!\n");
++		return -EINVAL;
++	}
++
++	rval = sbuf_register_notifier(pdata->dst, pdata->channel,
++					pdata->bufid, stty_handler, stty);
++	if (rval) {
++		stty_driver_exit(stty);
++		kfree(stty->port);
++		kfree(stty);
++		printk(KERN_ERR "regitster notifier failed (%d)\n", rval);
++		return rval;
++	}
++
++	printk( "stty_probe init device addr: 0x%0x\n", (void *)stty);
++	platform_set_drvdata(pdev, stty);
++
++	return 0;
++}
++
++static int  stty_remove(struct platform_device *pdev)
++{
++	struct stty_device *stty = platform_get_drvdata(pdev);
++	int rval;
++
++	rval = sbuf_register_notifier(stty->pdata->dst, stty->pdata->channel,
++					stty->pdata->bufid, NULL, NULL);
++	if (rval) {
++		printk(KERN_ERR " unregitster notifier failed (%d)\n", rval);
++		return rval;
++	}
++
++	stty_driver_exit(stty);
++	kfree(stty->port);
++	stty_destroy_pdata(&stty->pdata);
++	kfree(stty);
++	platform_set_drvdata(pdev, NULL);
++	return 0;
++}
++
++static const struct of_device_id stty_match_table[] = {
++	{ .compatible = "sprd,stty4bt", },
++	{ },
++};
++
++static struct platform_driver stty_driver = {
++	.driver = {
++		.owner = THIS_MODULE,
++		.name = "sttybt",
++		.of_match_table = stty_match_table,
++	},
++	.probe = stty_probe,
++	.remove = stty_remove,
++};
++
++static int __init stty_init(void)
++{
++	return platform_driver_register(&stty_driver);
++}
++
++static void __exit stty_exit(void)
++{
++	platform_driver_unregister(&stty_driver);
++}
++
++late_initcall(stty_init);
++module_exit(stty_exit);
++
++MODULE_AUTHOR("Dewu Jiang");
++MODULE_DESCRIPTION("SIPC/stty driver");
++MODULE_LICENSE("GPL");
+diff --git a/arch/arm/mach-sprd/sipc/stty.h b/arch/arm/mach-sprd/sipc/stty.h
+new file mode 100755
+index 000000000..cd2495f56
+--- /dev/null
++++ b/arch/arm/mach-sprd/sipc/stty.h
+@@ -0,0 +1,24 @@
++/*
++ * Copyright (C) 2012 Spreadtrum Communications Inc.
++ *
++ * This software is licensed under the terms of the GNU General Public
++ * License version 2, as published by the Free Software Foundation, and
++ * may be copied, distributed, and modified under those terms.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ */
++
++#ifndef __STTY_H
++#define __STTY_H
++
++struct stty_init_data {
++	char *name;
++	uint8_t 	dst;
++	uint8_t	channel;
++	uint32_t bufid;
++};
++
++#endif
+-- 
+2.47.3
+
