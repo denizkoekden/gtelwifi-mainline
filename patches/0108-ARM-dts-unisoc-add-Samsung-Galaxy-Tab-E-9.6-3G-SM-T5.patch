@@ -1,0 +1,87 @@
+From e0cdef3a3fa2335c28b8a30dde631550e6458718 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sat, 7 Nov 2026 12:14:00 +0000
+Subject: [PATCH 108/114] ARM: dts: unisoc: add Samsung Galaxy Tab E 9.6 3G
+ (SM-T561, gtel3g)
+
+The SM-T561 is the SM-T560 with the SC7730 modem in use. Board revisions
+0-11 in sprd,sc-id, CP memory 32 MiB and modem 12 MiB as in the vendor
+gtel3g device tree. Booted Android and started the modem core with AT
+replies on a tester's SM-T561 (rev 10).
+
+Assisted-by: Claude Opus 5.5
+---
+ arch/arm/boot/dts/unisoc/Makefile             |  3 +-
+ .../boot/dts/unisoc/sc7730-samsung-gtel3g.dts | 49 +++++++++++++++++++
+ 2 files changed, 51 insertions(+), 1 deletion(-)
+ create mode 100644 arch/arm/boot/dts/unisoc/sc7730-samsung-gtel3g.dts
+
+diff --git a/arch/arm/boot/dts/unisoc/Makefile b/arch/arm/boot/dts/unisoc/Makefile
+index 2053c8f72..2d8796d3d 100644
+--- a/arch/arm/boot/dts/unisoc/Makefile
++++ b/arch/arm/boot/dts/unisoc/Makefile
+@@ -4,4 +4,5 @@ dtb-$(CONFIG_ARCH_RDA) += \
+ 	rda8810pl-orangepi-i96.dtb
+ dtb-$(CONFIG_ARCH_SPRD) += \
+ 	sc7730-samsung-gtelwifi.dtb \
+-	sc7730-samsung-gtelwifi-modem.dtb
++	sc7730-samsung-gtelwifi-modem.dtb \
++	sc7730-samsung-gtel3g.dtb
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtel3g.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtel3g.dts
+new file mode 100644
+index 000000000..a24d8abdf
+--- /dev/null
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtel3g.dts
+@@ -0,0 +1,49 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Samsung Galaxy Tab E 9.6 3G (SM-T561, "gtel3g"): the SM-T560 board plus
++ * the modem core of the SC7730 with its SIPC channels. The board revisions
++ * 0-11 all use this tree (the display, panel supplies and touch are the
++ * same on the T561 revisions seen so far, revision 10 verified from the
++ * Samsung device trees), see the notes in lineageos/README.md.
++ *
++ * Differences taken from the Samsung gtel3g rev09/rev10 trees: 32 MiB for
++ * the modem core with a 12 MiB modem image, rmnet0-2 network devices.
++ * Not done yet: SIM detect (GPIO 162), SAR sensor SX9500 (I2C 0x28),
++ * charger parameters.
++ */
++#include "sc7730-samsung-gtelwifi.dts"
++#include "sc7730-modem.dtsi"
++
++/ {
++	compatible = "samsung,gtel3g", "samsung,gtelwifi", "sprd,sc7730";
++	sprd,sc-id = <8830  0 0x20000>, <8830  1 0x20000>, <8830  2 0x20000>,
++		     <8830  3 0x20000>, <8830  4 0x20000>, <8830  5 0x20000>,
++		     <8830  6 0x20000>, <8830  7 0x20000>, <8830  8 0x20000>,
++		     <8830  9 0x20000>, <8830 10 0x20000>, <8830 11 0x20000>;
++};
++
++&{/reserved-memory/cp-modem@88000000} {
++	reg = <0x88000000 0x2000000>;
++};
++
++&sipc { status = "okay"; };
++
++&scproc_cpw {
++	status = "okay";
++	reg = <0x88000000 0x2000000>,
++	      <0x50000000 0xc>,
++	      <0x402b0000 0x10000>;
++
++	modem {
++		reg = <0x88300000 0xc00000>;
++	};
++};
++
++/ {
++	spipe-cpw { status = "okay"; };
++	slog-cpw { status = "okay"; };
++	stty-cpw { status = "okay"; };
++	seth0-cpw { status = "okay"; };
++	seth1-cpw { status = "okay"; };
++	seth2-cpw { status = "okay"; };
++};
+-- 
+2.47.3
+

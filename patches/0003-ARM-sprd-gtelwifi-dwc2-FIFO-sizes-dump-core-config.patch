@@ -1,7 +1,7 @@
 From c8bf2c5c1452d55773edd5ce47e5138c3391c171 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 14:45:10 +0000
-Subject: [PATCH 003/106] ARM: sprd: gtelwifi: dwc2 FIFO sizes, dump core
+Subject: [PATCH 003/114] ARM: sprd: gtelwifi: dwc2 FIFO sizes, dump core
  config
 
 dwc2 defaults (RX 2048, NP TX 1024, averaged TX FIFOs) exceed what this

@@ -1,0 +1,121 @@
+From 734ea0461f730eb2789270b1479de24b64f54996 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sat, 7 Nov 2026 22:09:05 +0000
+Subject: [PATCH 114/114] ASoC: sc7730: no speaker pop on the first sound or
+ after suspend
+
+The speaker popped on the first sound after boot and, before that, on
+the first sound after every suspend. DAPM powers the speaker amplifier in
+prepare, but the VBC started the digital DACs only in the trigger, so the
+sigma-delta modulator started behind an amplifier that was already on.
+System suspend also powered the whole path down.
+
+Do it like the vendor kernel: keep the playback path and the amplifiers
+powered through system suspend (ignore_suspend on the codec's playback
+stream and outputs, as sprd-asoc-card.c does), keep the digital DACs
+running in suspend, and start them muted at 48 kHz when the VBC probes.
+Parameters: snd_soc_sc2723.keep_on_suspend (default on, read at probe)
+and sprd_vbc_sc7730.dac_off_in_suspend (default off, the old behaviour).
+
+Listening test on the SM-T560: no pop after boot, after screen off/on
+with and without USB, and after standby.
+
+Assisted-by: Claude Opus 5.5
+---
+ sound/soc/codecs/sc2723-codec.c  | 19 +++++++++++++++++++
+ sound/soc/sprd/sprd-vbc-sc7730.c | 31 +++++++++++++++++++++++++++++--
+ 2 files changed, 48 insertions(+), 2 deletions(-)
+
+diff --git a/sound/soc/codecs/sc2723-codec.c b/sound/soc/codecs/sc2723-codec.c
+index b6cb210bc..8a2bda9f1 100644
+--- a/sound/soc/codecs/sc2723-codec.c
++++ b/sound/soc/codecs/sc2723-codec.c
+@@ -508,6 +508,16 @@ static const struct snd_soc_dapm_route sc2723_dapm_routes[] = {
+  * module enable, no sleep power-down, one analog reset, AUDIF and 6.5 MHz
+  * clocks with TX inversion, no ADSYNC reuse, 32 kHz and crystal.
+  */
++/*
++ * Like the vendor machine driver (sprd-asoc-card.c, board_late_probe), keep
++ * the output paths powered through system suspend: powering the speaker
++ * amplifier up again on the first sound after a suspend pops. Read at probe.
++ */
++static bool keep_on_suspend = true;
++module_param(keep_on_suspend, bool, 0444);
++MODULE_PARM_DESC(keep_on_suspend,
++		 "keep playback paths and amplifiers powered through system suspend (no pop on resume)");
++
+ static int sc2723_codec_component_probe(struct snd_soc_component *c)
+ {
+ 	struct sc2723_codec *codec = snd_soc_component_get_drvdata(c);
+@@ -546,6 +556,15 @@ static int sc2723_codec_component_probe(struct snd_soc_component *c)
+ 				      8 << 8 | 8 << 4);
+ 	snd_soc_component_update_bits(c, ANA_CDC9, GENMASK(15, 4),
+ 				      12 << 10 | 12 << 4);
++	if (keep_on_suspend) {
++		struct snd_soc_dapm_context *dapm =
++			snd_soc_component_to_dapm(c);
++
++		snd_soc_dapm_ignore_suspend(dapm, "Playback");
++		snd_soc_dapm_ignore_suspend(dapm, "SPK");
++		snd_soc_dapm_ignore_suspend(dapm, "HPOL");
++		snd_soc_dapm_ignore_suspend(dapm, "HPOR");
++	}
+ 	return 0;
+ }
+ 
+diff --git a/sound/soc/sprd/sprd-vbc-sc7730.c b/sound/soc/sprd/sprd-vbc-sc7730.c
+index 9988e8d02..7bad764c8 100644
+--- a/sound/soc/sprd/sprd-vbc-sc7730.c
++++ b/sound/soc/sprd/sprd-vbc-sc7730.c
+@@ -308,12 +308,25 @@ static struct snd_soc_dai_driver sprd_vbc_dai = {
+ 	.ops = &sprd_vbc_dai_ops,
+ };
+ 
++/*
++ * With the codec keeping the speaker path powered through suspend
++ * (sc2723 keep_on_suspend), the digital DACs must keep running too: an
++ * analog DAC without its sigma-delta modulator in front of a powered
++ * amplifier is audible (0079). dac_off_in_suspend restores the old way.
++ */
++static bool dac_off_in_suspend;
++module_param(dac_off_in_suspend, bool, 0644);
++MODULE_PARM_DESC(dac_off_in_suspend,
++		 "stop the digital DACs in system suspend (only with sc2723 keep_on_suspend=0)");
++
+ static int sprd_vbc_suspend(struct snd_soc_component *component)
+ {
+ 	struct sprd_vbc *v = snd_soc_component_get_drvdata(component);
++	u32 bits = ADC_EN_L | ADC_EN_R;
+ 
+-	sprd_vbc_rmw(v->dp + AUD_TOP_CTL,
+-		     DAC_EN_L | DAC_EN_R | ADC_EN_L | ADC_EN_R, 0);
++	if (dac_off_in_suspend)
++		bits |= DAC_EN_L | DAC_EN_R;
++	sprd_vbc_rmw(v->dp + AUD_TOP_CTL, bits, 0);
+ 	return 0;
+ }
+ 
+@@ -395,6 +408,20 @@ static int sprd_vbc_probe(struct platform_device *pdev)
+ 	udelay(10);
+ 	sprd_vbc_aon_rmw(v, AON_RST0, RST0_AUD, 0);
+ 	sprd_vbc_clear_da(v);
++	/*
++	 * Start the digital DACs (muted, 48 kHz) at probe and keep them
++	 * running: the codec's DAPM powers the speaker amplifier before the
++	 * first trigger, and an analog DAC whose sigma-delta modulator starts
++	 * behind a powered amplifier pops (first sound after boot). With
++	 * dac_off_in_suspend unset they then never stop.
++	 */
++	if (!dac_off_in_suspend) {
++		sprd_vbc_rmw(v->dp + AUD_DAC_CTL, DAC_RATE | DAC_MUTE_EN,
++			     FIELD_PREP(DAC_RATE, 1) | DAC_MUTE_EN);
++		sprd_vbc_rmw(v->dp + AUD_SDM_CTL0, SDM_DODVL,
++			     FIELD_PREP(SDM_DODVL, 7));
++		sprd_vbc_rmw(v->dp + AUD_TOP_CTL, 0, DAC_EN_L | DAC_EN_R);
++	}
+ 	/* AD digital gain on at 0 dB, so the control below sets it directly */
+ 	writel(AD0_DG_EN | AD1_DG_EN | AD_DG_0DB << 8 | AD_DG_0DB,
+ 	       v->vbc + ADDG01CTL);
+-- 
+2.47.3
+

@@ -1,7 +1,7 @@
 From eaaa09d2072a81ead484ee0cdceef71570895073 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 23:00:48 +0000
-Subject: [PATCH 084/106] ASoC: sprd: sc7730 VBC: capture
+Subject: [PATCH 084/114] ASoC: sprd: sc7730 VBC: capture
 
 Read the AD0/AD1 FIFOs through DMA requests 31/32 for capture. The ADC
 rate is set in the DP (rate / 4000), the digital ADCs are enabled with

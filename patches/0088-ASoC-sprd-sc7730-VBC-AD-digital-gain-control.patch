@@ -1,7 +1,7 @@
 From feeb47113ad609f30be4c32c08073efc0c5b1238 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Tue, 3 Nov 2026 10:29:37 +0000
-Subject: [PATCH 088/106] ASoC: sprd: sc7730 VBC: AD digital gain control
+Subject: [PATCH 088/114] ASoC: sprd: sc7730 VBC: AD digital gain control
 
 The VBC has a digital gain stage behind each AD FIFO (ADDG01CTL, one
 7-bit value and an enable bit per channel). Measured on the gtelwifi
