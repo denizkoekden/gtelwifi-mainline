@@ -167,8 +167,10 @@ PRODUCT_PACKAGES += \
 PRODUCT_COPY_FILES += \
     $(DEVICE_PATH)/rootdir/etc/fstab.gtelwifi:$(TARGET_COPY_OUT_RAMDISK)/fstab.gtelwifi \
     $(DEVICE_PATH)/rootdir/etc/fstab.gtelwifi:$(TARGET_COPY_OUT_VENDOR)/etc/fstab.gtelwifi \
+    $(DEVICE_PATH)/rootdir/etc/fstab.gtelwifi.noencrypt:$(TARGET_COPY_OUT_VENDOR)/etc/fstab.gtelwifi.noencrypt \
     $(DEVICE_PATH)/rootdir/etc/init.gtelwifi.rc:$(TARGET_COPY_OUT_VENDOR)/etc/init/hw/init.gtelwifi.rc \
-    $(DEVICE_PATH)/rootdir/bin/gtelwifi-bootlog.sh:$(TARGET_COPY_OUT_VENDOR)/bin/gtelwifi-bootlog.sh
+    $(DEVICE_PATH)/rootdir/bin/gtelwifi-bootlog.sh:$(TARGET_COPY_OUT_VENDOR)/bin/gtelwifi-bootlog.sh \
+    $(DEVICE_PATH)/rootdir/bin/gtelwifi-crypt.sh:$(TARGET_COPY_OUT_VENDOR)/bin/gtelwifi-crypt.sh
 
 # Wi-Fi/Bluetooth firmware: linux-firmware-mainline has nothing for the
 # 43430, so firmware/brcm/ carries the files Nura used (firmware/README).
@@ -301,3 +303,8 @@ PRODUCT_CHARACTERISTICS := tablet
 PRODUCT_VENDOR_PROPERTIES += \
     ro.crypto.fde_algorithm=adiantum \
     ro.crypto.volume.options=adiantum:adiantum:v2
+
+# /data with or without encryption: default fstab.gtelwifi, the TWRP
+# installer's choice switches to fstab.gtelwifi.noencrypt (gtelwifi-crypt.sh)
+PRODUCT_VENDOR_PROPERTIES += \
+    vendor.gtelwifi.fstab=gtelwifi

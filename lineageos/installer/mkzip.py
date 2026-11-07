@@ -2,7 +2,7 @@
 """
 Build the TWRP packages of a LineageOS build for the SM-T560:
 
-  mkzip.py <update-binary> <boot.img> <super_SYSTEM.img (sparse)> <outdir> <name>
+  mkzip.py <update-binary> <boot.img> <super_SYSTEM.img (sparse)> <outdir> <name> [metadata.img]
 
 writes <name>-install.zip (also clears /metadata and /data, a clean
 install) and <name>-update.zip (keeps /data). Entries are stored, not
@@ -10,6 +10,9 @@ compressed: the static update-binary (update-binary.c) reads them directly,
 there is no zlib on the device side. TWRP runs META-INF/com/google/android/
 update-binary; the updater-script is only a placeholder for tools that look
 for it.
+
+metadata.img (optional, mkmetadata.py) is the empty ext4 that the install
+zip writes to HIDDEN (/metadata) instead of zeros.
 """
 import hashlib
 import os
@@ -17,6 +20,7 @@ import sys
 import zipfile
 
 ub, boot, system, outdir, name = sys.argv[1:6]
+metadata = sys.argv[6] if len(sys.argv) > 6 else None
 META = 'META-INF/com/google/android/'
 
 
@@ -31,6 +35,8 @@ def build(path, wipe):
         z.write(boot, 'boot.img')
         z.write(system, 'system.img')
         if wipe:
+            if metadata:
+                z.write(metadata, 'metadata.img')
             z.writestr('wipe', 'clear /metadata and /data\n')
     h = hashlib.sha256()
     with open(path, 'rb') as f:

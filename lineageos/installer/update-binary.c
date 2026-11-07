@@ -10,9 +10,12 @@
  *
  *   boot.img     -> KERNEL, read back and compared
  *   system.img   -> SYSTEM, Android sparse image (raw, fill, don't care)
- *   wipe         -> if present: zeros over the start of HIDDEN (/metadata)
- *                   and userdata, which Android formats on the next boot
- *                   (both are "formattable" in the fstab)
+ *   wipe         -> if present: userdata gets zeros over its start, which
+ *                   Android formats on the next boot ("formattable" in the
+ *                   fstab); HIDDEN (/metadata) gets the empty ext4 of
+ *                   metadata.img (zeros when the zip has none): first stage
+ *                   init does not format it
+ *   metadata.img -> optional, sparse empty ext4 for HIDDEN (mkmetadata.py)
  *
  * TWRP keeps /data (and maybe /metadata) mounted while it installs, and the
  * zip may even sit on /data. A file system that is still mounted writes its
@@ -42,6 +45,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <poll.h>
+#include <linux/input.h>
 
 static FILE *ui;
 
@@ -273,24 +278,30 @@ static void write_boot(int zip, struct entry *e)
 	say("KERNEL written and verified");
 }
 
-static void write_sparse(int zip, struct entry *e, double p0, double p1)
+/*
+ * Write an Android sparse image from the zip to an open partition. With
+ * zero_dc the "don't care" chunks are written as zeros (an image that
+ * replaces what was on the partition completely, as the empty /metadata
+ * file system does); without it they are skipped (system.img).
+ */
+static void write_sparse_fd(int zip, struct entry *e, int fd, uint64_t psize, const char *what,
+			    int zero_dc, double p0, double p1)
 {
 	uint8_t h[28], ch[12];
-	uint64_t psize, out = 0;
+	uint64_t out = 0;
 	uint32_t blk, total_blks, chunks, i;
 	off_t at = e->data;
-	int fd = open_part("SYSTEM", 3072000ULL * 512, &psize);
 
 	pread_all(zip, h, sizeof(h), at);
 	if (le32(h) != 0xed26ff3a || le16(h + 4) != 1)
-		die("system.img is not an Android sparse image");
+		die("%s is not an Android sparse image", e->name);
 	blk = le32(h + 12);
 	total_blks = le32(h + 16);
 	chunks = le32(h + 20);
 	if ((uint64_t)total_blks * blk > psize)
-		die("system.img (%llu bytes) larger than SYSTEM", (unsigned long long)total_blks * blk);
+		die("%s (%llu bytes) larger than %s", e->name, (unsigned long long)total_blks * blk, what);
 	at += le16(h + 8);
-	say("Writing system.img to SYSTEM (%u MiB)", (unsigned)((uint64_t)total_blks * blk >> 20));
+	say("Writing %s to %s (%u MiB)", e->name, what, (unsigned)((uint64_t)total_blks * blk >> 20));
 
 	for (i = 0; i < chunks; i++) {
 		uint16_t type;
@@ -329,6 +340,14 @@ static void write_sparse(int zip, struct entry *e, double p0, double p1)
 			break;
 		}
 		case 0xcac3:	/* don't care */
+			if (zero_dc) {
+				uint64_t done;
+
+				memset(buf, 0, BUF);
+				for (done = 0; done < len; done += BUF)
+					pwrite_all(fd, buf, len - done < BUF ? len - done : BUF, out + done);
+			}
+			break;
 		case 0xcac4:	/* crc32 */
 			break;
 		default:
@@ -340,8 +359,16 @@ static void write_sparse(int zip, struct entry *e, double p0, double p1)
 		progress(p0 + (p1 - p0) * out / ((uint64_t)total_blks * blk));
 	}
 	fsync(fd);
+	say("%s written (%u chunks)", what, chunks);
+}
+
+static void write_sparse(int zip, struct entry *e, double p0, double p1)
+{
+	uint64_t psize;
+	int fd = open_part("SYSTEM", 3072000ULL * 512, &psize);
+
+	write_sparse_fd(zip, e, fd, psize, "SYSTEM", 0, p0, p1);
 	close(fd);
-	say("SYSTEM written (%u chunks)", chunks);
 }
 
 /*
@@ -406,14 +433,161 @@ static void zero_start(const char *partname)
 	say("%s cleared, Android formats it on the first boot", partname);
 }
 
-static void wipe(const char *partname)
+/*
+ * /metadata: first stage init does not format "formattable" partitions
+ * (lineageos/scripts/flash-system.sh), and aconfigd needs /metadata before
+ * anything else can format it. So HIDDEN gets a ready, empty ext4 instead of
+ * zeros (metadata.img, lineageos/installer/mkmetadata.py); old zips without
+ * it keep the zeroing.
+ */
+static void write_metadata(int zip, struct entry *e)
 {
-	if (release_part(partname)) {
-		zero_start(partname);
-	} else {
+	uint64_t psize;
+	int fd = open_part("HIDDEN", 0, &psize);
+
+#ifndef INSTALLER_DRY_RUN
+	write_sparse_fd(zip, e, fd, psize, "HIDDEN", 1, 0.95, 0.99);
+#else
+	(void)zip;
+	(void)e;
+#endif
+	close(fd);
+}
+
+/* Read the start of a partition back, past nothing but the block cache that the
+ * O_SYNC writes went through. Returns 1 when it is what the installer wrote. */
+static int head_ok(const char *partname, int want_ext4)
+{
+	uint64_t psize;
+	uint8_t head[4096];
+	size_t i;
+	int fd = open_part(partname, 0, &psize), ok = 1;
+
+	pread_all(fd, head, sizeof(head), 0);
+	close(fd);
+	if (want_ext4)
+		return le16(head + 1024 + 56) == 0xef53;
+	for (i = 0; i < sizeof(head); i++)
+		ok &= head[i] == 0;
+	return ok;
+}
+
+static void wipe(const char *partname, struct entry *prepared, int zip)
+{
+	if (!release_part(partname)) {
 		say("%s NOT cleared", partname);
 		need_format = 1;
+		return;
 	}
+	if (prepared)
+		write_metadata(zip, prepared);
+	else
+		zero_start(partname);
+}
+
+/* After the final sync: did anything bring the old file system back? */
+static void check_wiped(const char *partname, int want_ext4)
+{
+#ifdef INSTALLER_DRY_RUN
+	(void)partname;
+	(void)want_ext4;
+#else
+	if (!head_ok(partname, want_ext4)) {
+		say("%s: the start of the partition changed after clearing it", partname);
+		need_format = 1;
+	}
+	/* a mount that is writable again would write its superblock back later */
+	if (!release_part(partname))
+		need_format = 1;
+#endif
+}
+
+/*
+ * Encryption choice (install package only, /data is formatted anyway):
+ * Volume up = /data with file-based encryption (default, also after 30 s),
+ * Volume down = without. The choice is a marker on the fresh /metadata,
+ * /metadata/gtelwifi/noencrypt, which vendor/bin/gtelwifi-crypt.sh turns into
+ * fstab.gtelwifi.noencrypt before mount_all. Update packages keep the marker.
+ */
+static int ask_encryption(void)
+{
+	struct pollfd pfd[16];
+	int n = 0, i, left = 30000;
+	char path[64];
+
+	for (i = 0; i < 16; i++) {
+		snprintf(path, sizeof(path), "/dev/input/event%d", i);
+		pfd[n].fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+		if (pfd[n].fd >= 0)
+			pfd[n++].events = POLLIN;
+	}
+	say(" ");
+	say("Encrypt /data (file-based encryption)?");
+	say("  Volume UP   = yes, encrypted (default)");
+	say("  Volume DOWN = no, not encrypted (TWRP can read /data)");
+	say("  no key within 30 s = encrypted");
+	if (!n) {
+		say("no input devices, keeping encryption");
+		return 1;
+	}
+	while (left > 0) {
+		int r = poll(pfd, n, 500);
+
+		left -= 500;
+		if (r <= 0)
+			continue;
+		for (i = 0; i < n; i++) {
+			struct input_event ev;
+
+			if (!(pfd[i].revents & POLLIN))
+				continue;
+			while (read(pfd[i].fd, &ev, sizeof(ev)) == sizeof(ev)) {
+				if (ev.type != EV_KEY || ev.value != 1)
+					continue;
+				if (ev.code == KEY_VOLUMEUP || ev.code == KEY_VOLUMEDOWN) {
+					int enc = ev.code == KEY_VOLUMEUP;
+
+					for (i = 0; i < n; i++)
+						close(pfd[i].fd);
+					say(enc ? "-> /data encrypted" : "-> /data NOT encrypted");
+					return enc;
+				}
+			}
+		}
+	}
+	for (i = 0; i < n; i++)
+		close(pfd[i].fd);
+	say("-> no key pressed: /data encrypted");
+	return 1;
+}
+
+/* write /metadata/gtelwifi/noencrypt on the freshly written HIDDEN ext4 */
+static void mark_noencrypt(void)
+{
+	char dev[64];
+	uint64_t s;
+	int fd;
+
+	partition("HIDDEN", dev, sizeof(dev), &s);
+	mkdir("/tmp/gtelmeta", 0700);
+	if (mount(dev, "/tmp/gtelmeta", "ext4", MS_NOATIME, "") < 0) {
+		say("could not mount the new /metadata (%s): encryption stays on", strerror(errno));
+		return;
+	}
+	mkdir("/tmp/gtelmeta/gtelwifi", 0700);
+	fd = open("/tmp/gtelmeta/gtelwifi/noencrypt", O_WRONLY | O_CREAT | O_TRUNC, 0600);
+	if (fd >= 0) {
+		if (write(fd, "1\n", 2) != 2)
+			say("writing the marker failed: %s", strerror(errno));
+		fsync(fd);
+		close(fd);
+	} else {
+		say("could not create the marker: %s", strerror(errno));
+	}
+	sync();
+	if (umount("/tmp/gtelmeta") < 0)
+		say("umount /tmp/gtelmeta: %s", strerror(errno));
+	rmdir("/tmp/gtelmeta");
 }
 
 int main(int argc, char **argv)
@@ -455,17 +629,34 @@ int main(int argc, char **argv)
 	progress(0.05);
 	write_sparse(zip, system, 0.05, 0.95);
 #endif
-	close(zip);
 	if (find("wipe", 0)) {
-		wipe("HIDDEN");
-		wipe("userdata");
+		struct entry *meta = find("metadata.img", 0);
+		int encrypt = meta ? ask_encryption() : 1;
+
+		/* HIDDEN first, it reads metadata.img from the zip; the zip is
+		 * closed before userdata is released, it may lie on it */
+		wipe("HIDDEN", meta, zip);
+		close(zip);
+		wipe("userdata", NULL, -1);
+		sync();
+		if (!need_format) {
+			check_wiped("userdata", 0);
+			check_wiped("HIDDEN", meta != NULL);
+		}
+#ifndef INSTALLER_DRY_RUN
+		if (!encrypt && meta && !need_format)
+			mark_noencrypt();
+#else
+		(void)encrypt;
+#endif
 	} else {
+		close(zip);
 		say("Data kept (update package)");
 	}
 	sync();
 	progress(1.0);
 	if (need_format) {
-		say("IMPORTANT: /data could not be cleared while it is in use.");
+		say("IMPORTANT: /data or /metadata could not be cleared while it is in use.");
 		say("Before rebooting: Wipe -> Format Data -> type yes.");
 		return 0;
 	}

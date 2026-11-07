@@ -1,0 +1,45 @@
+# fstab.gtelwifi.noencrypt: as fstab.gtelwifi, but /data without file-based
+# encryption. Used when the installer left /metadata/gtelwifi/noencrypt
+# (vendor/bin/gtelwifi-crypt.sh sets vendor.gtelwifi.fstab before
+# mount_all). Switching needs a Format Data: an existing /data keeps its mode.
+# gtelwifi - DRAFT. Physical names are the GPT PARTNAMEs (Samsung uses
+# uppercase for most). super spans SYSTEM + CSC (BoardConfig.mk).
+#
+# <src>                       <mnt>        <type>  <mnt_flags>      <fs_mgr_flags>
+system                        /system      erofs   ro               wait,logical,first_stage_mount
+system_ext                    /system_ext  erofs   ro               wait,logical,first_stage_mount
+product                       /product     erofs   ro               wait,logical,first_stage_mount
+vendor                        /vendor      erofs   ro               wait,logical,first_stage_mount
+
+# /metadata on HIDDEN (Samsung's /preload, unused here), formatted on the
+# first boot when wiped (first 4 KiB zero)
+/dev/block/by-name/HIDDEN     /metadata    ext4    noatime,nosuid,nodev,discard  wait,check,formattable,first_stage_mount
+
+# /data: LineageOS convention is userdata (Nura lives there today, see
+# notes/boot-partitionen.md). Cortex-A7 has no AES -> Adiantum. No
+# metadata_encryption= (needs dm-default-key, ACK only), no checkpoint=.
+# Shipping API level 19 keeps fs_mgr and vold on their pre-R defaults, so
+# v2 policies and fs-verity (odsign needs it, else it deletes every ART
+# artifact) are spelled out here. latemount: init sets ro.crypto.state only
+# from "mount_all --late"; mounted early, /data counted as "unsupported",
+# StorageManager took it for unencrypted and PackageManager tried to move
+# app data between CE and DE (rename across fscrypt policies: EXDEV, 04.11.).
+/dev/block/by-name/userdata   /data        ext4    noatime,nosuid,nodev,noauto_da_alloc,errors=panic  wait,check,formattable,latemount,fsverity
+
+/dev/block/by-name/KERNEL     /boot        emmc    defaults         defaults
+/dev/block/by-name/RECOVERY   /recovery    emmc    defaults         defaults
+# No /misc: the only free candidate is Samsung's FOTA_SIG, and Android wrote
+# into it at every boot (misctrl, kcmdlinectrl). Flashing is limited to
+# KERNEL, SYSTEM, HIDDEN and userdata; FOTA_SIG was restored from the backup
+# (04.11.). TWRP is reached through the restart reason (INFORM3) instead.
+
+# Samsung EFS (factory Bluetooth/Wi-Fi addresses for bdaddr, device.mk).
+# Read-only without journal replay and without "check", as under Nura:
+# nothing may ever be written to it.
+/dev/block/by-name/efs        /mnt/vendor/efs  ext4  ro,noload,nosuid,nodev,noexec  wait,nofail
+
+# microSD (SDIO0, mmc@20300000)
+# encryptable=userdata: the SD card can be adopted as internal storage
+# (vold: dm-crypt with ro.crypto.fde_algorithm, files with fscrypt
+# ro.crypto.volume.options, both Adiantum as for /data, device.mk)
+/devices/platform/soc/20300000.mmc/mmc_host*  auto  auto  defaults  voldmanaged=sdcard1:auto,encryptable=userdata

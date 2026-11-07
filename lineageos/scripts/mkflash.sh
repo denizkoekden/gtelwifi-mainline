@@ -23,5 +23,8 @@ simg2img $P/super_split/super_SYSTEM.img $P/super_split/super_SYSTEM.raw
 F=flash-$T; mkdir -p $F; cp $P/boot.img $F/; gzip -1 -c $P/super_split/super_SYSTEM.raw > $F/super_SYSTEM.raw.gz
 { (cd $F && sha256sum boot.img); (cd $P/super_split && sha256sum super_SYSTEM.raw); } > $F/SHA256SUMS
 cat $F/SHA256SUMS
-python3 mkzip.py update-binary $F/boot.img $P/super_split/super_SYSTEM.img $F lineage-24.0-$T-gtelwifi > $F/twrp.sha256
+# empty ext4 for HIDDEN (/metadata) in the install zip; the installer puts
+# the encryption choice (gtelwifi/noencrypt) on it
+MKE2FS=$PWD/$B/mke2fs python3 mkmetadata.py $P/metadata.img >/dev/null
+python3 mkzip.py update-binary $F/boot.img $P/super_split/super_SYSTEM.img $F lineage-24.0-$T-gtelwifi $P/metadata.img > $F/twrp.sha256
 cat $F/twrp.sha256

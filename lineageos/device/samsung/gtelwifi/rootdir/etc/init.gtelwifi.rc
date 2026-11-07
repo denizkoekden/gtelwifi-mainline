@@ -34,7 +34,10 @@ on init
 
 on fs
     mkdir /mnt/vendor/efs 0700 root system
-    mount_all /vendor/etc/fstab.gtelwifi --early
+    # fstab.gtelwifi or fstab.gtelwifi.noencrypt (installer choice, see
+    # gtelwifi-crypt.sh); vendor.gtelwifi.fstab defaults to gtelwifi
+    exec u:r:su:s0 root root -- /system/bin/sh /vendor/bin/gtelwifi-crypt.sh
+    mount_all /vendor/etc/fstab.${vendor.gtelwifi.fstab} --early
 
 on post-fs
     # Bring-up: kernel log and logcat of the last two boots on /metadata,
@@ -43,7 +46,7 @@ on post-fs
     exec_background u:r:su:s0 root root -- /system/bin/sh /vendor/bin/gtelwifi-bootlog.sh
 
 on late-fs
-    mount_all /vendor/etc/fstab.gtelwifi --late
+    mount_all /vendor/etc/fstab.${vendor.gtelwifi.fstab} --late
 
 on post-fs-data
     # Bring-up: "Rooted debugging" on, as Settings -> System -> Developer
@@ -68,7 +71,7 @@ on post-fs-data
     # (NvStorageDir in gps.xml must point here as well)
     mkdir /data/system/gps 0770 gps system
     # (no shell variables: init expands "$" itself; the image has gpsd 0644)
-    exec u:r:su:s0 root root -- /vendor/bin/sh -c "[ -f /vendor/lib/gpsblobs/gpsd ] || exit 0; /system/bin/cp /vendor/lib/gpsblobs/gpsd /vendor/lib/gpsblobs/libsprd_agps_agent.so /vendor/lib/gpsblobs/gps.xml /vendor/lib/libgpsd_shim.so /data/vendor/gps/blobs/ && /system/bin/chmod 0755 /data/vendor/gps/blobs/gpsd && /system/bin/setprop vendor.gtelwifi.gps 1"
+    exec u:r:su:s0 root root -- /vendor/bin/sh -c "[ -f /vendor/lib/gpsblobs/gpsd ] || exit 0; /system/bin/cp /vendor/lib/gpsblobs/gpsd /vendor/lib/gpsblobs/libsprd_agps_agent.so /vendor/lib/gpsblobs/gps.xml /vendor/lib/libgpsd_shim.so /data/vendor/gps/blobs/ && /system/bin/chmod 0755 /data/vendor/gps/blobs/gpsd && /system/bin/chmod 0644 /data/vendor/gps/blobs/libsprd_agps_agent.so /data/vendor/gps/blobs/gps.xml /data/vendor/gps/blobs/libgpsd_shim.so && /system/bin/setprop vendor.gtelwifi.gps 1"
 
 on early-boot
     # UDC of the dwc2 (usb@20200000). mainline/common's USB gadget HAL and
