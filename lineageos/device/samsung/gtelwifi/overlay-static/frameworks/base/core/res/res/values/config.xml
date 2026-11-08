@@ -9,4 +9,9 @@
          black, 07.11.). 0.01 keeps the slider at level >= 1, which is
          still visible (vendor curve: duty 3/255). -->
     <item name="config_screenBrightnessSettingMinimumFloat" format="float" type="dimen">0.01</item>
+    <!-- On-screen navigation (taskbar on this tablet). Without it Settings
+         hides "Navigation mode" and no gesture hint is drawn, although
+         gesture navigation works (XDA report, 07.11.). The hardware keys
+         keep working. Tested at runtime with qemu.hw.mainkeys=0 (08.11.). -->
+    <bool name="config_showNavigationBar">true</bool>
 </resources>
