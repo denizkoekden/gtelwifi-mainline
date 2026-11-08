@@ -1,7 +1,7 @@
 From bda00015385d97c1e090e9929abf98b408b3d1f5 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 20:41:27 +0000
-Subject: [PATCH 078/115] media: i2c: s5k4ecgx: add brightness, contrast and
+Subject: [PATCH 078/116] media: i2c: s5k4ecgx: add brightness, contrast and
  saturation controls
 
 The ISP firmware takes signed user adjustments on top of its tuning at

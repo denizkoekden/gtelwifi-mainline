@@ -1,7 +1,7 @@
 From 89518b633f3816da557f9c19cc052409c116eabe Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 19:24:06 +0000
-Subject: [PATCH 014/115] usb: dwc2: drd: report the role in effect
+Subject: [PATCH 014/116] usb: dwc2: drd: report the role in effect
 
 The role switch has no .get callback, so the class reports the role it
 cached on the last set, which is "none" until something sets one, even

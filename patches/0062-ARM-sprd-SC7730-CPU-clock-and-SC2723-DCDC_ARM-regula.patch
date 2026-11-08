@@ -1,7 +1,7 @@
 From 10bfe0e492c464ffd70d24f2cc07c7c61c6109c6 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 14:12:48 +0000
-Subject: [PATCH 062/115] ARM: sprd: SC7730 CPU clock and SC2723 DCDC_ARM
+Subject: [PATCH 062/116] ARM: sprd: SC7730 CPU clock and SC2723 DCDC_ARM
  regulator
 
 Glue for CPU frequency scaling with cpufreq-dt, after the vendor's

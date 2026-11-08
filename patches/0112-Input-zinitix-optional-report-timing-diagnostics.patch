@@ -1,7 +1,7 @@
 From 08be76a7ad95a3a815f28ddca293af97df4a2ec2 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sat, 7 Nov 2026 12:14:00 +0000
-Subject: [PATCH 112/115] Input: zinitix - optional report timing diagnostics
+Subject: [PATCH 112/116] Input: zinitix - optional report timing diagnostics
 
 Add a ts_debug parameter (default off) that logs the chip time stamp,
 the IRQ spacing and the handler time of every report. Measured on the

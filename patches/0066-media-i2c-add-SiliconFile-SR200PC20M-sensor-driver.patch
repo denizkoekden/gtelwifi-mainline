@@ -1,7 +1,7 @@
 From d2683c62c8f369997ac85aa95da65219194115f4 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 15:26:26 +0000
-Subject: [PATCH 066/115] media: i2c: add SiliconFile SR200PC20M sensor driver
+Subject: [PATCH 066/116] media: i2c: add SiliconFile SR200PC20M sensor driver
 
 The SR200PC20M is a 2 MP sensor with its own ISP and a one-lane MIPI
 CSI-2 output delivering UYVY. It is the front camera of the Samsung

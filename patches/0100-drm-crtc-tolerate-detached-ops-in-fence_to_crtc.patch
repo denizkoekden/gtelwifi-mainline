@@ -1,7 +1,7 @@
 From 78bd6a8f18aef21130fbbe178327f94017e94cae Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Thu, 5 Nov 2026 07:44:59 +0000
-Subject: [PATCH 100/115] drm/crtc: tolerate detached ops in fence_to_crtc()
+Subject: [PATCH 100/116] drm/crtc: tolerate detached ops in fence_to_crtc()
 
 dma_fence_signal() now clears fence->ops of fences without release and
 wait callbacks, which includes the CRTC out-fences. dma_fence_driver_name()

@@ -1,7 +1,7 @@
 From 04bf725c065945885266a143b18d8b3108fa50ef Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 20:04:37 +0000
-Subject: [PATCH 018/115] ARM: dts: sc7730-gtelwifi: SM5504 MUIC, charger input
+Subject: [PATCH 018/116] ARM: dts: sc7730-gtelwifi: SM5504 MUIC, charger input
  mode
 
 The SM5504 sits on a second bit-banged bus (GPIO 150/151), the

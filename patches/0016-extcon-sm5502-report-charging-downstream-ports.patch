@@ -1,7 +1,7 @@
 From fa43101f4f1da8755fd11c4d411e84bd029b7693 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 20:04:37 +0000
-Subject: [PATCH 016/115] extcon: sm5502: report charging downstream ports
+Subject: [PATCH 016/116] extcon: sm5502: report charging downstream ports
 
 DEV_TYPE1 bit 5 (USB_CHG) marks a BC1.2 charging downstream port, a
 USB host port that may deliver up to 1.5 A. The driver did not know it

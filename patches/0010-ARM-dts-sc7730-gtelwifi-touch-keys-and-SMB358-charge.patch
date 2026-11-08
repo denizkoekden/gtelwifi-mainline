@@ -1,7 +1,7 @@
 From 3184a76305179476f418c050c83960fc758f8688 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 17:23:36 +0000
-Subject: [PATCH 010/115] ARM: dts: sc7730-gtelwifi: touch keys and SMB358
+Subject: [PATCH 010/116] ARM: dts: sc7730-gtelwifi: touch keys and SMB358
  charger
 
 The capacitive keys next to Home are Zinitix icons 0 and 1.

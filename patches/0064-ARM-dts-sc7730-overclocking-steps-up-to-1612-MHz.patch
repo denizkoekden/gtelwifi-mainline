@@ -1,7 +1,7 @@
 From 4dc2a97efeb3f31250173172a3e547054e18aeee Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 14:26:37 +0000
-Subject: [PATCH 064/115] ARM: dts: sc7730: overclocking steps up to 1612 MHz
+Subject: [PATCH 064/116] ARM: dts: sc7730: overclocking steps up to 1612 MHz
 
 MPLL takes any multiple of 26 MHz up to 1638 MHz (NINT is 6 bits). Add
 1352 to 1612 MHz in 52 MHz steps with 25 mV more each, up to 1.20 V,

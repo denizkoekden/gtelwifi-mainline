@@ -1,7 +1,7 @@
 From 6ffdf0a5d0a0ef09d48fca2dc5dad7654e5a7525 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 23:00:48 +0000
-Subject: [PATCH 087/115] ARM: dts: sc7730: follow the bindings
+Subject: [PATCH 087/116] ARM: dts: sc7730: follow the bindings
 
 - GPU: "sprd,sc7730-mali" in front of "arm,mali-400".
 - AP DMA: drop the "sprd,sc9860-dma" fallback; its programming model

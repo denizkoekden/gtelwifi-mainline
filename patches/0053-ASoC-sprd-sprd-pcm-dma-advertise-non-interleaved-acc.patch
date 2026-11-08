@@ -1,7 +1,7 @@
 From 72519ede49914231ac470abd2c55d6d85b5ba290 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 11:29:35 +0000
-Subject: [PATCH 053/115] ASoC: sprd: sprd-pcm-dma: advertise non-interleaved
+Subject: [PATCH 053/116] ASoC: sprd: sprd-pcm-dma: advertise non-interleaved
  access
 
 hw_params gives every channel its own DMA channel and points it at

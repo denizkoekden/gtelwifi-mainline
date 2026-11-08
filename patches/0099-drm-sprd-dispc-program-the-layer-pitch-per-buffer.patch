@@ -1,7 +1,7 @@
 From 6dbeded0681b4a52d5e95e36c0e4b38f4bc613f7 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Wed, 4 Nov 2026 21:50:02 +0000
-Subject: [PATCH 099/115] drm/sprd: dispc: program the layer pitch per buffer
+Subject: [PATCH 099/116] drm/sprd: dispc: program the layer pitch per buffer
 
 The plane check accepted only buffers packed like the bootloader's splash
 (pitch = 4 * width) and refused anything else with -EINVAL and no
