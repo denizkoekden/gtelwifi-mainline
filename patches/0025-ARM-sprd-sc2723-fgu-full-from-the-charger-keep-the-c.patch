@@ -1,7 +1,7 @@
 From ff5b250a676c4aa15b32820b9cc413c004116afa Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 22:28:46 +0000
-Subject: [PATCH 025/115] ARM: sprd: sc2723-fgu: full from the charger, keep
+Subject: [PATCH 025/116] ARM: sprd: sc2723-fgu: full from the charger, keep
  the capacity
 
 Report FULL and 100 % once the charger has terminated, also while the

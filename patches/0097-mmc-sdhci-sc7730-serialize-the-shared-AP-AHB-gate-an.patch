@@ -1,7 +1,7 @@
 From 6524c8c39965e5c533543b4ea087f199c29beeeb Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Wed, 4 Nov 2026 19:45:30 +0000
-Subject: [PATCH 097/115] mmc: sdhci-sc7730: serialize the shared AP AHB gate
+Subject: [PATCH 097/116] mmc: sdhci-sc7730: serialize the shared AP AHB gate
  and reset bits
 
 SDIO0 (microSD) and SDIO1 (WLAN) open their gate in the AP AHB enable

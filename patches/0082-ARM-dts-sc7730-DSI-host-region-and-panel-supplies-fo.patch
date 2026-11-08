@@ -1,7 +1,7 @@
 From 22477461db35158f9fef6b05e814bcda1d79a60e Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 22:39:35 +0000
-Subject: [PATCH 082/115] ARM: dts: sc7730: DSI host region and panel supplies
+Subject: [PATCH 082/116] ARM: dts: sc7730: DSI host region and panel supplies
  for the display
 
 The display controller node gets the DSI host registers, and the

@@ -1,7 +1,7 @@
 From c3aefaeb9b9d386976b81b7c743f30b2df9056d9 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 22:48:55 +0000
-Subject: [PATCH 029/115] drm/sysfb: simpledrm: switch an optional backlight
+Subject: [PATCH 029/116] drm/sysfb: simpledrm: switch an optional backlight
  with the CRTC
 
 A firmware framebuffer cannot blank its display, so a compositor that

@@ -1,7 +1,7 @@
 From a74e114ee0d9ec2799c7badf56d13d25eb7f3a49 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 08:34:01 +0000
-Subject: [PATCH 043/115] ARM: dts: sc7730: SC2723 PMIC with RTC and EIC, keys
+Subject: [PATCH 043/116] ARM: dts: sc7730: SC2723 PMIC with RTC and EIC, keys
  on interrupts
 
 The PMIC node carries the RTC (offset 0x80, PMIC IRQ 2) and the EIC

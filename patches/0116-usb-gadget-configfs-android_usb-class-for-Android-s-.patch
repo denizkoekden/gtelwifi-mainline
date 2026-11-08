@@ -1,0 +1,185 @@
+From 400e6c3df329c699125f5b9326cacbde0266b211 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 8 Nov 2026 00:20:30 +0000
+Subject: [PATCH 116/116] usb: gadget: configfs: android_usb class for
+ Android's UsbService
+
+Android's UsbService creates its UsbDeviceManager only when
+/sys/class/android_usb exists. Without it there is no USB notification,
+no switching to MTP/PTP/tethering, and Settings crashes on "Default USB
+configuration" (UsbService.getScreenUnlockedFunctions checks for the
+device manager). The Android Common Kernel adds this class to configfs;
+mainline does not have it.
+
+Add a minimal equivalent for one gadget: class android_usb with device
+android0 (/devices/virtual/android_usb/android0), a read-only "state"
+attribute (DISCONNECTED, CONNECTED, CONFIGURED) and a KOBJ_CHANGE uevent
+with USB_STATE= on every change, driven from the configfs setup,
+disconnect and unbind callbacks.
+
+Tested on the SM-T560 with LineageOS 24: UsbDeviceManager starts,
+Settings shows the USB modes, switching to file transfer brings up MTP
+(the host sees a class 6 interface) with the notification.
+
+Assisted-by: Claude Opus 5.5
+---
+ drivers/usb/gadget/configfs.c | 109 ++++++++++++++++++++++++++++++++++
+ 1 file changed, 109 insertions(+)
+
+diff --git a/drivers/usb/gadget/configfs.c b/drivers/usb/gadget/configfs.c
+index 51df6d1d1..d17264e2a 100644
+--- a/drivers/usb/gadget/configfs.c
++++ b/drivers/usb/gadget/configfs.c
+@@ -61,6 +61,8 @@ struct gadget_info {
+ 	bool unbind;
+ };
+ 
++static void android_usb_update(struct gadget_info *gi, bool connected);
++
+ static inline struct gadget_info *to_gadget_info(struct config_item *item)
+ {
+ 	return container_of(to_config_group(item), struct gadget_info, group);
+@@ -1852,6 +1854,107 @@ static void configfs_composite_unbind(struct usb_gadget *gadget)
+ 	gadget->deactivated = false;
+ 	set_gadget_data(gadget, NULL);
+ 	spin_unlock_irqrestore(&gi->spinlock, flags);
++	android_usb_update(NULL, false);
++}
++
++/*
++ * Android's UsbService only creates its UsbDeviceManager (USB notification,
++ * MTP/PTP/tethering switching, Settings "Default USB configuration") when
++ * /sys/class/android_usb exists, and follows the gadget through
++ * /sys/class/android_usb/android0/state and USB_STATE= uevents on
++ * /devices/virtual/android_usb/android0. The Android Common Kernel adds
++ * these to configfs; this is a minimal equivalent for one gadget.
++ */
++static struct class *android_usb_class;
++static struct device *android_usb_dev;
++static struct gadget_info *android_usb_gi;
++static bool android_usb_connected;
++static const char *android_usb_sent;
++static DEFINE_SPINLOCK(android_usb_lock);
++
++static const char *android_usb_state(void)
++{
++	if (!android_usb_connected)
++		return "DISCONNECTED";
++	if (android_usb_gi && android_usb_gi->cdev.config)
++		return "CONFIGURED";
++	return "CONNECTED";
++}
++
++static void android_usb_work_fn(struct work_struct *work)
++{
++	const char *state;
++	char buf[32];
++	char *envp[] = { buf, NULL };
++	unsigned long flags;
++
++	spin_lock_irqsave(&android_usb_lock, flags);
++	state = android_usb_state();
++	if (state == android_usb_sent) {
++		spin_unlock_irqrestore(&android_usb_lock, flags);
++		return;
++	}
++	android_usb_sent = state;
++	spin_unlock_irqrestore(&android_usb_lock, flags);
++
++	snprintf(buf, sizeof(buf), "USB_STATE=%s", state);
++	if (android_usb_dev)
++		kobject_uevent_env(&android_usb_dev->kobj, KOBJ_CHANGE, envp);
++}
++static DECLARE_WORK(android_usb_work, android_usb_work_fn);
++
++static void android_usb_update(struct gadget_info *gi, bool connected)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&android_usb_lock, flags);
++	android_usb_gi = gi;
++	android_usb_connected = connected;
++	spin_unlock_irqrestore(&android_usb_lock, flags);
++	schedule_work(&android_usb_work);
++}
++
++static ssize_t state_show(struct device *dev, struct device_attribute *attr,
++			  char *buf)
++{
++	const char *state;
++	unsigned long flags;
++
++	spin_lock_irqsave(&android_usb_lock, flags);
++	state = android_usb_state();
++	spin_unlock_irqrestore(&android_usb_lock, flags);
++	return sysfs_emit(buf, "%s\n", state);
++}
++static DEVICE_ATTR_RO(state);
++
++static struct attribute *android_usb_attrs[] = {
++	&dev_attr_state.attr,
++	NULL,
++};
++ATTRIBUTE_GROUPS(android_usb);
++
++static void android_usb_init(void)
++{
++	android_usb_class = class_create("android_usb");
++	if (IS_ERR(android_usb_class)) {
++		android_usb_class = NULL;
++		return;
++	}
++	android_usb_dev = device_create_with_groups(android_usb_class, NULL,
++						    MKDEV(0, 0), NULL,
++						    android_usb_groups,
++						    "android0");
++	if (IS_ERR(android_usb_dev))
++		android_usb_dev = NULL;
++}
++
++static void android_usb_exit(void)
++{
++	cancel_work_sync(&android_usb_work);
++	if (android_usb_dev)
++		device_destroy(android_usb_class, MKDEV(0, 0));
++	if (android_usb_class)
++		class_destroy(android_usb_class);
+ }
+ 
+ static int configfs_composite_setup(struct usb_gadget *gadget,
+@@ -1876,6 +1979,8 @@ static int configfs_composite_setup(struct usb_gadget *gadget,
+ 
+ 	ret = composite_setup(gadget, ctrl);
+ 	spin_unlock_irqrestore(&gi->spinlock, flags);
++	/* a host talks to us: connected, configured after SET_CONFIGURATION */
++	android_usb_update(gi, true);
+ 	return ret;
+ }
+ 
+@@ -1899,6 +2004,7 @@ static void configfs_composite_disconnect(struct usb_gadget *gadget)
+ 
+ 	composite_disconnect(gadget);
+ 	spin_unlock_irqrestore(&gi->spinlock, flags);
++	android_usb_update(gi, false);
+ }
+ 
+ static void configfs_composite_reset(struct usb_gadget *gadget)
+@@ -2097,12 +2203,15 @@ static int __init gadget_cfs_init(void)
+ 	config_group_init(&gadget_subsys.su_group);
+ 
+ 	ret = configfs_register_subsystem(&gadget_subsys);
++	if (!ret)
++		android_usb_init();
+ 	return ret;
+ }
+ module_init(gadget_cfs_init);
+ 
+ static void __exit gadget_cfs_exit(void)
+ {
++	android_usb_exit();
+ 	configfs_unregister_subsystem(&gadget_subsys);
+ }
+ module_exit(gadget_cfs_exit);
+-- 
+2.47.3
+
