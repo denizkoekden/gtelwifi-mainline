@@ -1,0 +1,36 @@
+From 875d918cf477fc94a9174bec04835eda7bc8d77a Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 8 Nov 2026 01:55:14 +0100
+Subject: [PATCH] GrGLUtil: detect Mesa lima as Mali-4xx
+
+Mesa's lima driver reports GL_RENDERER "Mali400" or "Mali450", without
+the dash that GetRendererFromStrings looks for, so Skia treated the GPU
+as kOther and skipped all Mali-4xx workarounds (low fragment precision,
+no perspective SDF text, avoiding dFdx in gradients, no BGRA8
+CopyTexSubImage). Accept the form without the dash too.
+
+Assisted-by: Claude Opus 5.5
+Change-Id: I8d6cf5347d632fab90fbb7e130cbc10bedcca80d
+---
+ src/gpu/ganesh/gl/GrGLUtil.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/gpu/ganesh/gl/GrGLUtil.cpp b/src/gpu/ganesh/gl/GrGLUtil.cpp
+index e8be4dc51e..116a8f032d 100644
+--- a/src/gpu/ganesh/gl/GrGLUtil.cpp
++++ b/src/gpu/ganesh/gl/GrGLUtil.cpp
+@@ -394,6 +394,11 @@ static GrGLRenderer get_renderer(const char* rendererString, const GrGLExtension
+         mali400Num < 500) {
+         return GrGLRenderer::kMali4xx;
+     }
++    // Mesa's lima driver reports "Mali400" / "Mali450", without the dash.
++    if (1 == sscanf(rendererString, "Mali%d", &mali400Num) && mali400Num >= 400 &&
++        mali400Num < 500) {
++        return GrGLRenderer::kMali4xx;
++    }
+ 
+     static const char kAppleStr[] = "Apple";
+     if (0 == strncmp(rendererString, kAppleStr, std::size(kAppleStr) - 1)) {
+-- 
+2.56.0
+
