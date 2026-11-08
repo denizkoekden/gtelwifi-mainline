@@ -6,9 +6,10 @@
 > but please keep this in mind when you review, reuse or submit any of it to a project: check that project's policy
 > on AI-assisted contributions first.
 
-Linux 7.3.1 with 87 patches on the Spreadtrum/Unisoc SC7730SE (4x Cortex-A7 at up to 1.3 GHz, Mali-400 MP2, 1.5 GB
-RAM, PMIC SC2723), running a postmarketOS-based userspace with Phosh. The international SM-T560 only; the SM-T560NU
-has a Snapdragon 410 and needs a different port.
+Linux 7.3.1 with 117 patches on the Spreadtrum/Unisoc SC7730SE (4x Cortex-A7 at up to 1.3 GHz, Mali-400 MP2, 1.5 GB
+RAM, PMIC SC2723). The main userspace is now LineageOS 24.0 (branch `lineageos`, below); the postmarketOS-based
+packages in `packages/` (Phosh) are from the first phase and no longer maintained. The international SM-T560
+only; the SM-T560NU has a Snapdragon 410 and needs a different port.
 
 ## What works
 
@@ -22,15 +23,18 @@ has a Snapdragon 410 and needs a different port.
 - a DRM driver for the display controller (takes over the pipeline the bootloader leaves running, powers the
   panel off over DSI while the screen is off) and GPU acceleration with lima
 - device tree binding schemas for all compatible strings used (`dtbs_check` clean)
-- audio: speaker; headphones with jack detection and the internal microphone (new, being tested)
+- audio: speaker (no pop on the first sound or after standby), headphones with jack detection, internal microphone
 - both cameras through V4L2, libcamera (with a small pipeline patch) and PipeWire (with a client-node fix, so cameras
-  without controls are not dropped by WirePlumber; `packages/pipewire`)
+  without controls are not dropped by WirePlumber; `packages/pipewire`); rear camera stills up to 5 MP with autofocus
+- power-off through the PMIC (0117), DDR self-refresh in suspend (0106)
+- SM-T561 (`gtel3g`, 3G model): device tree for all board revisions and the modem core loader with SIPC
+  (0107/0108), untested with a SIM
 
-Not yet: deep sleep (DDR self-refresh), a full DSI/panel driver, headset microphone and buttons, camera still
-capture and autofocus, GPS (needs a proprietary host-side engine).
+Not yet: deep sleep of the CPU cluster, a full DSI/panel driver, headset microphone and buttons, hardware video
+decoding (VSP), GPS outside Android (needs a proprietary host-side engine).
 
-**LineageOS:** the branch [`lineageos`](../../tree/lineageos) carries a LineageOS 24.0 (Android 17) port on the newer
-kernel patch series (0001-0106), see `lineageos/README.md` there.
+**LineageOS:** the branch [`lineageos`](../../tree/lineageos) carries a LineageOS 24.0 (Android 17) port on the same
+kernel patch series (0001-0117), see `lineageos/README.md` there.
 
 ## Layout
 
