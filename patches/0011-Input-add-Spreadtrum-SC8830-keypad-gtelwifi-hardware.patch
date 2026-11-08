@@ -1,7 +1,7 @@
 From 584b6159e487d9477e19c1a46db23a8e66c2de54 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 17:41:06 +0000
-Subject: [PATCH 011/116] Input: add Spreadtrum SC8830 keypad; gtelwifi:
+Subject: [PATCH 011/117] Input: add Spreadtrum SC8830 keypad; gtelwifi:
  hardware keys
 
 New driver for the keypad matrix controller of the SC8830/SC7730: up

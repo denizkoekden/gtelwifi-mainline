@@ -1,7 +1,7 @@
 From e05f0a477460f8f303133bcea66ff0eda37b6b80 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 16:09:42 +0000
-Subject: [PATCH 008/116] mmc: sdhci-sc7730: DDR52 with the vendor delay lines
+Subject: [PATCH 008/117] mmc: sdhci-sc7730: DDR52 with the vendor delay lines
 
 Program the three data-sampling delay lines (0x80/0x84/0x88) from DT in
 DDR mode, as the vendor driver does, and run the gtelwifi eMMC at DDR52.

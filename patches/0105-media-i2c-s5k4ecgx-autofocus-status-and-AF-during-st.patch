@@ -1,7 +1,7 @@
 From 352bb43d7080b0f760cdc2ef7c686c3d8857c60d Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Thu, 5 Nov 2026 14:23:55 +0000
-Subject: [PATCH 105/116] media: i2c: s5k4ecgx: autofocus status and AF during
+Subject: [PATCH 105/117] media: i2c: s5k4ecgx: autofocus status and AF during
  still streams
 
 V4L2_CID_AUTO_FOCUS_STATUS is read-only but not volatile in the control

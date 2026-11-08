@@ -1,7 +1,7 @@
 From 48d94a742a256bad985f9cc27a14fa25da8a89ca Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 16:04:22 +0000
-Subject: [PATCH 069/116] media: i2c: add Samsung S5K4ECGX sensor driver
+Subject: [PATCH 069/117] media: i2c: add Samsung S5K4ECGX sensor driver
 
 The S5K4ECGX is a 5 MP sensor with its own ISP and a two-lane MIPI
 CSI-2 output delivering UYVY; it is the rear camera of the Samsung

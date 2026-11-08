@@ -1,7 +1,7 @@
 From 400e6c3df329c699125f5b9326cacbde0266b211 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 8 Nov 2026 00:20:30 +0000
-Subject: [PATCH 116/116] usb: gadget: configfs: android_usb class for
+Subject: [PATCH 116/117] usb: gadget: configfs: android_usb class for
  Android's UsbService
 
 Android's UsbService creates its UsbDeviceManager only when

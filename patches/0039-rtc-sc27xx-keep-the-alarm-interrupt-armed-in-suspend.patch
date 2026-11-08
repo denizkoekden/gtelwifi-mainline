@@ -1,7 +1,7 @@
 From 33d21d90c03ce8ec624230488dd70be932a9f7e2 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 08:34:00 +0000
-Subject: [PATCH 039/116] rtc: sc27xx: keep the alarm interrupt armed in
+Subject: [PATCH 039/117] rtc: sc27xx: keep the alarm interrupt armed in
  suspend
 
 The alarm interrupt comes from the PMIC's regmap-irq chip, which masks
