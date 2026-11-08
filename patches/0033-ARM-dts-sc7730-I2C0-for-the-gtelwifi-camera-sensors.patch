@@ -1,7 +1,7 @@
 From 4fd2ceb828a7f9f194079162c075c04716a23462 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 22:56:50 +0000
-Subject: [PATCH 033/116] ARM: dts: sc7730: I2C0 for the gtelwifi camera
+Subject: [PATCH 033/117] ARM: dts: sc7730: I2C0 for the gtelwifi camera
  sensors
 
 I2C0 (gate and reset bit 8 in AP_APB) carries the rear Samsung S5K4ECGX

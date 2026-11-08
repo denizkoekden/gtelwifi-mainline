@@ -1,7 +1,7 @@
 From 65f7c5e3ba5c6cfaa200e568d2240e5539e9aa5c Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Thu, 5 Nov 2026 12:20:47 +0000
-Subject: [PATCH 103/116] ARM: sprd: sc7730: clock the GPU from CPLL / 2 (512
+Subject: [PATCH 103/117] ARM: sprd: sc7730: clock the GPU from CPLL / 2 (512
  MHz)
 
 The GPU clock mux in GPU_APB offers, besides TDPLL / 2 (384 MHz), WPLL / 2

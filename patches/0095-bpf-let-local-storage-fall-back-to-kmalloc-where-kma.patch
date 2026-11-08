@@ -1,7 +1,7 @@
 From 93eab1ae4586d8ea0e5ecd41aebe97e2d841f4b9 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Wed, 4 Nov 2026 19:04:00 +0000
-Subject: [PATCH 095/116] bpf: let local storage fall back to kmalloc where
+Subject: [PATCH 095/117] bpf: let local storage fall back to kmalloc where
  kmalloc_nolock() fails
 
 Local storage elements and the per owner storage are allocated with

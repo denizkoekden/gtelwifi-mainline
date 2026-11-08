@@ -1,7 +1,7 @@
 From eb1c63222313a35fa237ed009902eb1ec228c51e Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 22:28:46 +0000
-Subject: [PATCH 024/116] power: supply: smb347: SMB358 charge termination and
+Subject: [PATCH 024/117] power: supply: smb347: SMB358 charge termination and
  automatic recharge
 
 The Samsung bootloader leaves current termination and automatic recharge

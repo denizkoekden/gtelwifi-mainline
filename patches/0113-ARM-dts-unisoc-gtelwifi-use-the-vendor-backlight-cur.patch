@@ -1,7 +1,7 @@
 From 7633905625f930da005c11251477617aac79b784 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sat, 7 Nov 2026 18:54:27 +0000
-Subject: [PATCH 113/116] ARM: dts: unisoc: gtelwifi: use the vendor backlight
+Subject: [PATCH 113/117] ARM: dts: unisoc: gtelwifi: use the vendor backlight
  curve
 
 The linear 0..255 ramp left the lowest brightness levels below the PWM

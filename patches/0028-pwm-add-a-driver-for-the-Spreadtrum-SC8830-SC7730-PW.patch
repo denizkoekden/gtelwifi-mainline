@@ -1,7 +1,7 @@
 From 2bed86574829dd19be7b69f3a8fc53de328d845b Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 22:48:55 +0000
-Subject: [PATCH 028/116] pwm: add a driver for the Spreadtrum SC8830/SC7730
+Subject: [PATCH 028/117] pwm: add a driver for the Spreadtrum SC8830/SC7730
  PWM
 
 The always-on PWM block of the SC8830 family has four channels with an

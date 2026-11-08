@@ -1,0 +1,102 @@
+From ab090885f271b0b5d8487bae2770bff8aebebb65 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Sun, 8 Nov 2026 01:13:29 +0000
+Subject: [PATCH 117/117] ARM: sprd: sc7730: power off through the SC2723 PMIC
+
+There was no power-off handler, so the kernel halted instead: panel and
+backlight went dark, but the SoC kept running, the power key did nothing
+and only the PMIC key-combo reset helped (testers on SM-T560/SM-T561).
+
+Register a platform power-off handler that cuts the PMIC rails the way
+the vendor kernel does (sc8830_power_off() in pm-scx35.c): LDO_PD_CTRL,
+write-protect key 0x6e7f, then all LDOs, DCDCs and the bandgap off in
+LDO_DCDC_PD. The RTC and power-key logic stay on VBAT. If the PMIC is
+still alive after 3 s, restart instead of hanging.
+
+On the SM-T560 the tablet leaves the USB bus after power-off and does
+not come back (no restart fallback); power-on by key still to be checked.
+
+Assisted-by: Claude Opus 5.5
+---
+ arch/arm/mach-sprd/restart.c | 44 ++++++++++++++++++++++++++++++++++++
+ 1 file changed, 44 insertions(+)
+
+diff --git a/arch/arm/mach-sprd/restart.c b/arch/arm/mach-sprd/restart.c
+index a4fe450cb..7449990d3 100644
+--- a/arch/arm/mach-sprd/restart.c
++++ b/arch/arm/mach-sprd/restart.c
+@@ -16,6 +16,11 @@
+  * this board. Disassembling SBOOT (loaded at 0x9f600000) shows sboot
+  * reading the magic at 0xf80 and INFORM3 at 0xf90 in IRAM0 instead.
+  * The IRAM is only touched when restarting, never at boot.
++ *
++ * Power off: without a handler the ARM core code falls back to
++ * machine_halt() (CPUs spin with IRQs off, the SoC stays powered, the
++ * power key is dead until a PMIC key-combo reset). sprd_power_off() cuts
++ * the PMIC rails like the vendor sc8830_power_off() in pm-scx35.c.
+  */
+ 
+ #include <linux/delay.h>
+@@ -48,6 +53,15 @@
+ #define HWRST_NORMAL		0x40
+ #define HWRST_SPECIAL		0x70
+ 
++#define GLB_LDO_DCDC_PD		SC2723_GLB(0x010)	/* 1 = rail off */
++#define GLB_LDO_PD_CTRL		SC2723_GLB(0x014)	/* 1 = LDO off */
++#define GLB_POR_SRC_FLAG	SC2723_GLB(0x130)
++#define GLB_PWR_WR_PROT		SC2723_GLB(0x150)
++#define PWR_WR_PROT_KEY		0x6e7f		/* unlocks GLB_LDO_DCDC_PD */
++#define PWR_WR_PROT_OPEN	BIT(15)
++#define LDO_PD_CTRL_ALL		0x0fff
++#define LDO_DCDC_PD_ALL		0x7fff		/* all DCDC/LDO + bandgap */
++
+ #define WDG_LOAD_LOW		SC2723_WDG(0x00)
+ #define WDG_LOAD_HIGH		SC2723_WDG(0x04)
+ #define WDG_CTRL		SC2723_WDG(0x08)
+@@ -105,6 +119,35 @@ static int sprd_restart(struct notifier_block *nb, unsigned long mode,
+ 	return NOTIFY_DONE;
+ }
+ 
++/*
++ * Vendor sequence (arch/arm/mach-sc/pm-scx35.c, sc8830_power_off()):
++ * LDO_PD_CTRL = 0x1fff, unlock with 0x6e7f and wait for BIT(15), then
++ * LDO_PD_CTRL = 0xfff and LDO_DCDC_PD = 0x7fff. The PMIC keeps its RTC and
++ * power-key logic on VBAT, so the key (or a charger event) powers it up
++ * again. IRAM0 content (INFORM2/3) does not survive, so sboot decides
++ * between normal boot and low-power charging from the PMIC power-on source.
++ */
++static void sprd_power_off(void)
++{
++	u32 v = 0;
++	int i;
++
++	sprd_adi_read(GLB_POR_SRC_FLAG, &v);
++	pr_emerg("sprd-poweroff: POR source flags %04x, cutting power\n", v);
++
++	sprd_adi_write(GLB_LDO_PD_CTRL, 0x1fff);
++	sprd_adi_write(GLB_PWR_WR_PROT, PWR_WR_PROT_KEY);
++	for (i = 0; i < 10000; i++)
++		if (sprd_adi_read(GLB_PWR_WR_PROT, &v) || (v & PWR_WR_PROT_OPEN))
++			break;
++	sprd_adi_write(GLB_LDO_PD_CTRL, LDO_PD_CTRL_ALL);
++	sprd_adi_write(GLB_LDO_DCDC_PD, LDO_DCDC_PD_ALL);
++
++	mdelay(3000);
++	pr_emerg("sprd-poweroff: PMIC is still alive, restarting instead\n");
++	emergency_restart();
++}
++
+ static struct notifier_block sprd_restart_nb = {
+ 	.notifier_call = sprd_restart,
+ 	.priority = 128,
+@@ -115,6 +158,7 @@ static int __init sprd_restart_init(void)
+ 	if (!of_machine_is_compatible("sprd,sc7730"))
+ 		return 0;
+ 	sec_debug = ioremap(SEC_DEBUG_PHYS, 0x20);
++	register_platform_power_off(sprd_power_off);
+ 	return register_restart_handler(&sprd_restart_nb);
+ }
+ arch_initcall(sprd_restart_init);
+-- 
+2.47.3
+

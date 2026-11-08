@@ -1,7 +1,7 @@
 From 6c99e088cff73ce199832e9ad635caf1a257e839 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Tue, 3 Nov 2026 12:13:18 +0000
-Subject: [PATCH 092/116] media: i2c: s5k4ecgx: at least 15 fps, preview sizes
+Subject: [PATCH 092/117] media: i2c: s5k4ecgx: at least 15 fps, preview sizes
  up to 800x480
 
 The init table allows a longest frame time of 100 ms in preview
