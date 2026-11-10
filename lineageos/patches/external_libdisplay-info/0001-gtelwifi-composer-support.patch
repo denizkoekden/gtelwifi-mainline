@@ -1,0 +1,20 @@
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Subject: [PATCH] build: allow the gtelwifi composer to use display-info
+
+The device-specific composer reuses the drm_hwcomposer defaults and needs
+the same static display-info dependency. Limit visibility to that module path.
+
+Assisted-by: GPT-6 (Codex)
+---
+diff --git a/Android.bp b/Android.bp
+index 17caed6..723f0a6 100644
+--- a/Android.bp
++++ b/Android.bp
+@@ -52,6 +52,7 @@ cc_library_static {
+     visibility: [
+         ":__subpackages__",
+         "//external/drm_hwcomposer:__subpackages__",
++        "//device/samsung/gtelwifi/composer",
+         "//device/amlogic/yukawa/hal/gralloc",
+         "//device/linaro:__subpackages__",
+         "//vendor:__subpackages__",

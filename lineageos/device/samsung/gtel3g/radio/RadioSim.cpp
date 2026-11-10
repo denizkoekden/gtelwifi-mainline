@@ -176,6 +176,7 @@ std::optional<int> getRemainingRetries(const std::string_view pinType,
         return cpinr->remainingRetryTimes;
     } else {
         response->unexpected(FAILURE_DEBUG_PREFIX, __func__);
+        return std::nullopt;
     }
 }
 
@@ -302,6 +303,7 @@ std::optional<std::vector<uint8_t>> getSelectResponse(const AtChannel::RequestPi
         return FAILURE(std::nullopt);
     } else {
         response->unexpected(FAILURE_DEBUG_PREFIX, __func__);
+        return std::nullopt;
     }
 }
 

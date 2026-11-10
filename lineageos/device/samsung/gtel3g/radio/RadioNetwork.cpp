@@ -739,6 +739,10 @@ ScopedAStatus RadioNetwork::getOperator(const int32_t serial) {
                 longName = current.longName;
                 shortName = current.shortName;
                 numeric = current.numeric;
+            } else if (cops->operators.empty()) {
+                // gtel3g: "+COPS: 0" while the CP is still searching (not
+                // registered): no operator yet, empty names (goldfish aborted
+                // here, and init restarted the HAL in a loop on the T561)
             } else {
                 response->unexpected(FAILURE_DEBUG_PREFIX, kFunc);
             }
@@ -802,6 +806,9 @@ ScopedAStatus RadioNetwork::getVoiceRadioTechnology(const int32_t serial) {
             return true;
         } else {
             response->unexpected(FAILURE_DEBUG_PREFIX, kFunc);
+            NOT_NULL(mRadioNetworkResponse)->getVoiceRadioTechnologyResponse(
+                makeRadioResponseInfo(serial, RadioError::INTERNAL_ERR), {});
+            return false;
         }
     });
 

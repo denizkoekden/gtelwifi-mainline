@@ -1,0 +1,13 @@
+service vendor.hwcomposer-3 /vendor/bin/hw/android.hardware.composer.hwc3-service.gtelwifi
+    class hal animation
+    interface aidl android.hardware.graphics.composer3.IComposer/default
+    user system
+    group graphics drmrpc
+    capabilities SYS_NICE
+    onrestart restart surfaceflinger
+    task_profiles ServiceCapacityLow
+
+# minigbm's dumb backend has no CPU cache ownership callbacks. Consistent
+# mappings keep old CPU lines from overwriting GPU output at KMS handoff.
+on post-fs-data
+    write /sys/module/sprd_dispc/parameters/cached_buffers N

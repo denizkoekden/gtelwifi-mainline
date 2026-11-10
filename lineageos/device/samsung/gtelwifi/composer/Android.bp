@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: Apache-2.0
+cc_binary {
+    name: "android.hardware.composer.hwc3-service.gtelwifi",
+    defaults: ["android.hardware.composer.hwc3-service.drm.defaults"],
+    srcs: ["SprdBackend.cpp", "MinigbmBufferInfo.cpp"],
+    relative_install_path: "hw",
+    vendor: true,
+    init_rc: ["gtelwifi-composer.rc"],
+    vintf_fragments: ["gtelwifi-composer.xml"],
+}
+
+// Offscreen diagnostic only; EGL extension entry points need no CFI ABI.
+cc_binary {
+    name: "gtelwifi-gpu-buffer-test",
+    vendor: true,
+    srcs: ["GpuBufferTest.cpp"],
+    shared_libs: ["libEGL", "libGLESv2", "libnativewindow", "libcutils", "liblog"],
+    cpp_std: "c++17",
+    cflags: ["-Wall", "-Werror"],
+    sanitize: { cfi: false },
+}

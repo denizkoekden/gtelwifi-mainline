@@ -28,10 +28,38 @@ if [ ! -e $P/start ]; then
 	exit 0
 fi
 
-# [V] whether sboot already preloads MODEM/WDSP is unknown; loading again
-# is what the test did. A running CP is stopped first (HAL restart case).
+# Ask the AT channel once: "OK" -> 0.
+at_ok() {
+	[ -c $AT ] || return 1
+	rm -f $TMP
+	( timeout 3 cat $AT > $TMP 2>/dev/null & )
+	sleep 0.3
+	timeout 2 sh -c "printf 'AT\r' > $AT" 2>/dev/null
+	sleep 1
+	grep -q OK $TMP 2>/dev/null
+	r=$?
+	rm -f $TMP
+	return $r
+}
+
+# Some T561 bootloaders (seen with T561XXU0AQI2, board rev 11) load and
+# start the CP themselves, with the NV items they put at wfixnv/wruntimenv;
+# the SIPC channels are then up within the first second of the kernel.
+# Stopping and reloading that CP left it silent on the 08.11. test, so use
+# it as it is when it answers. Others (rev 10 on 07.11.) leave the CP off.
+i=0
+while [ $i -lt 3 ]; do
+	i=$((i + 1))
+	if at_ok; then
+		log "CP started by the bootloader answers (try $i), not reloading"
+		setprop vendor.gtel3g.cp running
+		exit 0
+	fi
+	sleep 2
+done
+
 if grep -q started $P/status 2>/dev/null; then
-	log "CP was running, stopping it"
+	log "CP was running but silent, stopping it"
 	echo 1 > $P/stop
 	sleep 1
 fi
@@ -58,21 +86,13 @@ i=0
 while [ $i -lt 20 ]; do
 	i=$((i + 1))
 	sleep 2
-	[ -c $AT ] || continue
-	rm -f $TMP
-	( timeout 3 cat $AT > $TMP 2>/dev/null & )
-	sleep 0.3
-	timeout 2 sh -c "printf 'AT\r' > $AT" 2>/dev/null
-	sleep 1
-	if grep -q OK $TMP 2>/dev/null; then
-		rm -f $TMP
+	if at_ok; then
 		log "AT channel answers (try $i)"
 		setprop vendor.gtel3g.cp running
 		exit 0
 	fi
 done
 
-rm -f $TMP
 log "no answer on $AT, status: $(cat $P/status)"
 setprop vendor.gtel3g.cp failed
 exit 1

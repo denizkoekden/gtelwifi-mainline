@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: Apache-2.0
+cc_library_shared {
+    name: "libcodec2_sprd_vsp_common",
+    vendor_available: true,
+    srcs: ["SprdVspSession.cpp"],
+    cflags: ["-Wall", "-Werror"],
+    cpp_std: "c++17",
+}
+
+cc_library_shared {
+    name: "libcodec2_sprd_avcdec",
+    defaults: ["libcodec2_soft-defaults", "libcodec2_soft_sanitize_cfi-defaults", "no_bti"],
+    srcs: ["C2SprdAvcDec.cpp"],
+    shared_libs: ["libdl", "libcodec2_sprd_vsp_common"],
+    cflags: ["-Wall", "-Werror"],
+    cpp_std: "c++17",
+}
+
+// VP8 and AVC share one VSP session lease across their separate DSOs.
+cc_library_shared {
+    name: "libcodec2_sprd_vp8dec",
+    defaults: ["libcodec2_soft-defaults", "libcodec2_soft_sanitize_cfi-defaults", "no_bti"],
+    srcs: ["C2SprdVp8Dec.cpp"],
+    version_script: "vp8-exports.lds",
+    shared_libs: ["libdl", "libcodec2_sprd_vsp_common"],
+    cflags: ["-Wall", "-Werror"],
+    cpp_std: "c++17",
+}
+
+cc_binary {
+    name: "c2-sprd-vp8-test",
+    defaults: ["libcodec2-impl-defaults"],
+    srcs: ["C2SprdAvcTest.cpp"],
+    shared_libs: ["libcodec2_sprd_vp8dec", "libcodec2_sprd_avcdec", "liblog"],
+    cpp_std: "c++17",
+    cflags: ["-Wall", "-Werror", "-DSPRD_VP8_TEST"],
+}
+
+// MPEG4 SP / H263 Baseline: native contracts only until player acceptance.
+cc_library_shared {
+    name: "libcodec2_sprd_m4vdec",
+    defaults: ["libcodec2_soft-defaults", "libcodec2_soft_sanitize_cfi-defaults", "no_bti"],
+    srcs: ["C2SprdM4vDec.cpp"],
+    version_script: "m4v-exports.lds",
+    shared_libs: ["libdl", "libcodec2_sprd_vsp_common"],
+    cflags: ["-Wall", "-Werror"],
+    cpp_std: "c++17",
+}
+
+cc_binary {
+    name: "c2-sprd-mpeg4-test",
+    defaults: ["libcodec2-impl-defaults"],
+    srcs: ["C2SprdAvcTest.cpp"],
+    shared_libs: ["libcodec2_sprd_m4vdec", "libcodec2_sprd_avcdec", "liblog"],
+    cpp_std: "c++17",
+    cflags: ["-Wall", "-Werror", "-DSPRD_MPEG4_TEST"],
+}
+
+cc_binary {
+    name: "c2-sprd-h263-test",
+    defaults: ["libcodec2-impl-defaults"],
+    srcs: ["C2SprdAvcTest.cpp"],
+    shared_libs: ["libcodec2_sprd_m4vdec", "libcodec2_sprd_avcdec", "liblog"],
+    cpp_std: "c++17",
+    cflags: ["-Wall", "-Werror", "-DSPRD_H263_TEST"],
+}
+
+cc_binary {
+    name: "c2-sprd-avc-test",
+    defaults: ["libcodec2-impl-defaults"],
+    srcs: ["C2SprdAvcTest.cpp"],
+    shared_libs: ["libcodec2_sprd_avcdec", "liblog"],
+    cpp_std: "c++17",
+    cflags: ["-Wall", "-Werror"],
+}
+
+cc_binary {
+    name: "android.hardware.media.c2-sprd-service",
+    vendor: true,
+    relative_install_path: "hw",
+    defaults: ["libcodec2-aidl-defaults"],
+    srcs: ["service.cpp"],
+    shared_libs: ["libcodec2_sprd_avcdec", "libcodec2_sprd_vp8dec", "libcodec2_sprd_m4vdec", "liblog", "libavservices_minijail"],
+    required: ["android.hardware.media.c2-default-seccomp_policy",
+               "android.hardware.media.c2-sprd-seccomp_policy"],
+    init_rc: ["service.rc"],
+    vintf_fragments: ["manifest.xml"],
+    cpp_std: "c++17",
+}
+
+prebuilt_etc {
+    name: "android.hardware.media.c2-sprd-seccomp_policy",
+    vendor: true,
+    sub_dir: "seccomp_policy",
+    src: "seccomp-arm.policy",
+}
+
+// Codec2InfoBuilder merges default media_codecs.xml after the APEX and
+// legacy c2-specific descriptors. Keep those descriptors unchanged.
+prebuilt_etc {
+    name: "media_codecs_sprd.xml",
+    vendor: true,
+    filename: "media_codecs.xml",
+    src: "media_codecs.xml",
+}

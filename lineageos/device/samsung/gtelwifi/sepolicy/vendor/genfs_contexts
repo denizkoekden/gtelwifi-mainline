@@ -1,0 +1,2 @@
+# CPU frequency limit (mach-sprd/sc7730.c), written by GtelwifiParts (system_app)
+genfscon sysfs /module/sc7730/parameters/cpu_max_khz u:object_r:sysfs_gtelwifi_cpu:s0

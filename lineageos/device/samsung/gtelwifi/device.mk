@@ -66,7 +66,18 @@ TARGET_GTELWIFI_LIMA ?= true
 ifeq ($(TARGET_GTELWIFI_LIMA),true)
 TARGET_GRAPHICS := mesa
 TARGET_GRAPHICS_ALLOCATOR_HAL := minigbm-upstream
+# Explicit rollback: TARGET_GTELWIFI_OVERLAY=false keeps the existing stack.
+TARGET_GTELWIFI_OVERLAY ?= false
+ifeq ($(TARGET_GTELWIFI_OVERLAY),true)
+TARGET_GRAPHICS_COMPOSER_HAL := none
+PRODUCT_PACKAGES += android.hardware.composer.hwc3-service.gtelwifi
+PRODUCT_VENDOR_PROPERTIES += \
+    vendor.hwc.backend_override=sprd-dispc \
+    vendor.hwc.drm.device=/dev/dri/card% \
+    vendor.gtelwifi.overlay=true
+else
 TARGET_GRAPHICS_COMPOSER_HAL := drmfb-composer
+endif
 PRODUCT_VENDOR_PROPERTIES += \
     ro.opengles.version=131072
 endif
@@ -308,3 +319,15 @@ PRODUCT_VENDOR_PROPERTIES += \
 # installer's choice switches to fstab.gtelwifi.noencrypt (gtelwifi-crypt.sh)
 PRODUCT_VENDOR_PROPERTIES += \
     vendor.gtelwifi.fstab=gtelwifi
+
+# Optional SC7730 VSP Codec2 service; software fallback remains available.
+$(call inherit-product, $(DEVICE_PATH)/codec2/product.mk)
+
+# Device settings (Settings > System): CPU overclocking switch. Not in the
+# 20261110 pre-release (never run on the tablet yet): build with
+# TARGET_GTELWIFI_PARTS=true to include it.
+TARGET_GTELWIFI_PARTS ?= false
+ifeq ($(TARGET_GTELWIFI_PARTS),true)
+PRODUCT_PACKAGES += \
+    GtelwifiParts
+endif

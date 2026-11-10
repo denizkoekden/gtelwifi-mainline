@@ -350,6 +350,7 @@ std::pair<RadioError, uint32_t> RadioModem::getSupportedRadioTechs(
         return {RadioError::NONE, rafBitmask};
     } else {
         response->unexpected(FAILURE_DEBUG_PREFIX, __func__);
+        return {FAILURE(RadioError::INTERNAL_ERR), 0};
     }
 }
 
@@ -357,6 +358,9 @@ std::pair<RadioError, uint32_t> RadioModem::getSupportedRadioTechs(
 // and AT+SFUN=5 (off) [B: vendor RIL strings, meaning V]; AT+CFUN=1/0 is
 // the fallback. The new state is reported to all services as if the CP had
 // sent "+CFUN: <state>" (whether AT+CFUN? follows AT+SFUN is unknown).
+// On the T561 (08.11.) AT+SFUN=5 answered OK at once, AT+SFUN=4 never did
+// (the CP fetches its NV from nvitemd and turns the radio on, +CFUN: 1
+// follows), AT+CFUN=1 then answered OK at once: wait 10 s, not 30 s.
 bool RadioModem::setRadioPowerImpl(const AtChannel::RequestPipe requestPipe,
                                    const bool powerOn) {
     using namespace std::chrono_literals;
@@ -374,7 +378,7 @@ bool RadioModem::setRadioPowerImpl(const AtChannel::RequestPipe requestPipe,
 
     AtResponsePtr response =
         mAtConversation(requestPipe, powerOn ? "AT+SFUN=4"sv : "AT+SFUN=5"sv,
-                        okOrError, 30s);
+                        okOrError, powerOn ? 10s : 30s);
     if (!response || !response->isOK()) {
         RLOGW("%s: AT+SFUN failed, trying AT+CFUN", FAILURE_DEBUG_PREFIX);
         response =

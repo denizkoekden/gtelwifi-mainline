@@ -718,7 +718,7 @@ struct AtResponse {
         return std::visit(f, value);
     }
 
-    [[noreturn]] void unexpected(
+    void unexpected(
             const char* klass, const char* request,
             std::source_location location = std::source_location::current()) const;
 

@@ -1,0 +1,15 @@
+service vendor.sprd-codec2 /vendor/bin/hw/android.hardware.media.c2-sprd-service
+    class hal
+    user mediacodec
+    group media graphics camera
+    capabilities SYS_RAWIO
+    ioprio rt 4
+    task_profiles ProcessCapacityHigh
+
+# Driver access is restricted to the privileged media service.
+on post-fs-data
+    chown mediacodec media /dev/sprd_vsp
+    chmod 0660 /dev/sprd_vsp
+    # Force 256 MHz only when the experimental service is installed. Runtime
+    # PM still gates the engine between jobs; no idle clock/power is held.
+    write /sys/module/sc7730_vsp/parameters/max_freq_level 0

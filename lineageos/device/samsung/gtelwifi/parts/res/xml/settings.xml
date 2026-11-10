@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+    <SwitchPreferenceCompat
+        android:key="cpu_overclock"
+        android:defaultValue="false"
+        android:title="@string/cpu_oc_title"
+        android:summary="@string/cpu_oc_summary" />
+    <Preference
+        android:key="cpu_oc_note"
+        android:selectable="false"
+        android:icon="@drawable/ic_info"
+        android:summary="@string/cpu_oc_note" />
+</PreferenceScreen>

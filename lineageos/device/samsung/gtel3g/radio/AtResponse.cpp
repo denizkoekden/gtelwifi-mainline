@@ -1664,9 +1664,14 @@ void AtResponse::unexpected(const char* klass, const char* request,
     const std::string_view r = what();
     const int rl = r.size();
 
-    LOG_ALWAYS_FATAL("Unexpected response: '%*.*s' in %s:%s at %s:%d in %s", rl, rl, r.data(),
-                     klass, request, location.function_name(), location.line(),
-                     location.file_name());
+    // gtel3g: goldfish aborted here. On a real CP an unknown answer is not a
+    // bug in the HAL's state, and an abort makes init restart the HAL, which
+    // re-runs the init sequence and radio power and never lets the CP
+    // register (seen 58 times in a row on the T561). Log and go on; the
+    // caller answers the request with its defaults.
+    RLOGE("Unexpected response: '%*.*s' in %s:%s at %s:%d in %s", rl, rl, r.data(),
+          klass, request, location.function_name(), location.line(),
+          location.file_name());
 }
 
 }  // namespace implementation

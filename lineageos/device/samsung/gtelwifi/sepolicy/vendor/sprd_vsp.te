@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+# The privileged register/DMA bridge is distinct from generic /dev nodes.
+type vendor_sprd_vsp_device, dev_type;
+allow mediacodec vendor_sprd_vsp_device:chr_file { getattr open read write map ioctl };
+allowxperm mediacodec vendor_sprd_vsp_device:chr_file ioctl {
+    0x6d01-0x6d0a
+    0x6d20-0x6d23
+};
+
+# Direct register programming is a bring-up interface requiring CAP_SYS_RAWIO.
+# Android deliberately forbids this capability for media domains in user builds.
+# Keep that production restriction; this allowance only supports the existing
+# userdebug/eng test service. It is not a production isolation claim.
+userdebug_or_eng(`
+    allow mediacodec self:capability sys_rawio;
+')

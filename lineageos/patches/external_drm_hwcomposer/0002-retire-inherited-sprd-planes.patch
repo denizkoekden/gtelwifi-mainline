@@ -1,0 +1,56 @@
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Subject: [PATCH] drmhwc: retire inherited sprd-dispc planes on first composition
+
+A compositor takeover may inherit an active OSD plane while the new modeset
+selects IMG. Both fetches remain enabled unless OSD is explicitly disabled,
+so the kernel correctly rejects the first modeset under its RGB fetch budget.
+On the single-CRTC sprd-dispc device, include compatible available planes in
+the first composition's unused list. Disable them in the same atomic commit;
+advance the takeover state only after a successful non-test commit. Respect
+pipeline bindings and leave other drivers unchanged.
+
+Assisted-by: GPT-6 (Codex)
+---
+diff --git a/drm/DrmAtomicStateManager.cpp b/drm/DrmAtomicStateManager.cpp
+index 99d646f..8483b39 100644
+--- a/drm/DrmAtomicStateManager.cpp
++++ b/drm/DrmAtomicStateManager.cpp
+@@ -439,6 +439,24 @@ bool DrmAtomicStateManager::SetCompositionIfNeeded(const AtomicCommitArgs &args,
+   // Initialize the list of unused planes to all the planes used in the
+   // previous frame.
+   auto unused_planes = committed_frame_state_.used_planes;
++  // sprd-dispc has one CRTC. On takeover the previous composer may have
++  // left OSD enabled, while our first modeset selects IMG. Retire inherited
++  // planes in the same atomic request so the fetch-budget check sees only
++  // the intended composition. Never touch planes bound to another pipeline.
++  if (!committed_frame_state_.composition_set &&
++      pipe_->device->GetName() == "sprd-dispc") {
++    for (const auto &plane : pipe_->device->GetPlanes()) {
++      if (!plane->IsCrtcSupported(*pipe_->crtc->Get())) {
++        continue;
++      }
++      auto binding = plane->BindPipeline(pipe_, true);
++      if (binding && std::find(unused_planes.begin(), unused_planes.end(),
++                               binding) == unused_planes.end()) {
++        unused_planes.emplace_back(std::move(binding));
++      }
++    }
++  }
++  request.new_frame_state.composition_set = true;
+   // Clear the list of planes for the next frame. It will be repopulated below.
+   request.new_frame_state.used_planes.clear();
+ 
+diff --git a/drm/DrmAtomicStateManager.h b/drm/DrmAtomicStateManager.h
+index 4e1eb9e..390a02e 100644
+--- a/drm/DrmAtomicStateManager.h
++++ b/drm/DrmAtomicStateManager.h
+@@ -73,6 +73,9 @@ class DrmAtomicStateManager : public DrmAtomicCommitSink {
+     /* Required to cleanup unused planes */
+     std::vector<std::shared_ptr<BindingOwner<DrmPlane>>> used_planes;
+ 
++    /* First composition must also retire inherited hardware plane state. */
++    bool composition_set{};
++
+     /* To avoid setting the inactive state twice, which will fail the commit */
+     bool crtc_active_state{};
+   };

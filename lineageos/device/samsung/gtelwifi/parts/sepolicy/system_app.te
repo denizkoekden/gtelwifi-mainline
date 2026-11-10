@@ -1,0 +1,5 @@
+# GtelwifiParts: CPU overclocking switch
+allow system_app sysfs_gtelwifi_cpu:file rw_file_perms;
+# Moved here for the 20261110 pre-release (app not included): goes back to
+# sepolicy/vendor/ together with TARGET_GTELWIFI_PARTS=true, after a
+# `m selinux_policy` check.

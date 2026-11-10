@@ -31,6 +31,10 @@ on init
     # RT tasks (SurfaceFlinger, composer, audio) would otherwise ask
     # schedutil for the maximum on every wakeup (default 1024), as on Pixels
     write /proc/sys/kernel/sched_util_clamp_min_rt_default 0
+    # GtelwifiParts (system user) switches the limit between 1300 and
+    # 1612 MHz (Settings > System > Tablet settings) and restores it at boot
+    chown system system /sys/module/sc7730/parameters/cpu_max_khz
+    chmod 0664 /sys/module/sc7730/parameters/cpu_max_khz
 
 on fs
     mkdir /mnt/vendor/efs 0700 root system

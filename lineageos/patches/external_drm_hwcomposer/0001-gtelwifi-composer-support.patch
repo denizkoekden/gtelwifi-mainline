@@ -1,0 +1,65 @@
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Subject: [PATCH] drmhwc: respect immutable plane order and sparse DRM minors
+
+Sort fixed hardware planes by zpos, honor explicit blend-mode restrictions,
+and continue enumeration past minor-number holes left by simpledrm removal.
+
+Assisted-by: GPT-6 (Codex)
+---
+diff --git a/drm/DrmDisplayPipeline.cpp b/drm/DrmDisplayPipeline.cpp
+index 1c5b7e1..69d0600 100644
+--- a/drm/DrmDisplayPipeline.cpp
++++ b/drm/DrmDisplayPipeline.cpp
+@@ -166,6 +166,16 @@ auto DrmDisplayPipeline::GetUsablePlanes() const -> UsablePlanes {
+     }
+   }
+ 
++  // Immutable hardware order may put an overlay below the primary plane.
++  if (std::all_of(planes.begin(), planes.end(), [](const auto& plane) {
++        const auto& prop = plane->Get()->GetZPosProperty();
++        return prop && prop.IsImmutable();
++      })) {
++    std::stable_sort(planes.begin(), planes.end(), [](const auto& a, const auto& b) {
++      return a->Get()->GetZPosProperty().GetValue().value_or(0) <
++             b->Get()->GetZPosProperty().GetValue().value_or(0);
++    });
++  }
+   return pair;
+ }
+ 
+diff --git a/drm/DrmPlane.cpp b/drm/DrmPlane.cpp
+index dc8ec8d..bc1387b 100644
+--- a/drm/DrmPlane.cpp
++++ b/drm/DrmPlane.cpp
+@@ -328,8 +328,8 @@ bool DrmPlane::IsValidForLayer(const LayerData *layer) {
+   }
+ 
+   if (blending_enum_map_.count(layer->bi->blend_mode) == 0 &&
+-      layer->bi->blend_mode != BufferBlendMode::kNone &&
+-      layer->bi->blend_mode != BufferBlendMode::kPreMult) {
++      (blend_property_ || (layer->bi->blend_mode != BufferBlendMode::kNone &&
++                           layer->bi->blend_mode != BufferBlendMode::kPreMult))) {
+     ALOGV("Blending is not supported on plane %d", GetId());
+     return false;
+   }
+diff --git a/drm/ResourceManager.cpp b/drm/ResourceManager.cpp
+index defec12..49a212a 100644
+--- a/drm/ResourceManager.cpp
++++ b/drm/ResourceManager.cpp
+@@ -65,13 +65,14 @@ void ResourceManager::Init() {
+     }
+   } else {
+     path_pattern.resize(path_pattern.size() - 1);
+-    for (int idx = 0;; ++idx) {
++    for (int idx = 0; idx < 64; ++idx) {
+       std::ostringstream path;
+       path << path_pattern << idx;
+ 
+       struct stat buf {};
++      // simpledrm removal can leave holes before the actual KMS card.
+       if (stat(path.str().c_str(), &buf) != 0)
+-        break;
++        continue;
+ 
+       auto dev = DrmDevice::CreateInstance(path.str(), this, idx);
+       if (dev) {

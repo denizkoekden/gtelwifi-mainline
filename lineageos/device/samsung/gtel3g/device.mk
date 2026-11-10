@@ -27,6 +27,11 @@ PRODUCT_COPY_FILES += \
     frameworks/native/data/etc/android.hardware.telephony.data.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.telephony.data.xml \
     frameworks/native/data/etc/android.hardware.telephony.messaging.xml:$(TARGET_COPY_OUT_VENDOR)/etc/permissions/android.hardware.telephony.messaging.xml
 
+# brcmfmac looks for the NVRAM under the first root compatible
+# ("samsung,gtel3g"); without this name Wi-Fi does not come up on the T561.
+PRODUCT_COPY_FILES += \
+    device/samsung/gtelwifi/configs/wifi/nvram_net.txt:$(TARGET_COPY_OUT_VENDOR)/firmware/brcm/brcmfmac43430-sdio.samsung,gtel3g.txt
+
 # config_voice_capable=false, SMS and mobile data on
 DEVICE_PACKAGE_OVERLAYS += \
     $(GTEL3G_PATH)/overlay

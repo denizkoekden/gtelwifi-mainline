@@ -30,7 +30,15 @@ fi
 echo "device: $(git -C "$dev" log -1 --format='%h %s' $BR)"
 
 # Kernel
-stamp=$(cat "$STAGE"/patches/*.patch | sha256sum | cut -c1-16)
+kernel_patches=("$STAGE"/patches/*.patch)
+if [ -f "$STAGE/kernel-followups/series" ]; then
+	while IFS= read -r patch; do
+		case "$patch" in ''|'#'*) continue ;; esac
+		[[ "$patch" != */* && "$patch" == *.patch ]] || { echo "Invalid kernel follow-up: $patch" >&2; exit 1; }
+		kernel_patches+=("$STAGE/kernel-followups/$patch")
+	done < "$STAGE/kernel-followups/series"
+fi
+stamp=$(cat "${kernel_patches[@]}" | sha256sum | cut -c1-16)
 ker=$(bare android_kernel_samsung_gtelwifi)
 if [ "$(git -C "$ker" log -1 --format=%b $BR 2>/dev/null | sed -n 's/^Series: //p')" = "$stamp" ]; then
 	echo "kernel: unchanged (series $stamp)"
@@ -43,7 +51,7 @@ else
 	git -C "$k" init -q -b $BR
 	git -C "$k" add -A
 	git -C "$k" commit -q -m "Linux $KVER"
-	git -C "$k" am -q "$STAGE"/patches/*.patch
+	git -C "$k" am -q "${kernel_patches[@]}"
 	git -C "$k" commit -q --allow-empty -m "gtelwifi: patch series stamp" -m "Series: $stamp"
 	git -C "$k" push -q --force "$ker" HEAD:refs/heads/$BR
 	echo "kernel: $(git -C "$k" rev-list --count HEAD) commits, series $stamp"

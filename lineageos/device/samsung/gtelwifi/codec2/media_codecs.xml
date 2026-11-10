@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<MediaCodecs>
+    <Decoders>
+        <MediaCodec name="c2.sprd.avc.decoder" type="video/avc" rank="128">
+            <!-- 1080 visible lines occupy 68 coded 16-line blocks. A maximum
+                 of 1080 makes Android round the advertised height to 1072. -->
+            <Limit name="size" min="2x2" max="1920x1088" />
+            <Limit name="alignment" value="2x2" />
+            <Limit name="block-size" value="16x16" />
+            <Limit name="block-count" range="1-8160" />
+            <Limit name="blocks-per-second" range="1-244800" />
+            <Limit name="bitrate" range="1-50000000" />
+            <Limit name="concurrent-instances" max="1" />
+        </MediaCodec>
+        <MediaCodec name="c2.sprd.vp8.decoder" type="video/x-vnd.on2.vp8" rank="128">
+            <Limit name="size" min="2x2" max="1920x1088" />
+            <Limit name="alignment" value="2x2" />
+            <Limit name="block-size" value="16x16" />
+            <Limit name="block-count" range="1-8160" />
+            <Limit name="blocks-per-second" range="1-244800" />
+            <Limit name="bitrate" range="1-50000000" />
+            <Limit name="concurrent-instances" max="1" />
+        </MediaCodec>
+        <MediaCodec name="c2.sprd.mpeg4.decoder" type="video/mp4v-es" rank="128">
+            <Limit name="size" min="2x2" max="1280x720" />
+            <Limit name="alignment" value="2x2" />
+            <Limit name="block-size" value="16x16" />
+            <Limit name="block-count" range="1-3600" />
+            <Limit name="blocks-per-second" range="1-108000" />
+            <Limit name="bitrate" range="1-12000000" />
+            <Limit name="concurrent-instances" max="1" />
+        </MediaCodec>
+        <MediaCodec name="c2.sprd.h263.decoder" type="video/3gpp" rank="128">
+            <Limit name="size" min="128x96" max="704x576" />
+            <Limit name="alignment" value="16x16" />
+            <Limit name="block-size" value="16x16" />
+            <Limit name="block-count" range="1-1584" />
+            <Limit name="blocks-per-second" range="1-47520" />
+            <Limit name="bitrate" range="1-4096000" />
+            <Limit name="concurrent-instances" max="1" />
+        </MediaCodec>
+    </Decoders>
+</MediaCodecs>
