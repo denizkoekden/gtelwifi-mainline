@@ -1,0 +1,93 @@
+From f60cf539aa29a96a7d879c5de5b5a851e1d77d32 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Tue, 10 Nov 2026 11:45:33 +0000
+Subject: [PATCH 127/127] ASoC: sprd: sc7730 VBC: initialise the DA EQ and ALC
+ like the vendor
+
+The vendor driver applies a DA effect profile on every playback start
+(vbc_eq_profile_close() with vbc_da_eq_profile_default): it clears the
+IIR state, sets the six biquads of the DA EQ to pass-through (b0 = a0 =
+0x4000, section scale 0x1000) and writes the default ALC parameters.
+This driver never touched the EQ RAM, which a real power-off leaves at
+its reset value. Do the same initialisation once at probe, with the
+digital DACs still off; DAHPCTL keeps EQ6 and ALC disabled as before.
+
+Assisted-by: Claude Opus 5.5
+---
+ sound/soc/sprd/sprd-vbc-sc7730.c | 46 ++++++++++++++++++++++++++++++++
+ 1 file changed, 46 insertions(+)
+
+diff --git a/sound/soc/sprd/sprd-vbc-sc7730.c b/sound/soc/sprd/sprd-vbc-sc7730.c
+index 7bad764c8..aa80f2010 100644
+--- a/sound/soc/sprd/sprd-vbc-sc7730.c
++++ b/sound/soc/sprd/sprd-vbc-sc7730.c
+@@ -65,6 +65,16 @@
+  * the DA path comes out quiet and grainy. Bits 10/11 (EQ6/ALC) stay off.
+  */
+ #define DAHPCTL_DEFAULT		0x17f
++#define  DAHPCTL_IIR_CLR	BIT(9)
++#define DAALCCTL(n)		(0x4c + 4 * (n))
++/*
++ * DA EQ6: six biquads at 0x100 + n * 0x38 (word 0 section scale s, 0x08 b0,
++ * 0x10 a0, 0x18 b1, 0x20 a1, 0x28 b2, 0x30 a2; _H/_L pairs) and the output
++ * scale s6 at 0x250. The coefficients and state live in VBC RAM, which a
++ * real power-off leaves random and a warm reboot keeps.
++ */
++#define HPCOEF(n)		(0x100 + 0x38 * (n))
++#define HPCOEF_SECTIONS		6
+ #define VBCHNEN			0xc8
+ #define  DA0_CHN_EN		BIT(0)
+ #define  DA1_CHN_EN		BIT(1)
+@@ -155,6 +165,41 @@ static void sprd_vbc_clear_da(struct sprd_vbc *v)
+ 	sprd_vbc_rmw(v->vbc + VBDABUFFDTA, RAMSW_EN | RAMSW_NUMB, 0);
+ }
+ 
++/*
++ * The vendor's vbc_eq_profile_close() with vbc_da_eq_profile_default: scales
++ * to 0, coefficients to 0, IIR state clear, then pass-through biquads
++ * (b0 = a0 = 0x4000, s = 0x1000) and the default ALC parameters. Without
++ * it the first audible sound after a cold boot runs through random filter
++ * RAM and cracks loudly; silence does not show it.
++ */
++static const u16 sprd_vbc_alc_default[11] = {
++	0x01e0, 0x2000, 0x04fe, 0x001f, 0xffe2, 0x7fff,
++	0x028c, 0x0010, 0x04dd, 0x0000, 0x0062,
++};
++
++static void sprd_vbc_init_da_eq(struct sprd_vbc *v)
++{
++	int n, off;
++
++	for (n = HPCOEF_SECTIONS; n >= 0; n--) {
++		writel(0, v->vbc + HPCOEF(n));
++		writel(0, v->vbc + HPCOEF(n) + 4);
++	}
++	for (n = 0; n < HPCOEF_SECTIONS; n++)
++		for (off = 0x08; off <= 0x34; off += 4)
++			writel(0, v->vbc + HPCOEF(n) + off);
++	sprd_vbc_rmw(v->vbc + DAHPCTL, 0, DAHPCTL_IIR_CLR);
++	for (n = HPCOEF_SECTIONS - 1; n >= 0; n--) {
++		writel(0x4000, v->vbc + HPCOEF(n) + 0x10);	/* a0 */
++		writel(0x4000, v->vbc + HPCOEF(n) + 0x08);	/* b0 */
++	}
++	for (n = 0; n <= HPCOEF_SECTIONS; n++)
++		writel(0x1000, v->vbc + HPCOEF(n));		/* s */
++	for (n = 0; n < ARRAY_SIZE(sprd_vbc_alc_default); n++)
++		writel(sprd_vbc_alc_default[n], v->vbc + DAALCCTL(n));
++	writel(DAHPCTL_DEFAULT, v->vbc + DAHPCTL);	/* also ends IIR_CLR */
++}
++
+ static int sprd_vbc_startup(struct snd_pcm_substream *substream,
+ 			    struct snd_soc_dai *dai)
+ {
+@@ -408,6 +453,7 @@ static int sprd_vbc_probe(struct platform_device *pdev)
+ 	udelay(10);
+ 	sprd_vbc_aon_rmw(v, AON_RST0, RST0_AUD, 0);
+ 	sprd_vbc_clear_da(v);
++	sprd_vbc_init_da_eq(v);
+ 	/*
+ 	 * Start the digital DACs (muted, 48 kHz) at probe and keep them
+ 	 * running: the codec's DAPM powers the speaker amplifier before the
+-- 
+2.47.3
+

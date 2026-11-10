@@ -1,0 +1,56 @@
+From 54845a92a782be092cef37d9f2f582d55344f9b8 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 9 Nov 2026 12:19:40 +0000
+Subject: [PATCH 122/127] drm/sprd: bypass stale Y2R conversion for RGB IMG
+ scanout
+
+The bootloader leaves Y2R_CTRL enabled. Opaque RGB buffers on IMG then
+produce severe streaking, also with a CPU-filled native atomic test and
+OSD disabled. The same IMG buffer is visually correct when Y2R is turned
+off without any FIFO, format or pitch changes.
+
+Disable Y2R when programming our RGB-only pipeline. A future YUV plane
+implementation must configure the conversion explicitly for each format.
+Also clear staged enables on CRTC enable: the permanent black OSD used
+during panel shutdown has no DRM plane state and must not remain enabled
+when the next modeset only uses IMG.
+
+Assisted-by: GPT-6 (Codex)
+---
+ drivers/gpu/drm/sprd/sprd_dispc.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/drivers/gpu/drm/sprd/sprd_dispc.c b/drivers/gpu/drm/sprd/sprd_dispc.c
+index ff95465b7..db69bb300 100644
+--- a/drivers/gpu/drm/sprd/sprd_dispc.c
++++ b/drivers/gpu/drm/sprd/sprd_dispc.c
+@@ -86,6 +86,7 @@
+ #define  IMG_CTRL_RGB8888	0x31
+ #define  OSD_CTRL_PIXEL_ALPHA	(0x31 | (2 << 16))
+ #define DISPC_OSD_ALPHA		0x54
++#define DISPC_Y2R_CTRL		0x60
+ #define DISPC_OSD_CTRL		0x40
+ #define  OSD_CTRL_RGB8888	0x35		/* enable, block alpha, format 3 */
+ #define  OSD_CTRL_RB_SWITCH	BIT(15)
+@@ -233,6 +234,8 @@ static void sprd_dispc_request_update(struct sprd_dispc *d)
+ 	reinit_completion(&d->update_done);
+ 	writel(INT_UPDATE_DONE, d->base + DISPC_INT_CLR);
+ 	writel(0, d->base + DISPC_BG_COLOR);
++	/* The bootloader leaves Y2R enabled; RGB IMG must bypass it. */
++	writel(0, d->base + DISPC_Y2R_CTRL);
+ 	writel(d->img.addr, d->base + DISPC_IMG_Y_BASE_ADDR);
+ 	writel(d->img.pitch, d->base + DISPC_IMG_PITCH);
+ 	writel(d->img.size, d->base + DISPC_IMG_SIZE_XY);
+@@ -572,6 +575,9 @@ static void sprd_dispc_crtc_atomic_enable(struct drm_crtc *crtc,
+ 	struct sprd_dispc *d = to_sprd_dispc(crtc->dev);
+ 	bool powered_up = d->panel_off;
+ 
++	/* Black scanout is not a DRM plane state. Rebuild only enabled layers. */
++	d->osd.ctrl = 0;
++	d->img.ctrl = 0;
+ 	if (powered_up)
+ 		sprd_dispc_panel_on(d);
+ 	drm_crtc_vblank_on(crtc);
+-- 
+2.47.3
+

@@ -1,7 +1,7 @@
 From 100e80e8514d59febf8d412552c8ac9968f495ee Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Fri, 6 Nov 2026 22:08:51 +0000
-Subject: [PATCH 107/117] ARM: sprd: sc7730: modem core (CP) loader and SIPC
+Subject: [PATCH 107/127] ARM: sprd: sc7730: modem core (CP) loader and SIPC
 
 Port of the modem interface of the Samsung 3.10 kernel sources for the
 SM-T561 (3G): sprd_cproc.c as arch/arm/mach-sprd/cproc.c and drivers/sipc

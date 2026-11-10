@@ -1,0 +1,134 @@
+From 3d79776d25f2c32ac7f05e272a0cc45149de9176 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 9 Nov 2026 14:07:19 +0000
+Subject: [PATCH 124/127] drm/sprd: expose read-only scanout diagnostic
+ counters
+
+Count observed underflow, update-done and vblank IRQ status along with
+active atomic flushes. A separate lock provides consistent snapshots on
+32-bit ARM without reading registers while the controller is powered off.
+Keep interrupt masks, acknowledgements and display programming unchanged.
+
+Assisted-by: GPT-6 (Codex), GPT-6 Astra
+---
+ drivers/gpu/drm/sprd/sprd_dispc.c | 55 +++++++++++++++++++++++++++++++
+ 1 file changed, 55 insertions(+)
+
+diff --git a/drivers/gpu/drm/sprd/sprd_dispc.c b/drivers/gpu/drm/sprd/sprd_dispc.c
+index 95964867c..afa5f64f8 100644
+--- a/drivers/gpu/drm/sprd/sprd_dispc.c
++++ b/drivers/gpu/drm/sprd/sprd_dispc.c
+@@ -39,6 +39,7 @@
+ #include <linux/bits.h>
+ #include <linux/completion.h>
+ #include <linux/delay.h>
++#include <linux/device.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/gpio/consumer.h>
+ #include <linux/interrupt.h>
+@@ -189,6 +190,13 @@ struct sprd_dispc_layer {
+ 	u32 xy;
+ };
+ 
++struct sprd_dispc_diag {
++	u64 commits;
++	u64 underflow;
++	u64 update_done;
++	u64 vsync;
++};
++
+ struct sprd_dispc {
+ 	struct drm_device drm;
+ 	struct drm_plane plane;
+@@ -209,6 +217,9 @@ struct sprd_dispc {
+ 	dma_addr_t black_dma;
+ 	size_t fb_size;
+ 
++	/* Separate lock gives coherent, tear-free snapshots on 32-bit ARM. */
++	spinlock_t diag_lock;
++	struct sprd_dispc_diag diag;
+ 	spinlock_t int_lock;		/* INT_EN */
+ 	u32 int_en;
+ 	/* Only the CRTC flush latches the staged planes, together. */
+@@ -224,6 +235,35 @@ static struct sprd_dispc *to_sprd_dispc(struct drm_device *drm)
+ 	return container_of(drm, struct sprd_dispc, drm);
+ }
+ 
++/* Read software counters only; safe while the display is powered off. */
++static ssize_t dispc_counters_show(struct device *dev,
++				  struct device_attribute *attr, char *buf)
++{
++	struct sprd_dispc *d = to_sprd_dispc(dev_get_drvdata(dev));
++	struct sprd_dispc_diag snapshot;
++	unsigned long flags;
++
++	spin_lock_irqsave(&d->diag_lock, flags);
++	snapshot = d->diag;
++	spin_unlock_irqrestore(&d->diag_lock, flags);
++
++	return sysfs_emit(buf,
++		"commits %llu\nunderflow %llu\nupdate_done %llu\nvsync %llu\n",
++		(unsigned long long)snapshot.commits,
++		(unsigned long long)snapshot.underflow,
++		(unsigned long long)snapshot.update_done,
++		(unsigned long long)snapshot.vsync);
++}
++static DEVICE_ATTR_RO(dispc_counters);
++
++static struct attribute *sprd_dispc_diag_attrs[] = {
++	&dev_attr_dispc_counters.attr,
++	NULL,
++};
++static const struct attribute_group sprd_dispc_diag_group = {
++	.attrs = sprd_dispc_diag_attrs,
++};
++
+ static void sprd_dispc_int_update(struct sprd_dispc *d, u32 clr, u32 set)
+ {
+ 	unsigned long flags;
+@@ -296,6 +336,13 @@ static irqreturn_t sprd_dispc_irq(int irq, void *data)
+ 		return IRQ_NONE;
+ 	writel(sts, d->base + DISPC_INT_CLR);
+ 
++	/* Count observed status bits, not a guessed number of lost frames. */
++	spin_lock(&d->diag_lock);
++	d->diag.underflow += !!(sts & INT_ERR);
++	d->diag.update_done += !!(sts & INT_UPDATE_DONE);
++	d->diag.vsync += !!(sts & INT_VSYNC);
++	spin_unlock(&d->diag_lock);
++
+ 	if (sts & INT_VSYNC)
+ 		drm_crtc_handle_vblank(&d->crtc);
+ 	if (sts & INT_UPDATE_DONE) {
+@@ -424,6 +471,10 @@ static void sprd_dispc_crtc_atomic_flush(struct drm_crtc *crtc,
+ 	if (!crtc_state->active)
+ 		return;
+ 
++	spin_lock_irq(&d->diag_lock);
++	d->diag.commits++;
++	spin_unlock_irq(&d->diag_lock);
++
+ 	spin_lock_irq(&crtc->dev->event_lock);
+ 	if (crtc_state->event) {
+ 		WARN_ON(drm_crtc_vblank_get(crtc));
+@@ -813,6 +864,7 @@ static int sprd_dispc_probe(struct platform_device *pdev)
+ 		return PTR_ERR(d);
+ 	drm = &d->drm;
+ 	spin_lock_init(&d->int_lock);
++	spin_lock_init(&d->diag_lock);
+ 	init_completion(&d->update_done);
+ 	INIT_DELAYED_WORK(&d->flip_timeout, sprd_dispc_flip_timeout);
+ 
+@@ -943,6 +995,9 @@ static int sprd_dispc_probe(struct platform_device *pdev)
+ 	if (ret)
+ 		return ret;
+ 	platform_set_drvdata(pdev, drm);
++	ret = devm_device_add_group(dev, &sprd_dispc_diag_group);
++	if (ret)
++		dev_warn(dev, "cannot expose diagnostic counters: %d\n", ret);
+ 	drm_info(drm, "taking over %ux%u@%u from the bootloader\n",
+ 		 d->mode.hdisplay, d->mode.vdisplay, drm_mode_vrefresh(&d->mode));
+ 	drm_client_setup(drm, NULL);
+-- 
+2.47.3
+

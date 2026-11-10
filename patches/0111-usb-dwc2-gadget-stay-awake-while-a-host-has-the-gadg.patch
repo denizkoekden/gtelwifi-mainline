@@ -1,7 +1,7 @@
 From ad0980870d5e25b51dde808cbf0911d6dee8122a Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sat, 7 Nov 2026 12:14:00 +0000
-Subject: [PATCH 111/117] usb: dwc2: gadget: stay awake while a host has the
+Subject: [PATCH 111/127] usb: dwc2: gadget: stay awake while a host has the
  gadget enumerated
 
 System suspend makes dwc2 soft-disconnect the gadget, so a USB host sees

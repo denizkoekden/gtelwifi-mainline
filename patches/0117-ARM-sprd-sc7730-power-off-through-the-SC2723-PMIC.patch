@@ -1,7 +1,7 @@
 From ab090885f271b0b5d8487bae2770bff8aebebb65 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 8 Nov 2026 01:13:29 +0000
-Subject: [PATCH 117/117] ARM: sprd: sc7730: power off through the SC2723 PMIC
+Subject: [PATCH 117/127] ARM: sprd: sc7730: power off through the SC2723 PMIC
 
 There was no power-off handler, so the kernel halted instead: panel and
 backlight went dark, but the SoC kept running, the power key did nothing

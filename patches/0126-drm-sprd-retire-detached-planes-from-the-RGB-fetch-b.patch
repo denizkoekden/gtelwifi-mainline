@@ -1,0 +1,47 @@
+From cc9e233c7a398fdb683f3bf95ccd727a4a5e6887 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 9 Nov 2026 20:08:25 +0000
+Subject: [PATCH 126/127] drm/sprd: retire detached planes from the RGB fetch
+ budget
+
+Clear the inherited visible flag when a plane loses its CRTC. Only count
+planes with both a framebuffer and a CRTC in the concurrent RGB budget.
+Otherwise two detached planes can retain visible=true and compare equal
+through their NULL CRTCs, rejecting an all-off atomic commit with ENOSPC.
+This prevents the original composer from establishing its initial OFF
+state after a graphics restart. Keep the active scanline budget unchanged.
+
+Assisted-by: GPT-6 (Codex)
+---
+ drivers/gpu/drm/sprd/sprd_dispc.c | 7 +++++--
+ 1 file changed, 5 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/sprd/sprd_dispc.c b/drivers/gpu/drm/sprd/sprd_dispc.c
+index 1760ad05f..cd8d25a44 100644
+--- a/drivers/gpu/drm/sprd/sprd_dispc.c
++++ b/drivers/gpu/drm/sprd/sprd_dispc.c
+@@ -381,8 +381,10 @@ static int sprd_dispc_plane_atomic_check(struct drm_plane *plane,
+ 	u32 pitch;
+ 	int ret;
+ 
+-	if (!new->crtc)
++	if (!new->crtc) {
++		new->visible = false;
+ 		return 0;
++	}
+ 	crtc_state = drm_atomic_get_new_crtc_state(state, new->crtc);
+ 	ret = drm_atomic_helper_check_plane_state(new, crtc_state,
+ 						  DRM_PLANE_NO_SCALING,
+@@ -770,7 +772,8 @@ static int sprd_dispc_atomic_check(struct drm_device *drm,
+ 	ret = drm_atomic_helper_check(drm, state);
+ 	if (ret)
+ 		return ret;
+-	if (!img->visible || !osd->visible || img->crtc != osd->crtc)
++	if (!img->crtc || !img->fb || !osd->crtc || !osd->fb ||
++	    !img->visible || !osd->visible || img->crtc != osd->crtc)
+ 		return 0;
+ 	if (img->crtc_y + img->crtc_h <= osd->crtc_y ||
+ 	    osd->crtc_y + osd->crtc_h <= img->crtc_y)
+-- 
+2.47.3
+

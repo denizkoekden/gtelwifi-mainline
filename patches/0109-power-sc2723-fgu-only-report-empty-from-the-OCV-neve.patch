@@ -1,7 +1,7 @@
 From 67f3210a8a03e76e2bdf46ae13d115ed95f3ea86 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sat, 7 Nov 2026 12:14:00 +0000
-Subject: [PATCH 109/117] power: sc2723-fgu: only report empty from the OCV,
+Subject: [PATCH 109/127] power: sc2723-fgu: only report empty from the OCV,
  never anchor at 0 %
 
 The coulomb counter drifts on this board and could pull the reported

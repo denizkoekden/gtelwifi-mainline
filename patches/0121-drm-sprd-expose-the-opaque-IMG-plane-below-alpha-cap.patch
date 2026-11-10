@@ -1,0 +1,353 @@
+From 0a861dc53acea32d432062b8d3145106ea274fb3 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 9 Nov 2026 11:53:27 +0000
+Subject: [PATCH 121/127] drm/sprd: expose the opaque IMG plane below
+ alpha-capable OSD
+
+Stage both RGB layers and latch their complete state once per CRTC flush.
+Keep fixed hardware stacking through immutable zpos and reject scaling,
+fractional crops and non-opaque blending on IMG. OSD accepts premultiplied
+ARGB/ABGR in addition to the existing opaque formats.
+
+Detach both buffers through a permanent black OSD before stopping the
+panel. Plane disable only updates staged state, avoiding a second latch
+or register accesses after CRTC disable.
+
+Validated with an ARM CFI build and native atomic two-plane commits,
+invalid crop/scale/zpos tests, IMG detach and CRTC shutdown on SC7730.
+Visual/composer acceptance is tracked separately during bring-up.
+
+Assisted-by: GPT-6 (Codex)
+---
+ drivers/gpu/drm/sprd/sprd_dispc.c | 175 ++++++++++++++++++++----------
+ 1 file changed, 118 insertions(+), 57 deletions(-)
+
+diff --git a/drivers/gpu/drm/sprd/sprd_dispc.c b/drivers/gpu/drm/sprd/sprd_dispc.c
+index 78dde82fe..ff95465b7 100644
+--- a/drivers/gpu/drm/sprd/sprd_dispc.c
++++ b/drivers/gpu/drm/sprd/sprd_dispc.c
+@@ -55,6 +55,7 @@
+ #include <drm/drm_atomic.h>
+ #include <drm/drm_atomic_helper.h>
+ #include <drm/drm_crtc.h>
++#include <drm/drm_blend.h>
+ #include <drm/drm_damage_helper.h>
+ #include <drm/drm_drv.h>
+ #include <drm/drm_fb_dma_helper.h>
+@@ -76,6 +77,15 @@
+ #define  CTRL_IF		GENMASK(2, 1)	/* 0 = DPI */
+ #define  CTRL_RUN		BIT(4)
+ #define DISPC_SIZE_XY		0x04
++#define DISPC_IMG_CTRL		0x20
++#define DISPC_IMG_Y_BASE_ADDR	0x24
++#define DISPC_IMG_SIZE_XY	0x30
++#define DISPC_IMG_PITCH		0x34
++#define DISPC_IMG_DISP_XY	0x38
++#define DISPC_BG_COLOR		0x3c
++#define  IMG_CTRL_RGB8888	0x31
++#define  OSD_CTRL_PIXEL_ALPHA	(0x31 | (2 << 16))
++#define DISPC_OSD_ALPHA		0x54
+ #define DISPC_OSD_CTRL		0x40
+ #define  OSD_CTRL_RGB8888	0x35		/* enable, block alpha, format 3 */
+ #define  OSD_CTRL_RB_SWITCH	BIT(15)
+@@ -156,15 +166,26 @@ static const unsigned long sprd_dispc_dpi_parents[] = {
+ 	128000000, 153600000, 192000000, 384000000
+ };
+ 
+-/* the only layer is opaque, block alpha 0xff as the bootloader set it */
++/* IMG ignores alpha; OSD can blend premultiplied alpha over it. */
+ static const u32 sprd_dispc_formats[] = {
+ 	DRM_FORMAT_XRGB8888,
+ 	DRM_FORMAT_XBGR8888,
++	DRM_FORMAT_ARGB8888,
++	DRM_FORMAT_ABGR8888,
++};
++
++struct sprd_dispc_layer {
++	u32 ctrl;
++	dma_addr_t addr;
++	u32 pitch;
++	u32 size;
++	u32 xy;
+ };
+ 
+ struct sprd_dispc {
+ 	struct drm_device drm;
+ 	struct drm_plane plane;
++	struct drm_plane img_plane;
+ 	struct drm_crtc crtc;
+ 	struct drm_encoder encoder;
+ 	struct drm_connector connector;
+@@ -183,9 +204,9 @@ struct sprd_dispc {
+ 
+ 	spinlock_t int_lock;		/* INT_EN */
+ 	u32 int_en;
+-	dma_addr_t pending_addr;
+-	u32 pending_pitch;		/* in pixels, as OSD_PITCH */
+-	bool rb_switch;
++	/* Only the CRTC flush latches the staged planes, together. */
++	struct sprd_dispc_layer osd;
++	struct sprd_dispc_layer img;
+ 	struct drm_pending_vblank_event *event;	/* under drm.event_lock */
+ 	struct completion update_done;
+ 	struct delayed_work flip_timeout;
+@@ -206,37 +227,42 @@ static void sprd_dispc_int_update(struct sprd_dispc *d, u32 clr, u32 set)
+ 	spin_unlock_irqrestore(&d->int_lock, flags);
+ }
+ 
+-/*
+- * Request the latch of OSD_BASE_ADDR, OSD_PITCH (and OSD_CTRL) at the next
+- * VSYNC. UPDATE_DONE is cleared first: clearing it after the request could
+- * eat a latch that already happened.
+- */
+-static void sprd_dispc_request_update(struct sprd_dispc *d, dma_addr_t addr,
+-				      u32 pitch)
++/* All layer registers latch together. Clear UPDATE_DONE before requesting. */
++static void sprd_dispc_request_update(struct sprd_dispc *d)
+ {
+-	u32 ctrl = readl(d->base + DISPC_OSD_CTRL);
+-
+-	if (!!(ctrl & OSD_CTRL_RB_SWITCH) != d->rb_switch)
+-		writel(ctrl ^ OSD_CTRL_RB_SWITCH, d->base + DISPC_OSD_CTRL);
+ 	reinit_completion(&d->update_done);
+ 	writel(INT_UPDATE_DONE, d->base + DISPC_INT_CLR);
+-	writel(addr, d->base + DISPC_OSD_BASE_ADDR);
+-	writel(pitch, d->base + DISPC_OSD_PITCH);
++	writel(0, d->base + DISPC_BG_COLOR);
++	writel(d->img.addr, d->base + DISPC_IMG_Y_BASE_ADDR);
++	writel(d->img.pitch, d->base + DISPC_IMG_PITCH);
++	writel(d->img.size, d->base + DISPC_IMG_SIZE_XY);
++	writel(d->img.xy, d->base + DISPC_IMG_DISP_XY);
++	writel(d->img.ctrl, d->base + DISPC_IMG_CTRL);
++	writel(d->osd.addr, d->base + DISPC_OSD_BASE_ADDR);
++	writel(d->osd.pitch, d->base + DISPC_OSD_PITCH);
++	writel(d->osd.size, d->base + DISPC_OSD_SIZE_XY);
++	writel(d->osd.xy, d->base + DISPC_OSD_DISP_XY);
++	writel(0xff, d->base + DISPC_OSD_ALPHA);
++	writel(d->osd.ctrl, d->base + DISPC_OSD_CTRL);
+ 	writel(readl(d->base + DISPC_DPI_CTRL) | DPI_REG_UPDATE,
+ 	       d->base + DISPC_DPI_CTRL);
+-	/* the vendor re-arms underflow reporting on every update */
+ 	sprd_dispc_int_update(d, 0, INT_ERR);
+ }
+ 
+-/* flip and wait, for switching away from a buffer that is about to go */
+-static void sprd_dispc_flip_sync(struct sprd_dispc *d, dma_addr_t addr)
++/* Detach both old buffers before power-down or freeing a framebuffer. */
++static void sprd_dispc_black_sync(struct sprd_dispc *d)
+ {
+-	sprd_dispc_request_update(d, addr, d->mode.hdisplay);
++	d->img.ctrl = 0;
++	d->osd = (struct sprd_dispc_layer) {
++		.ctrl = OSD_CTRL_RGB8888,
++		.addr = d->black_dma,
++		.pitch = d->mode.hdisplay,
++		.size = d->mode.vdisplay << 16 | d->mode.hdisplay,
++	};
++	sprd_dispc_request_update(d);
+ 	if (!wait_for_completion_timeout(&d->update_done,
+ 					 msecs_to_jiffies(FLIP_TIMEOUT_MS)))
+-		drm_warn(&d->drm, "no UPDATE_DONE, INT_RAW %08x DPI_CTRL %08x\n",
+-			 readl(d->base + DISPC_INT_RAW),
+-			 readl(d->base + DISPC_DPI_CTRL));
++		drm_warn(&d->drm, "black frame latch timed out\n");
+ }
+ 
+ static void sprd_dispc_send_event(struct sprd_dispc *d)
+@@ -295,7 +321,8 @@ static int sprd_dispc_plane_atomic_check(struct drm_plane *plane,
+ 	struct drm_plane_state *new = drm_atomic_get_new_plane_state(state, plane);
+ 	struct sprd_dispc *d = to_sprd_dispc(plane->dev);
+ 	struct drm_crtc_state *crtc_state;
+-	unsigned int pitch;
++	dma_addr_t addr;
++	u32 pitch;
+ 	int ret;
+ 
+ 	if (!new->crtc)
+@@ -304,26 +331,26 @@ static int sprd_dispc_plane_atomic_check(struct drm_plane *plane,
+ 	ret = drm_atomic_helper_check_plane_state(new, crtc_state,
+ 						  DRM_PLANE_NO_SCALING,
+ 						  DRM_PLANE_NO_SCALING,
+-						  false, true);
++						  true, true);
+ 	if (ret || !new->visible)
+ 		return ret;
+ 
+-	/*
+-	 * One full-screen layer, the layer position and size stay as the
+-	 * bootloader set them. The pitch is per buffer: OSD_PITCH counts
+-	 * pixels (gralloc buffers need not be packed like dumb buffers).
+-	 */
++	/* No scaler, fractional crop, rotation or off-screen window in DISPC. */
+ 	pitch = new->fb->pitches[0];
+-	if (new->crtc_x || new->crtc_y ||
+-	    new->crtc_w != d->mode.hdisplay || new->crtc_h != d->mode.vdisplay ||
+-	    pitch % 4 || pitch / 4 < d->mode.hdisplay ||
+-	    pitch / 4 > FIELD_MAX(SIZE_W)) {
+-		drm_dbg_atomic(plane->dev,
+-			       "[PLANE:%d] unsupported layer %ux%u+%d+%d, pitch %u\n",
+-			       plane->base.id, new->crtc_w, new->crtc_h,
+-			       new->crtc_x, new->crtc_y, pitch);
++	if ((new->src_x | new->src_y | new->src_w | new->src_h) & 0xffff ||
++	    new->crtc_x < 0 || new->crtc_y < 0 ||
++	    new->crtc_x + new->crtc_w > d->mode.hdisplay ||
++	    new->crtc_y + new->crtc_h > d->mode.vdisplay ||
++	    pitch % 4 || pitch / 4 < new->fb->width ||
++	    pitch / 4 > FIELD_MAX(SIZE_W))
++		return -EINVAL;
++
++	addr = drm_fb_dma_get_gem_addr(new->fb, new, 0);
++	if (addr & 3)
++		return -EINVAL;
++	/* IMG has no alpha. A-formats are legal only when treated as opaque. */
++	if (plane == &d->img_plane && new->pixel_blend_mode != DRM_MODE_BLEND_PIXEL_NONE)
+ 		return -EINVAL;
+-	}
+ 	return 0;
+ }
+ 
+@@ -333,28 +360,35 @@ static void sprd_dispc_plane_atomic_update(struct drm_plane *plane,
+ 	struct drm_plane_state *old = drm_atomic_get_old_plane_state(state, plane);
+ 	struct drm_plane_state *new = drm_atomic_get_new_plane_state(state, plane);
+ 	struct sprd_dispc *d = to_sprd_dispc(plane->dev);
++	struct sprd_dispc_layer *layer = plane == &d->plane ? &d->osd : &d->img;
+ 	u32 format;
+ 
+ 	if (!new->visible || !new->fb) {
+-		d->pending_addr = d->black_dma;
+-		d->pending_pitch = d->mode.hdisplay;
++		layer->ctrl = 0;
+ 		return;
+ 	}
+-
+ 	drm_fb_dma_sync_non_coherent(plane->dev, old, new);
+-	d->pending_addr = drm_fb_dma_get_gem_addr(new->fb, new, 0);
+-	d->pending_pitch = new->fb->pitches[0] / 4;
++	layer->addr = drm_fb_dma_get_gem_addr(new->fb, new, 0);
++	layer->pitch = new->fb->pitches[0] / 4;
++	layer->size = new->crtc_h << 16 | new->crtc_w;
++	layer->xy = new->crtc_y << 16 | new->crtc_x;
++	layer->ctrl = plane == &d->plane ? OSD_CTRL_RGB8888 : IMG_CTRL_RGB8888;
+ 	format = new->fb->format->format;
+-	d->rb_switch = format == DRM_FORMAT_XBGR8888;
++	if (plane == &d->plane && new->fb->format->has_alpha &&
++	    new->pixel_blend_mode == DRM_MODE_BLEND_PREMULTI)
++		layer->ctrl = OSD_CTRL_PIXEL_ALPHA;
++	if (format == DRM_FORMAT_XBGR8888 || format == DRM_FORMAT_ABGR8888)
++		layer->ctrl |= OSD_CTRL_RB_SWITCH;
+ }
+ 
+ static void sprd_dispc_plane_atomic_disable(struct drm_plane *plane,
+ 					    struct drm_atomic_commit *state)
+ {
+ 	struct sprd_dispc *d = to_sprd_dispc(plane->dev);
++	struct sprd_dispc_layer *layer = plane == &d->plane ? &d->osd : &d->img;
+ 
+-	/* the old buffer may be freed after this returns */
+-	sprd_dispc_flip_sync(d, d->black_dma);
++	/* No MMIO here: CRTC disable may already have stopped the panel. */
++	layer->ctrl = 0;
+ }
+ 
+ static const struct drm_plane_helper_funcs sprd_dispc_plane_helper_funcs = {
+@@ -389,15 +423,15 @@ static void sprd_dispc_crtc_atomic_flush(struct drm_crtc *crtc,
+ 	}
+ 	spin_unlock_irq(&crtc->dev->event_lock);
+ 
+-	sprd_dispc_request_update(d, d->pending_addr, d->pending_pitch);
++	sprd_dispc_request_update(d);
+ 	mod_delayed_work(system_dfl_wq, &d->flip_timeout,
+ 			 msecs_to_jiffies(FLIP_TIMEOUT_MS));
+ }
+ 
+ /*
+- * An enabled CRTC always needs a buffer to show (with panel_power_off
+- * unset DISPC keeps scanning out); disabling all of it, as suspend and
+- * shutdown do, needs none.
++ * An enabled CRTC needs at least one plane; either IMG or OSD may be used
++ * alone. During suspend and shutdown neither is needed. Background outside
++ * an active plane is black.
+  */
+ static int sprd_dispc_crtc_atomic_check(struct drm_crtc *crtc,
+ 					struct drm_atomic_commit *state)
+@@ -406,7 +440,7 @@ static int sprd_dispc_crtc_atomic_check(struct drm_crtc *crtc,
+ 
+ 	if (!crtc_state->enable)
+ 		return 0;
+-	return drm_atomic_helper_check_crtc_primary_plane(crtc_state);
++	return crtc_state->plane_mask ? 0 : -EINVAL;
+ }
+ 
+ static int sprd_dsi_wait(struct sprd_dispc *d, u32 mask, u32 want)
+@@ -553,7 +587,7 @@ static void sprd_dispc_crtc_atomic_disable(struct drm_crtc *crtc,
+ 	struct sprd_dispc *d = to_sprd_dispc(crtc->dev);
+ 
+ 	backlight_disable(d->backlight);
+-	sprd_dispc_flip_sync(d, d->black_dma);
++	sprd_dispc_black_sync(d);
+ 	drm_crtc_vblank_off(crtc);
+ 	cancel_delayed_work_sync(&d->flip_timeout);
+ 
+@@ -751,7 +785,6 @@ static int sprd_dispc_check_hw(struct platform_device *pdev,
+ 	if (!of_property_read_u32(dev->of_node, "height-mm", &mm))
+ 		m->height_mm = mm;
+ 	drm_mode_set_name(m);
+-	d->rb_switch = osd & OSD_CTRL_RB_SWITCH;
+ 	d->fb_size = m->hdisplay * m->vdisplay * 4;
+ 	return 0;
+ }
+@@ -798,8 +831,12 @@ static int sprd_dispc_probe(struct platform_device *pdev)
+ 				       GFP_KERNEL);
+ 	if (!d->black)
+ 		return -ENOMEM;
+-	d->pending_addr = d->black_dma;
+-	d->pending_pitch = d->mode.hdisplay;
++	d->osd = (struct sprd_dispc_layer) {
++		.ctrl = OSD_CTRL_RGB8888,
++		.addr = d->black_dma,
++		.pitch = d->mode.hdisplay,
++		.size = d->mode.vdisplay << 16 | d->mode.hdisplay,
++	};
+ 
+ 	/* the bootloader leaves a stale UPDATE_DONE behind */
+ 	writel(0, d->base + DISPC_INT_EN);
+@@ -831,12 +868,36 @@ static int sprd_dispc_probe(struct platform_device *pdev)
+ 		return ret;
+ 	drm_plane_helper_add(&d->plane, &sprd_dispc_plane_helper_funcs);
+ 	drm_plane_enable_fb_damage_clips(&d->plane);
++	ret = drm_plane_create_zpos_immutable_property(&d->plane, 1);
++	if (ret)
++		return ret;
++	ret = drm_plane_create_blend_mode_property(&d->plane,
++			BIT(DRM_MODE_BLEND_PIXEL_NONE) | BIT(DRM_MODE_BLEND_PREMULTI));
++	if (ret)
++		return ret;
++
++	ret = drm_universal_plane_init(drm, &d->img_plane, 0,
++				       &sprd_dispc_plane_funcs, sprd_dispc_formats,
++				       ARRAY_SIZE(sprd_dispc_formats), NULL,
++				       DRM_PLANE_TYPE_OVERLAY, "IMG");
++	if (ret)
++		return ret;
++	drm_plane_helper_add(&d->img_plane, &sprd_dispc_plane_helper_funcs);
++	drm_plane_enable_fb_damage_clips(&d->img_plane);
++	ret = drm_plane_create_zpos_immutable_property(&d->img_plane, 0);
++	if (ret)
++		return ret;
++	ret = drm_plane_create_blend_mode_property(&d->img_plane,
++						 BIT(DRM_MODE_BLEND_PIXEL_NONE));
++	if (ret)
++		return ret;
+ 
+ 	ret = drm_crtc_init_with_planes(drm, &d->crtc, &d->plane, NULL,
+ 					&sprd_dispc_crtc_funcs, NULL);
+ 	if (ret)
+ 		return ret;
+ 	drm_crtc_helper_add(&d->crtc, &sprd_dispc_crtc_helper_funcs);
++	d->img_plane.possible_crtcs = drm_crtc_mask(&d->crtc);
+ 
+ 	ret = drm_simple_encoder_init(drm, &d->encoder, DRM_MODE_ENCODER_DSI);
+ 	if (ret)
+-- 
+2.47.3
+
