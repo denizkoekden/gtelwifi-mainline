@@ -1,7 +1,7 @@
 From 301c83079629ced8beaa98871c0ac39f684bb358 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sat, 7 Nov 2026 23:24:24 +0000
-Subject: [PATCH 115/117] ARM: sprd: sc2723-fgu: report charge_full
+Subject: [PATCH 115/127] ARM: sprd: sc2723-fgu: report charge_full
 
 Android's battery stats take the battery capacity from charge_full when
 the fuel gauge reports it, otherwise from power_profile.xml (which showed

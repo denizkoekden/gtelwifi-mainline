@@ -1,7 +1,7 @@
 From a4021db1c6dfaea8313ff66071b8965210584b80 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 12:10:52 +0000
-Subject: [PATCH 058/117] ASoC: sprd: sprd-pcm-dma: support interleaved access
+Subject: [PATCH 058/127] ASoC: sprd: sprd-pcm-dma: support interleaved access
 
 Offer interleaved access next to non-interleaved. For an interleaved
 stream with more than one channel, each DMA channel starts at its own

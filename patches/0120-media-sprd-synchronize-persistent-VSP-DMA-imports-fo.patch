@@ -1,0 +1,117 @@
+From 503eeedbe103b724863ce208631283787e622364 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 9 Nov 2026 10:27:27 +0000
+Subject: [PATCH 120/127] media: sprd: synchronize persistent VSP DMA imports
+ for CPU access
+
+The Codec2 Gralloc path maps and retains output buffers across decode calls.
+On non-coherent ARM, mapping an attachment once does not synchronize later
+CPU/device ownership changes. The DRM DMA exporter has no begin_cpu_access
+callback, so generic DMA_BUF_IOCTL_SYNC cannot provide this transition.
+
+Add a bounded import-ID-based sync ioctl using the mapped attachment's DMA
+API. Reject synchronization while the engine is acquired, malformed requests
+and stale IDs. No userspace address or scatterlist is accepted.
+
+The native Codec2 High/B-frame 1080p test changes from sparse zeroed cache
+lines to 120 byte-exact frames against the software reference. Flush, cached
+CSD replay, restart and a 720p-to-1080p transition also pass.
+
+Assisted-by: GPT-6 (Codex)
+---
+ drivers/media/platform/sprd/sc7730-vsp.c | 31 +++++++++++++++++++++++-
+ include/uapi/linux/sprd_vsp.h            | 13 ++++++++++
+ 2 files changed, 43 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/media/platform/sprd/sc7730-vsp.c b/drivers/media/platform/sprd/sc7730-vsp.c
+index 7b1794849..591b8167b 100644
+--- a/drivers/media/platform/sprd/sc7730-vsp.c
++++ b/drivers/media/platform/sprd/sc7730-vsp.c
+@@ -393,6 +393,33 @@ static long vsp_release_import(struct vsp_file *fh, void __user *arg)
+ 	return -ENOENT;
+ }
+ 
++static long vsp_sync_import(struct vsp_file *fh, void __user *arg)
++{
++	struct sprd_vsp_sync request;
++	unsigned int i;
++
++	if (copy_from_user(&request, arg, sizeof(request)))
++		return -EFAULT;
++	if (!request.buffer_id || request.cpu > 1)
++		return -EINVAL;
++	if (fh->vsp->owner)
++		return -EBUSY;
++	for (i = 0; i < fh->nbufs; i++) {
++		struct vsp_buffer *b = &fh->bufs[i];
++
++		if (!b->dmabuf || b->id != request.buffer_id)
++			continue;
++		if (request.cpu)
++			dma_sync_sgtable_for_cpu(fh->vsp->dev, b->sgt,
++					 DMA_BIDIRECTIONAL);
++		else
++			dma_sync_sgtable_for_device(fh->vsp->dev, b->sgt,
++					    DMA_BIDIRECTIONAL);
++		return 0;
++	}
++	return -ENOENT;
++}
++
+ static long vsp_ioctl_locked(struct vsp_file *fh, unsigned int cmd,
+ 			     void __user *arg)
+ {
+@@ -403,7 +430,7 @@ static long vsp_ioctl_locked(struct vsp_file *fh, unsigned int cmd,
+ 
+ 	if (v->owner && v->owner != fh &&
+ 	    cmd != VSP_ALLOC_BUFFER && cmd != VSP_IMPORT_BUFFER &&
+-	    cmd != VSP_RELEASE_IMPORT &&
++	    cmd != VSP_RELEASE_IMPORT && cmd != VSP_SYNC_IMPORT &&
+ 	    cmd != VSP_HW_INFO &&
+ 	    cmd != VSP_CAPABILITY && cmd != VSP_GET_FREQ)
+ 		return -EPERM;
+@@ -438,6 +465,8 @@ static long vsp_ioctl_locked(struct vsp_file *fh, unsigned int cmd,
+ 		return vsp_import(fh, arg);
+ 	case VSP_RELEASE_IMPORT:
+ 		return vsp_release_import(fh, arg);
++	case VSP_SYNC_IMPORT:
++		return vsp_sync_import(fh, arg);
+ 	}
+ 	if (v->owner != fh)
+ 		return -EPERM;
+diff --git a/include/uapi/linux/sprd_vsp.h b/include/uapi/linux/sprd_vsp.h
+index 38f79fefd..3b46fd3eb 100644
+--- a/include/uapi/linux/sprd_vsp.h
++++ b/include/uapi/linux/sprd_vsp.h
+@@ -29,6 +29,7 @@ struct sprd_vsp_buffer {
+ 	__u32 mmap_offset;
+ 	__u32 reserved;
+ };
++
+ #define VSP_ALLOC_BUFFER _IOWR('m', 32, struct sprd_vsp_buffer)
+ 
+ /* Import a DMA-BUF owned by the caller. Reject noncontiguous DMA mappings.
+@@ -40,8 +41,20 @@ struct sprd_vsp_import {
+ 	__u32 size;
+ 	__u32 buffer_id;
+ };
++
+ #define VSP_IMPORT_BUFFER _IOWR('m', 33, struct sprd_vsp_import)
+ /* Release an import only after the decoder has dropped every DPB reference. */
+ #define VSP_RELEASE_IMPORT _IOW('m', 34, __u32)
+ 
++/* Persistent imports on non-coherent ARM need explicit CPU/device handoff.
++ * Call only while the engine is idle. cpu=1 invalidates device-written data;
++ * cpu=0 transfers CPU-written data to the device. No address is user supplied.
++ */
++struct sprd_vsp_sync {
++	__u32 buffer_id;
++	__u32 cpu;
++};
++
++#define VSP_SYNC_IMPORT _IOW('m', 35, struct sprd_vsp_sync)
++
+ #endif
+-- 
+2.47.3
+

@@ -1,7 +1,7 @@
 From 30cc8bba42baad84cdf5e888eb3a43a2f7218df0 Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Sun, 1 Nov 2026 11:52:10 +0100
-Subject: [PATCH 001/117] ARM: sprd: initial bring-up for Samsung Galaxy Tab E
+Subject: [PATCH 001/127] ARM: sprd: initial bring-up for Samsung Galaxy Tab E
  (SC7730, gtelwifi)
 
 - Kconfig-only ARCH_SPRD for 32-bit scx35/shark SoCs

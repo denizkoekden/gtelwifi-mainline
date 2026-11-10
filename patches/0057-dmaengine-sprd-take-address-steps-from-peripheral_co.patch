@@ -1,7 +1,7 @@
 From 13d58a300889e0335fefb60122c518919dc2129f Mon Sep 17 00:00:00 2001
 From: Deniz Kokden <koekdendeniz@gmail.com>
 Date: Mon, 2 Nov 2026 12:10:52 +0000
-Subject: [PATCH 057/117] dmaengine: sprd: take address steps from
+Subject: [PATCH 057/127] dmaengine: sprd: take address steps from
  peripheral_config
 
 The address step of a channel follows the data width. Interleaved audio

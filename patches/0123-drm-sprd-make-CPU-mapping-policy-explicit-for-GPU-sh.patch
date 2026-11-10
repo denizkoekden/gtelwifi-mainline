@@ -1,0 +1,54 @@
+From 6bc217b3fbbb7b046e7afd9d231f61f13389356c Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 9 Nov 2026 13:23:38 +0000
+Subject: [PATCH 123/127] drm/sprd: make CPU mapping policy explicit for
+ GPU-shared buffers
+
+Allow selecting consistent DMA mappings for new display buffers. Keep the
+legacy cached policy as the default and capture the selected policy in
+each GEM object so that existing mappings never change attributes.
+
+minigbm's generic dumb backend has no CPU cache ownership callbacks. With
+cached mappings a CPU cache clean at scanout can overwrite a completed
+GPU image with stale data. A controlled EGL/Mali probe reproduced this in
+15 of 16 rounds; consistent mappings preserved all 16 images. Android's
+optional hardware-composer package selects the consistent policy before
+allocating its buffers.
+
+Verified native 1080p High/B decode remains above 30 fps without CPU pixel
+readback, with byte-exact 120-frame output and a concurrent camera stream.
+
+Assisted-by: GPT-6 (Codex)
+---
+ drivers/gpu/drm/sprd/sprd_dispc.c | 8 +++++++-
+ 1 file changed, 7 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/sprd/sprd_dispc.c b/drivers/gpu/drm/sprd/sprd_dispc.c
+index db69bb300..95964867c 100644
+--- a/drivers/gpu/drm/sprd/sprd_dispc.c
++++ b/drivers/gpu/drm/sprd/sprd_dispc.c
+@@ -161,6 +161,12 @@ module_param(panel_power_off, bool, 0644);
+ MODULE_PARM_DESC(panel_power_off,
+ 		 "Stop DISPC and power the panel off while the CRTC is off (default: on)");
+ 
++/* Policy is captured per object; existing mappings retain their attributes. */
++static bool cached_buffers = true;
++module_param(cached_buffers, bool, 0644);
++MODULE_PARM_DESC(cached_buffers,
++		 "Use cached CPU mappings for newly allocated display buffers");
++
+ #define FLIP_TIMEOUT_MS		100
+ 
+ static const unsigned long sprd_dispc_dpi_parents[] = {
+@@ -687,7 +693,7 @@ sprd_dispc_gem_create_object(struct drm_device *drm, size_t size)
+ 	obj = kzalloc(sizeof(*obj), GFP_KERNEL);
+ 	if (!obj)
+ 		return ERR_PTR(-ENOMEM);
+-	obj->map_noncoherent = true;
++	obj->map_noncoherent = READ_ONCE(cached_buffers);
+ 	return &obj->base;
+ }
+ 
+-- 
+2.47.3
+

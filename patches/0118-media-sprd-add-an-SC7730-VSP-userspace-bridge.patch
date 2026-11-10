@@ -1,0 +1,941 @@
+From 09ebe427a48f437713727252f0acd70bbb190244 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 9 Nov 2026 08:19:46 +0000
+Subject: [PATCH 118/127] media: sprd: add an SC7730 VSP userspace bridge
+
+Provide the SCX35 VSP register and interrupt ABI for local decoder
+bring-up on SC7730. Retain vendor ioctl numbers, including pointer
+arguments on commands historically encoded as _IO. Serialize engine
+ownership and bound register mappings, allocation sizes and IRQ waits.
+
+Keep MM runtime power and clocks pinned by each open file, including
+register VMAs, and block system suspend while raw mappings may be used.
+Only access VSP registers after genpd powers the MM domain. Expose the
+raw DMA interface as root-only with CAP_SYS_RAWIO, and add a local ioctl
+for file-owned coherent CMA buffers.
+
+Move shared MM AHB gates and resets to a syscon regmap used by DCAM and
+VSP, avoiding independent read-modify-write races. Drop only VSP-private
+gates on runtime suspend; DCAM retains its MM genpd reference.
+
+Enable VSP on gtelwifi with SPI 43 and the vendor clock mux levels.
+Add bindings for the VSP and shared MM AHB block. This is a bring-up
+bridge, not a registered V4L2 or Codec2 decoder; actual hardware decode
+and concurrent camera operation still require device validation.
+
+Assisted-by: GPT-6 (Codex)
+---
+ .../bindings/media/sprd,sc7730-dcam.yaml      |  12 +-
+ .../bindings/media/sprd,sc7730-mm-ahb.yaml    |  27 +
+ .../bindings/media/sprd,sc7730-vsp.yaml       |  60 +++
+ .../dts/unisoc/sc7730-samsung-gtelwifi.dts    |   4 +
+ arch/arm/boot/dts/unisoc/sc7730.dtsi          |  21 +-
+ drivers/media/platform/sprd/Kconfig           |  11 +
+ drivers/media/platform/sprd/Makefile          |   1 +
+ drivers/media/platform/sprd/sc7730-dcam.c     |  47 +-
+ drivers/media/platform/sprd/sc7730-vsp.c      | 483 ++++++++++++++++++
+ include/uapi/linux/sprd_vsp.h                 |  34 ++
+ 10 files changed, 673 insertions(+), 27 deletions(-)
+ create mode 100644 Documentation/devicetree/bindings/media/sprd,sc7730-mm-ahb.yaml
+ create mode 100644 Documentation/devicetree/bindings/media/sprd,sc7730-vsp.yaml
+ create mode 100644 drivers/media/platform/sprd/sc7730-vsp.c
+ create mode 100644 include/uapi/linux/sprd_vsp.h
+
+diff --git a/Documentation/devicetree/bindings/media/sprd,sc7730-dcam.yaml b/Documentation/devicetree/bindings/media/sprd,sc7730-dcam.yaml
+index c6d4e14ec..2265cf9f6 100644
+--- a/Documentation/devicetree/bindings/media/sprd,sc7730-dcam.yaml
++++ b/Documentation/devicetree/bindings/media/sprd,sc7730-dcam.yaml
+@@ -32,7 +32,6 @@ properties:
+     items:
+       - description: DCAM registers
+       - description: CSI-2 host registers
+-      - description: MM AHB registers (bus gates and resets)
+       - description: MM clock configuration registers
+       - description: AON APB registers
+ 
+@@ -40,10 +39,13 @@ properties:
+     items:
+       - const: dcam
+       - const: csi
+-      - const: mm-ahb
+       - const: mm-clk
+       - const: aon-apb
+ 
++  sprd,mm-ahb:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: Shared MM AHB syscon for bus gates and resets.
++
+   interrupts:
+     maxItems: 1
+ 
+@@ -104,6 +106,7 @@ required:
+   - compatible
+   - reg
+   - reg-names
++  - sprd,mm-ahb
+   - interrupts
+   - power-domains
+   - '#clock-cells'
+@@ -118,9 +121,10 @@ examples:
+     camera@60800000 {
+         compatible = "sprd,sc7730-dcam";
+         reg = <0x60800000 0x1000>, <0x60c00000 0x1000>,
+-              <0x60d00000 0x100>, <0x60e00000 0x100>,
++              <0x60e00000 0x100>,
+               <0x402e0000 0x100>;
+-        reg-names = "dcam", "csi", "mm-ahb", "mm-clk", "aon-apb";
++        reg-names = "dcam", "csi", "mm-clk", "aon-apb";
++        sprd,mm-ahb = <&mm_ahb>;
+         interrupts = <GIC_SPI 45 IRQ_TYPE_LEVEL_HIGH>;
+         power-domains = <&pmu_domains 1>;
+         #clock-cells = <0>;
+diff --git a/Documentation/devicetree/bindings/media/sprd,sc7730-mm-ahb.yaml b/Documentation/devicetree/bindings/media/sprd,sc7730-mm-ahb.yaml
+new file mode 100644
+index 000000000..fd4578f61
+--- /dev/null
++++ b/Documentation/devicetree/bindings/media/sprd,sc7730-mm-ahb.yaml
+@@ -0,0 +1,27 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/media/sprd,sc7730-mm-ahb.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum SC7730 multimedia AHB system controller
++
++maintainers:
++  - Deniz Kokden <koekdendeniz@gmail.com>
++
++description: |
++  Shared clock gates, resets and CSI selection for DCAM, CSI, VSP and
++  other multimedia engines. Consumers must power the MM domain before
++  accessing these registers.
++
++properties:
++  compatible:
++    items:
++      - const: sprd,sc7730-mm-ahb
++      - const: syscon
++  reg:
++    maxItems: 1
++required:
++  - compatible
++  - reg
++additionalProperties: false
+diff --git a/Documentation/devicetree/bindings/media/sprd,sc7730-vsp.yaml b/Documentation/devicetree/bindings/media/sprd,sc7730-vsp.yaml
+new file mode 100644
+index 000000000..c4f22c16f
+--- /dev/null
++++ b/Documentation/devicetree/bindings/media/sprd,sc7730-vsp.yaml
+@@ -0,0 +1,60 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/media/sprd,sc7730-vsp.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Spreadtrum SC7730 video signal processor
++
++maintainers:
++  - Deniz Kokden <koekdendeniz@gmail.com>
++
++description: |
++  The VSP is a register-programmed video decoder in the MM power domain.
++  Its bus gates and reset share the MM AHB syscon with the camera. Clock
++  configuration and AON APB are shared windows, as in the DCAM binding.
++  The VSP clock mux selects TDPLL-derived 76.8, 128, 192 or 256 MHz.
++
++properties:
++  compatible:
++    const: sprd,sc7730-vsp
++  reg:
++    items:
++      - description: VSP register window
++      - description: MM clock registers
++      - description: AON APB registers
++  reg-names:
++    items:
++      - const: vsp
++      - const: mm-clk
++      - const: aon-apb
++  sprd,mm-ahb:
++    $ref: /schemas/types.yaml#/definitions/phandle
++    description: Shared MM AHB syscon for clock gates and reset.
++  interrupts:
++    maxItems: 1
++  power-domains:
++    maxItems: 1
++
++required:
++  - compatible
++  - reg
++  - reg-names
++  - sprd,mm-ahb
++  - interrupts
++  - power-domains
++
++additionalProperties: false
++
++examples:
++  - |
++    #include <dt-bindings/interrupt-controller/arm-gic.h>
++    video-codec@60900000 {
++        compatible = "sprd,sc7730-vsp";
++        reg = <0x60900000 0xc000>, <0x60e00000 0x100>,
++              <0x402e0000 0x100>;
++        reg-names = "vsp", "mm-clk", "aon-apb";
++        sprd,mm-ahb = <&mm_ahb>;
++        interrupts = <GIC_SPI 43 IRQ_TYPE_LEVEL_HIGH>;
++        power-domains = <&pmu_domains 1>;
++    };
+diff --git a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+index 7803fbb42..3333a0aef 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
++++ b/arch/arm/boot/dts/unisoc/sc7730-samsung-gtelwifi.dts
+@@ -684,3 +684,7 @@ &emmc {
+ 	sprd,read-neg-delay = <0x04>;
+ 	status = "okay";
+ };
++
++&vsp {
++	status = "okay";
++};
+diff --git a/arch/arm/boot/dts/unisoc/sc7730.dtsi b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+index afc9d096c..cc83eb810 100644
+--- a/arch/arm/boot/dts/unisoc/sc7730.dtsi
++++ b/arch/arm/boot/dts/unisoc/sc7730.dtsi
+@@ -409,6 +409,22 @@ gpu: gpu@60000000 {
+ 			status = "disabled";
+ 		};
+ 
++		mm_ahb: syscon@60d00000 {
++			compatible = "sprd,sc7730-mm-ahb", "syscon";
++			reg = <0x60d00000 0x100>;
++		};
++
++		vsp: video-codec@60900000 {
++			compatible = "sprd,sc7730-vsp";
++			reg = <0x60900000 0xc000>, <0x60e00000 0x100>,
++			      <0x402e0000 0x100>;
++			reg-names = "vsp", "mm-clk", "aon-apb";
++			sprd,mm-ahb = <&mm_ahb>;
++			interrupts = <GIC_SPI 43 IRQ_TYPE_LEVEL_HIGH>;
++			power-domains = <&pmu_domains 1>;
++			status = "disabled";
++		};
++
+ 		/*
+ 		 * Camera: DCAM capture engine and the CSI-2 host (DesignWare
+ 		 * 1.03). Port 0 is D-PHY A (2 lanes), port 1 D-PHY C (1 lane).
+@@ -418,9 +434,10 @@ gpu: gpu@60000000 {
+ 		dcam: camera@60800000 {
+ 			compatible = "sprd,sc7730-dcam";
+ 			reg = <0x60800000 0x2000>, <0x60c00000 0x1000>,
+-			      <0x60d00000 0x100>, <0x60e00000 0x100>,
++			      <0x60e00000 0x100>,
+ 			      <0x402e0000 0x100>;
+-			reg-names = "dcam", "csi", "mm-ahb", "mm-clk", "aon-apb";
++			reg-names = "dcam", "csi", "mm-clk", "aon-apb";
++			sprd,mm-ahb = <&mm_ahb>;
+ 			interrupts = <GIC_SPI 45 IRQ_TYPE_LEVEL_HIGH>;
+ 			power-domains = <&pmu_domains 1>;
+ 			#clock-cells = <0>;
+diff --git a/drivers/media/platform/sprd/Kconfig b/drivers/media/platform/sprd/Kconfig
+index 0ed1e5ac8..883ab2f2f 100644
+--- a/drivers/media/platform/sprd/Kconfig
++++ b/drivers/media/platform/sprd/Kconfig
+@@ -8,6 +8,7 @@ config VIDEO_SC7730_DCAM
+ 	depends on VIDEO_DEV && OF && COMMON_CLK
+ 	depends on ARCH_SPRD || COMPILE_TEST
+ 	depends on PM
++	select MFD_SYSCON
+ 	select MEDIA_CONTROLLER
+ 	select V4L2_FWNODE
+ 	select VIDEO_V4L2_SUBDEV_API
+@@ -19,3 +20,13 @@ config VIDEO_SC7730_DCAM
+ 
+ 	  To compile this driver as a module, choose M here: the module
+ 	  will be called sc7730-dcam.
++
++config VIDEO_SC7730_VSP
++	bool "Spreadtrum SC7730 privileged VSP bridge"
++	depends on ARCH_SPRD && OF && PM
++	select MFD_SYSCON
++	help
++	  Register mapping, coherent buffers, clocks and interrupt waiting
++	  for the SCX35 vendor video decoder API. This raw DMA interface
++	  requires CAP_SYS_RAWIO and is intended for decoder bring-up.
++	  Only one acquisition may own the engine at a time.
+diff --git a/drivers/media/platform/sprd/Makefile b/drivers/media/platform/sprd/Makefile
+index 95d83ad3a..0fd015fd7 100644
+--- a/drivers/media/platform/sprd/Makefile
++++ b/drivers/media/platform/sprd/Makefile
+@@ -1,2 +1,3 @@
+ # SPDX-License-Identifier: GPL-2.0-only
+ obj-$(CONFIG_VIDEO_SC7730_DCAM) += sc7730-dcam.o
++obj-$(CONFIG_VIDEO_SC7730_VSP) += sc7730-vsp.o
+diff --git a/drivers/media/platform/sprd/sc7730-dcam.c b/drivers/media/platform/sprd/sc7730-dcam.c
+index 6594fca80..ffa804822 100644
+--- a/drivers/media/platform/sprd/sc7730-dcam.c
++++ b/drivers/media/platform/sprd/sc7730-dcam.c
+@@ -38,6 +38,8 @@
+ #include <linux/io.h>
+ #include <linux/iopoll.h>
+ #include <linux/module.h>
++#include <linux/mfd/syscon.h>
++#include <linux/regmap.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
+@@ -209,7 +211,7 @@ struct dcam {
+ 	struct device *dev;
+ 	void __iomem *base;
+ 	void __iomem *csi;
+-	void __iomem *mmahb;
++	struct regmap *mmahb;
+ 	void __iomem *mmclk;
+ 	void __iomem *aon;
+ 	int irq;
+@@ -261,12 +263,13 @@ static int dcam_runtime_resume(struct device *dev)
+ 	struct dcam *d = dev_get_drvdata(dev);
+ 
+ 	/* the MM domain (genpd) is on; its clock muxes reset with it */
+-	dcam_rmw(d->mmahb + MM_AHB_EB, 0, EB_MM_CKG);
+-	dcam_rmw(d->mmahb + MM_GEN_CKG, 0, CKG_MM_AXI);
++	regmap_update_bits(d->mmahb, MM_AHB_EB, EB_MM_CKG, EB_MM_CKG);
++	regmap_update_bits(d->mmahb, MM_GEN_CKG, CKG_MM_AXI, CKG_MM_AXI);
+ 	writel(3, d->mmclk + MM_CLK_AHB);
+-	dcam_rmw(d->mmahb + MM_AHB_EB, 0, EB_DCAM | EB_CSI);
+-	dcam_rmw(d->mmahb + MM_GEN_CKG, 0,
+-		 CKG_CPHY_CFG | CKG_MIPI_CSI | CKG_DCAM_AXI);
++	regmap_update_bits(d->mmahb, MM_AHB_EB, EB_DCAM | EB_CSI, EB_DCAM | EB_CSI);
++	regmap_update_bits(d->mmahb, MM_GEN_CKG,
++			   CKG_CPHY_CFG | CKG_MIPI_CSI | CKG_DCAM_AXI,
++			   CKG_CPHY_CFG | CKG_MIPI_CSI | CKG_DCAM_AXI);
+ 	dcam_rmw(d->mmclk + MM_CLK_DCAM, 0x3, 2);
+ 	dcam_rmw(d->mmclk + MM_CLK_SENSOR, SENSOR_MASK, SENSOR_48M_DIV2);
+ 	return 0;
+@@ -276,9 +279,9 @@ static int dcam_runtime_suspend(struct device *dev)
+ {
+ 	struct dcam *d = dev_get_drvdata(dev);
+ 
+-	dcam_rmw(d->mmahb + MM_GEN_CKG,
+-		 CKG_CPHY_CFG | CKG_MIPI_CSI | CKG_SENSOR | CKG_DCAM_AXI, 0);
+-	dcam_rmw(d->mmahb + MM_AHB_EB, EB_DCAM | EB_CSI, 0);
++	regmap_update_bits(d->mmahb, MM_GEN_CKG,
++			   CKG_CPHY_CFG | CKG_MIPI_CSI | CKG_SENSOR | CKG_DCAM_AXI, 0);
++	regmap_update_bits(d->mmahb, MM_AHB_EB, EB_DCAM | EB_CSI, 0);
+ 	return 0;
+ }
+ 
+@@ -299,13 +302,13 @@ static int dcam_mclk_enable(struct clk_hw *hw)
+ 	struct dcam *d = to_dcam_mclk(hw);
+ 
+ 	dcam_rmw(d->mmclk + MM_CLK_SENSOR, SENSOR_MASK, SENSOR_48M_DIV2);
+-	dcam_rmw(d->mmahb + MM_GEN_CKG, 0, CKG_SENSOR);
++	regmap_update_bits(d->mmahb, MM_GEN_CKG, CKG_SENSOR, CKG_SENSOR);
+ 	return 0;
+ }
+ 
+ static void dcam_mclk_disable(struct clk_hw *hw)
+ {
+-	dcam_rmw(to_dcam_mclk(hw)->mmahb + MM_GEN_CKG, CKG_SENSOR, 0);
++	regmap_update_bits(to_dcam_mclk(hw)->mmahb, MM_GEN_CKG, CKG_SENSOR, 0);
+ }
+ 
+ static unsigned long dcam_mclk_recalc_rate(struct clk_hw *hw,
+@@ -381,9 +384,9 @@ static int dcam_csi_start(struct dcam *d, struct dcam_sensor *s, s64 link_freq)
+ 		return -EINVAL;
+ 	}
+ 
+-	dcam_rmw(d->mmahb + MM_AHB_RST, 0, RST_CSI);
++	regmap_update_bits(d->mmahb, MM_AHB_RST, RST_CSI, RST_CSI);
+ 	udelay(1);
+-	dcam_rmw(d->mmahb + MM_AHB_RST, RST_CSI, 0);
++	regmap_update_bits(d->mmahb, MM_AHB_RST, RST_CSI, 0);
+ 	version = readl(d->csi + CSI_VERSION);
+ 	if (version != CSI_VERSION_103) {
+ 		dev_err(d->dev, "unexpected CSI-2 host version %#x\n", version);
+@@ -392,9 +395,9 @@ static int dcam_csi_start(struct dcam *d, struct dcam_sensor *s, s64 link_freq)
+ 
+ 	if (s->port == DCAM_PORT_PHY_A) {
+ 		dcam_rmw(d->aon + AON_PWR_CTRL, PWR_CSI0_PHY_PD, 0);
+-		dcam_rmw(d->mmahb + MM_CSI2_CTRL, CSI2_PHY_SEL, CSI2_PHY_A);
++		regmap_update_bits(d->mmahb, MM_CSI2_CTRL, CSI2_PHY_SEL, CSI2_PHY_A);
+ 	} else {
+-		dcam_rmw(d->mmahb + MM_CSI2_CTRL, CSI2_PHY_SEL, CSI2_PHY_C);
++		regmap_update_bits(d->mmahb, MM_CSI2_CTRL, CSI2_PHY_SEL, CSI2_PHY_C);
+ 	}
+ 
+ 	writel(0, d->csi + CSI_PHY_SHUTDOWNZ);
+@@ -534,9 +537,9 @@ static void dcam_hw_start(struct dcam *d)
+ 	u32 v;
+ 
+ 	readl_poll_timeout(d->base + AHBM_STS, v, !(v & AHBM_BUSY), 10, 10000);
+-	dcam_rmw(d->mmahb + MM_AHB_RST, 0, RST_DCAM | RST_CCIR);
++	regmap_update_bits(d->mmahb, MM_AHB_RST, RST_DCAM | RST_CCIR, RST_DCAM | RST_CCIR);
+ 	udelay(1);
+-	dcam_rmw(d->mmahb + MM_AHB_RST, RST_DCAM | RST_CCIR, 0);
++	regmap_update_bits(d->mmahb, MM_AHB_RST, RST_DCAM | RST_CCIR, 0);
+ 	writel(INT_ALL, d->base + INT_CLR);
+ 
+ 	/* the path's source is the capture block (0), not the ISP */
+@@ -604,9 +607,9 @@ static void dcam_hw_stop(struct dcam *d)
+ 	dcam_rmw(d->base + DCAM_CONTROL, 0, p->force_copy);
+ 	readl_poll_timeout(d->base + AHBM_STS, v, !(v & p->ahbm_busy),
+ 			   10, 10000);
+-	dcam_rmw(d->mmahb + MM_AHB_RST, 0, p->rst);
++	regmap_update_bits(d->mmahb, MM_AHB_RST, p->rst, p->rst);
+ 	udelay(1);
+-	dcam_rmw(d->mmahb + MM_AHB_RST, p->rst, 0);
++	regmap_update_bits(d->mmahb, MM_AHB_RST, p->rst, 0);
+ 	writel(INT_ALL, d->base + INT_CLR);
+ 	disable_irq(d->irq);
+ }
+@@ -1172,10 +1175,12 @@ static int dcam_probe(struct platform_device *pdev)
+ 	d->csi = devm_platform_ioremap_resource_byname(pdev, "csi");
+ 	if (IS_ERR(d->csi))
+ 		return PTR_ERR(d->csi);
+-	d->mmahb = dcam_map(pdev, "mm-ahb");
++	d->mmahb = syscon_regmap_lookup_by_phandle(dev->of_node, "sprd,mm-ahb");
++	if (IS_ERR(d->mmahb))
++		return dev_err_probe(dev, PTR_ERR(d->mmahb), "MM AHB syscon\n");
+ 	d->mmclk = dcam_map(pdev, "mm-clk");
+ 	d->aon = dcam_map(pdev, "aon-apb");
+-	if (IS_ERR(d->mmahb) || IS_ERR(d->mmclk) || IS_ERR(d->aon))
++	if (IS_ERR(d->mmclk) || IS_ERR(d->aon))
+ 		return dev_err_probe(dev, -EINVAL, "missing register regions\n");
+ 
+ 	d->irq = platform_get_irq(pdev, 0);
+diff --git a/drivers/media/platform/sprd/sc7730-vsp.c b/drivers/media/platform/sprd/sc7730-vsp.c
+new file mode 100644
+index 000000000..e85b0bcf3
+--- /dev/null
++++ b/drivers/media/platform/sprd/sc7730-vsp.c
+@@ -0,0 +1,483 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* SC7730 VSP register/IRQ bridge for the SCX35 decoder ABI.
++ *
++ * This is a privileged bring-up interface, not a V4L2 decoder. Userspace
++ * programs DMA addresses directly. Keep the device root-only. A single
++ * acquisition owns the engine; an mmap holds its file and power domain.
++ */
++#include <linux/capability.h>
++#include <linux/delay.h>
++#include <linux/dma-mapping.h>
++#include <linux/interrupt.h>
++#include <linux/io.h>
++#include <linux/mfd/syscon.h>
++#include <linux/miscdevice.h>
++#include <linux/mm.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/pm_runtime.h>
++#include <linux/pm_wakeup.h>
++#include <linux/regmap.h>
++#include <linux/slab.h>
++#include <linux/semaphore.h>
++#include <linux/sizes.h>
++#include <linux/spinlock.h>
++#include <linux/uaccess.h>
++#include <linux/wait.h>
++#include <uapi/linux/sprd_vsp.h>
++
++#define MM_EB 0x00
++#define MM_RST 0x04
++#define MM_CKG 0x08
++#define EB_VSP BIT(3)
++#define EB_CKG BIT(6)
++#define RST_VSP BIT(4)
++#define CKG_VSP BIT(5)
++#define CKG_AXI BIT(7)
++#define CLK_AHB 0x20
++#define CLK_VSP 0x30
++#define ARM_STS 0x10
++#define ARM_MASK 0x14
++#define ARM_CLR 0x18
++#define GLB_STS 0x1000
++#define GLB_MASK 0x1004
++#define GLB_CLR 0x1008
++#define GLB_IRQS (BIT(1) | BIT(2) | BIT(4) | BIT(5))
++#define ARM_IRQS GENMASK(2, 0)
++#define BUFFER_BASE 0x10000000U
++#define BUFFER_STEP SZ_16M
++#define MAX_BUFFERS 32
++#define MAX_DMA_BYTES (96 * SZ_1M)
++
++struct vsp_buffer {
++	void *cpu;
++	dma_addr_t dma;
++	size_t size;
++};
++
++struct vsp_file;
++
++struct sc7730_vsp {
++	struct device *dev;
++	struct miscdevice misc;
++	struct regmap *mm;
++	void __iomem *regs, *clk, *aon;
++	phys_addr_t phys;
++	struct mutex lock;
++	spinlock_t irq_lock;
++	wait_queue_head_t wait;
++	unsigned int users;
++	struct semaphore gate;
++	struct vsp_file *owner;
++	bool enabled;
++	u32 status, freq;
++	int irq;
++};
++
++struct vsp_file {
++	struct sc7730_vsp *vsp;
++	unsigned int nbufs;
++	size_t allocated;
++	struct vsp_buffer bufs[MAX_BUFFERS];
++};
++
++static void vsp_set_freq(struct sc7730_vsp *v)
++{
++	u32 value = readl(v->clk + CLK_VSP);
++
++	writel((value & ~3U) | (3 - v->freq), v->clk + CLK_VSP);
++}
++
++static void vsp_reset(struct sc7730_vsp *v)
++{
++	regmap_update_bits(v->mm, MM_RST, RST_VSP, RST_VSP);
++	udelay(2);
++	regmap_update_bits(v->mm, MM_RST, RST_VSP, 0);
++}
++
++static void vsp_quiesce(struct sc7730_vsp *v)
++{
++	writel(0, v->regs + GLB_MASK);
++	writel(0, v->regs + ARM_MASK);
++	vsp_reset(v);
++	writel(GLB_IRQS, v->regs + GLB_CLR);
++	writel(ARM_IRQS, v->regs + ARM_CLR);
++}
++
++static irqreturn_t vsp_irq(int irq, void *data)
++{
++	struct sc7730_vsp *v = data;
++	u32 glb = readl(v->regs + GLB_STS) & GLB_IRQS;
++	u32 arm = readl(v->regs + ARM_STS) & ARM_IRQS;
++
++	if (!glb && !arm)
++		return IRQ_NONE;
++	writel(glb, v->regs + GLB_CLR);
++	writel(arm, v->regs + ARM_CLR);
++	spin_lock(&v->irq_lock);
++	/* The legacy library expects VSP bits, or 0xff for ARM-only IRQs. */
++	v->status |= glb ? glb : 0xff;
++	spin_unlock(&v->irq_lock);
++	wake_up_interruptible(&v->wait);
++	return IRQ_HANDLED;
++}
++
++static int vsp_resume(struct device *dev)
++{
++	struct sc7730_vsp *v = dev_get_drvdata(dev);
++	int ret;
++
++	/* genpd powered MM before this callback; no MM reads before here. */
++	ret = regmap_update_bits(v->mm, MM_EB, EB_CKG | EB_VSP,
++				EB_CKG | EB_VSP);
++	if (ret)
++		return ret;
++	regmap_update_bits(v->mm, MM_CKG, CKG_AXI | CKG_VSP,
++			   CKG_AXI | CKG_VSP);
++	writel(3, v->clk + CLK_AHB); /* TDPLL / 5, same as DCAM */
++	vsp_set_freq(v);
++	vsp_quiesce(v);
++	enable_irq(v->irq);
++	return 0;
++}
++
++static int vsp_suspend(struct device *dev)
++{
++	struct sc7730_vsp *v = dev_get_drvdata(dev);
++
++	disable_irq(v->irq);
++	vsp_quiesce(v);
++	regmap_update_bits(v->mm, MM_CKG, CKG_VSP, 0);
++	regmap_update_bits(v->mm, MM_EB, EB_VSP, 0);
++	/* Leave shared CKG/AXI gates to genpd; DCAM may still be active. */
++	return 0;
++}
++
++static int vsp_open(struct inode *inode, struct file *file)
++{
++	struct sc7730_vsp *v = container_of(file->private_data,
++					  struct sc7730_vsp, misc);
++	struct vsp_file *fh;
++	int ret;
++
++	if (!capable(CAP_SYS_RAWIO))
++		return -EPERM;
++	fh = kzalloc_obj(*fh);
++	if (!fh)
++		return -ENOMEM;
++	mutex_lock(&v->lock);
++	ret = pm_runtime_resume_and_get(v->dev);
++	if (ret < 0) {
++		kfree(fh);
++		goto out;
++	}
++	if (!v->users++)
++		pm_stay_awake(v->dev);
++	fh->vsp = v;
++	file->private_data = fh;
++	ret = 0;
++out:
++	mutex_unlock(&v->lock);
++	return ret;
++}
++
++static int vsp_close(struct inode *inode, struct file *file)
++{
++	struct vsp_file *fh = file->private_data;
++	struct sc7730_vsp *v = fh->vsp;
++	unsigned int i;
++
++	mutex_lock(&v->lock);
++	/* An allocator fd must outlive every decoder using its buffers. */
++	if (v->owner == fh || fh->nbufs) {
++		vsp_quiesce(v);
++		synchronize_irq(v->irq);
++	}
++	if (v->owner == fh) {
++		v->owner = NULL;
++		v->enabled = false;
++		up(&v->gate);
++	}
++	for (i = 0; i < fh->nbufs; i++)
++		dma_free_coherent(v->dev, fh->bufs[i].size,
++				  fh->bufs[i].cpu, fh->bufs[i].dma);
++	pm_runtime_put_sync(v->dev);
++	if (!--v->users)
++		pm_relax(v->dev);
++	mutex_unlock(&v->lock);
++	kfree(fh);
++	return 0;
++}
++
++static long vsp_alloc(struct vsp_file *fh, void __user *arg)
++{
++	struct sc7730_vsp *v = fh->vsp;
++	struct sprd_vsp_buffer request;
++	struct vsp_buffer b;
++
++	if (copy_from_user(&request, arg, sizeof(request)))
++		return -EFAULT;
++	if (request.reserved || !request.size || request.size > BUFFER_STEP ||
++	    fh->nbufs == MAX_BUFFERS)
++		return -EINVAL;
++	b.size = PAGE_ALIGN(request.size);
++	if (fh->allocated + b.size > MAX_DMA_BYTES)
++		return -ENOMEM;
++	b.cpu = dma_alloc_coherent(v->dev, b.size, &b.dma, GFP_KERNEL);
++	if (!b.cpu)
++		return -ENOMEM;
++	request.size = b.size;
++	request.dma_addr = b.dma;
++	request.mmap_offset = BUFFER_BASE + fh->nbufs * BUFFER_STEP;
++	if (copy_to_user(arg, &request, sizeof(request))) {
++		dma_free_coherent(v->dev, b.size, b.cpu, b.dma);
++		return -EFAULT;
++	}
++	fh->bufs[fh->nbufs++] = b;
++	fh->allocated += b.size;
++	return 0;
++}
++
++static long vsp_ioctl_locked(struct vsp_file *fh, unsigned int cmd,
++			     void __user *arg)
++{
++	struct sc7730_vsp *v = fh->vsp;
++	unsigned long flags;
++	u32 value;
++	long ret;
++
++	if (v->owner && v->owner != fh &&
++	    cmd != VSP_ALLOC_BUFFER && cmd != VSP_HW_INFO &&
++	    cmd != VSP_CAPABILITY && cmd != VSP_GET_FREQ)
++		return -EPERM;
++	switch (cmd) {
++	case VSP_CONFIG_FREQ:
++		if (get_user(value, (u32 __user *)arg))
++			return -EFAULT;
++		if (value > 3)
++			return -EINVAL;
++		if (v->enabled)
++			return -EBUSY;
++		v->freq = value;
++		vsp_set_freq(v);
++		return 0;
++	case VSP_GET_FREQ:
++		return put_user(v->freq, (u32 __user *)arg);
++	case VSP_HW_INFO:
++		/* Vendor ABI returns AON_APB_EB0, not a VSP register ID. */
++		return put_user(readl(v->aon), (u32 __user *)arg);
++	case VSP_CAPABILITY:
++		return put_user(2, (u32 __user *)arg); /* SCX30G */
++	case VSP_ALLOC_BUFFER:
++		return vsp_alloc(fh, arg);
++	}
++	if (v->owner != fh)
++		return -EPERM;
++	switch (cmd) {
++	case VSP_ENABLE:
++		v->enabled = true;
++		return 0;
++	case VSP_DISABLE:
++	case VSP_RELEASE:
++		vsp_quiesce(v);
++		synchronize_irq(v->irq);
++		v->status = 0;
++		v->enabled = false;
++		if (cmd == VSP_RELEASE) {
++			v->owner = NULL;
++			up(&v->gate);
++		}
++		/* Physical clocks stay on until final close, including VMAs. */
++		return 0;
++	case VSP_RESET:
++		vsp_quiesce(v);
++		synchronize_irq(v->irq);
++		v->status = 0;
++		return 0;
++	case VSP_COMPLETE:
++		if (!v->enabled)
++			return -EPERM;
++		ret = wait_event_interruptible_timeout(v->wait,
++				READ_ONCE(v->status), msecs_to_jiffies(200));
++		spin_lock_irqsave(&v->irq_lock, flags);
++		value = v->status;
++		v->status = 0;
++		spin_unlock_irqrestore(&v->irq_lock, flags);
++		if (ret <= 0) {
++			value |= ret ? BIT(30) : BIT(31);
++			vsp_quiesce(v);
++		}
++		if (put_user(value, (u32 __user *)arg))
++			return -EFAULT;
++		return ret > 0 ? 0 : ret < 0 ? -EINVAL : -ETIMEDOUT;
++	default:
++		return -ENOTTY;
++	}
++}
++
++static long vsp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
++{
++	struct vsp_file *fh = file->private_data;
++	struct sc7730_vsp *v = fh->vsp;
++	long ret;
++
++	/* Never wait for ownership with lock held: RELEASE needs the lock. */
++	if (cmd == VSP_ACQUAIRE) {
++		ret = down_timeout(&v->gate, msecs_to_jiffies(500));
++		if (ret)
++			return ret;
++		mutex_lock(&v->lock);
++		v->owner = fh;
++		v->status = 0;
++		mutex_unlock(&v->lock);
++		return 0;
++	}
++	if (mutex_lock_interruptible(&v->lock))
++		return -ERESTARTSYS;
++	ret = vsp_ioctl_locked(fh, cmd, (void __user *)arg);
++	mutex_unlock(&v->lock);
++	return ret;
++}
++
++static int vsp_mmap(struct file *file, struct vm_area_struct *vma)
++{
++	struct vsp_file *fh = file->private_data;
++	struct sc7730_vsp *v = fh->vsp;
++	unsigned long offset = vma->vm_pgoff << PAGE_SHIFT;
++	unsigned long size = vma->vm_end - vma->vm_start;
++	unsigned int slot;
++	int ret = -EINVAL;
++
++	if (vma->vm_pgoff > (U32_MAX >> PAGE_SHIFT) ||
++	    !(vma->vm_flags & VM_SHARED) || vma->vm_flags & VM_EXEC)
++		return -EINVAL;
++	mutex_lock(&v->lock);
++	vm_flags_clear(vma, VM_MAYEXEC);
++	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP | VM_DONTCOPY);
++	if (!vma->vm_pgoff && size <= SPRD_VSP_MAP_SIZE) {
++		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
++		ret = io_remap_pfn_range(vma, vma->vm_start,
++					v->phys >> PAGE_SHIFT, size,
++					vma->vm_page_prot);
++	} else if (offset >= BUFFER_BASE &&
++		   !((offset - BUFFER_BASE) % BUFFER_STEP)) {
++		slot = (offset - BUFFER_BASE) / BUFFER_STEP;
++		if (slot < fh->nbufs && size == fh->bufs[slot].size) {
++			vma->vm_pgoff = 0;
++			ret = dma_mmap_coherent(v->dev, vma, fh->bufs[slot].cpu,
++						fh->bufs[slot].dma, size);
++		}
++	}
++	mutex_unlock(&v->lock);
++	return ret;
++}
++
++static const struct file_operations vsp_fops = {
++	.owner = THIS_MODULE,
++	.open = vsp_open,
++	.release = vsp_close,
++	.unlocked_ioctl = vsp_ioctl,
++	.mmap = vsp_mmap,
++	.llseek = noop_llseek,
++};
++
++static int vsp_system_suspend(struct device *dev)
++{
++	struct sc7730_vsp *v = dev_get_drvdata(dev);
++	int ret;
++
++	mutex_lock(&v->lock);
++	ret = v->users ? -EBUSY : 0;
++	mutex_unlock(&v->lock);
++	return ret;
++}
++
++static const struct dev_pm_ops vsp_pm = {
++	RUNTIME_PM_OPS(vsp_suspend, vsp_resume, NULL)
++	.suspend = vsp_system_suspend,
++};
++
++static int vsp_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct sc7730_vsp *v;
++	struct resource *res;
++	int ret;
++
++	v = devm_kzalloc(dev, sizeof(*v), GFP_KERNEL);
++	if (!v)
++		return -ENOMEM;
++	v->dev = dev;
++	mutex_init(&v->lock);
++	sema_init(&v->gate, 1);
++	spin_lock_init(&v->irq_lock);
++	init_waitqueue_head(&v->wait);
++	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "vsp");
++	if (!res || resource_size(res) < 0xc000)
++		return -EINVAL;
++	v->phys = res->start;
++	v->regs = devm_ioremap_resource(dev, res);
++	if (IS_ERR(v->regs))
++		return PTR_ERR(v->regs);
++	/* Shared clock/AON windows, only our own mux is written. */
++	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "mm-clk");
++	if (!res)
++		return -EINVAL;
++	v->clk = devm_ioremap(dev, res->start, resource_size(res));
++	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "aon-apb");
++	if (!res)
++		return -EINVAL;
++	v->aon = devm_ioremap(dev, res->start, resource_size(res));
++	if (!v->clk || !v->aon)
++		return -ENOMEM;
++	v->mm = syscon_regmap_lookup_by_phandle(dev->of_node, "sprd,mm-ahb");
++	if (IS_ERR(v->mm))
++		return dev_err_probe(dev, PTR_ERR(v->mm), "MM AHB syscon\n");
++	ret = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
++	if (ret)
++		return ret;
++	v->irq = platform_get_irq(pdev, 0);
++	if (v->irq < 0)
++		return v->irq;
++	ret = devm_request_irq(dev, v->irq, vsp_irq, IRQF_NO_AUTOEN,
++			       dev_name(dev), v);
++	if (ret)
++		return ret;
++	platform_set_drvdata(pdev, v);
++	ret = device_init_wakeup(dev, true);
++	if (ret)
++		return ret;
++	pm_runtime_set_suspended(dev);
++	pm_runtime_enable(dev);
++	v->misc.minor = MISC_DYNAMIC_MINOR;
++	v->misc.name = "sprd_vsp";
++	v->misc.fops = &vsp_fops;
++	v->misc.parent = dev;
++	v->misc.mode = 0600;
++	ret = misc_register(&v->misc);
++	if (ret) {
++		pm_runtime_disable(dev);
++		device_init_wakeup(dev, false);
++	}
++	return ret;
++}
++
++static const struct of_device_id vsp_of_match[] = {
++	{ .compatible = "sprd,sc7730-vsp" },
++	{ }
++};
++
++static struct platform_driver vsp_driver = {
++	.probe = vsp_probe,
++	.driver = {
++		.name = "sc7730-vsp",
++		.of_match_table = vsp_of_match,
++		.pm = pm_ptr(&vsp_pm),
++		.suppress_bind_attrs = true,
++	},
++};
++builtin_platform_driver(vsp_driver);
++MODULE_DESCRIPTION("SC7730 VSP privileged register and IRQ bridge");
++MODULE_LICENSE("GPL");
+diff --git a/include/uapi/linux/sprd_vsp.h b/include/uapi/linux/sprd_vsp.h
+new file mode 100644
+index 000000000..89447b5b3
+--- /dev/null
++++ b/include/uapi/linux/sprd_vsp.h
+@@ -0,0 +1,34 @@
++/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
++#ifndef _UAPI_LINUX_SPRD_VSP_H
++#define _UAPI_LINUX_SPRD_VSP_H
++
++#include <linux/ioctl.h>
++#include <linux/types.h>
++
++/* SCX35 userspace ABI, including the original ACQUAIRE spelling. */
++#define SPRD_VSP_MAP_SIZE 0xa000
++#define VSP_CONFIG_FREQ _IOW('m', 1, unsigned int)
++#define VSP_GET_FREQ _IOR('m', 2, unsigned int)
++#define VSP_ENABLE _IO('m', 3)
++#define VSP_DISABLE _IO('m', 4)
++#define VSP_ACQUAIRE _IO('m', 5)
++#define VSP_RELEASE _IO('m', 6)
++/* Despite _IO, COMPLETE, HW_INFO and CAPABILITY take a __u32 pointer. */
++#define VSP_COMPLETE _IO('m', 7)
++#define VSP_RESET _IO('m', 8)
++#define VSP_HW_INFO _IO('m', 9)
++#define VSP_CAPABILITY _IO('m', 10)
++
++/* Local bring-up extension: coherent CMA buffers, owned by this open file.
++ * mmap at mmap_offset; buffers live until the file and its VMAs are gone.
++ * No arbitrary physical addresses or foreign DMA buffers can be imported.
++ */
++struct sprd_vsp_buffer {
++	__u32 size;
++	__u32 dma_addr;
++	__u32 mmap_offset;
++	__u32 reserved;
++};
++#define VSP_ALLOC_BUFFER _IOWR('m', 32, struct sprd_vsp_buffer)
++
++#endif
+-- 
+2.47.3
+

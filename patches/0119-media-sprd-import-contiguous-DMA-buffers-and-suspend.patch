@@ -1,0 +1,525 @@
+From 373e87c78b70d0e34baf54bf4869fe0f822310b5 Mon Sep 17 00:00:00 2001
+From: Deniz Kokden <koekdendeniz@gmail.com>
+Date: Mon, 9 Nov 2026 09:57:42 +0000
+Subject: [PATCH 119/127] media: sprd: import contiguous DMA buffers and
+ suspend idle VSP clients
+
+Allow the decoder to write directly to linear minigbm NV12 buffers.
+Pin imported DMA-BUFs, validate contiguous 32-bit DMA ranges, and release
+imports with per-file generation IDs once the decoder drops DPB refs.
+Reuse freed import slots without invalidating coherent buffer mappings.
+Use the reservation-lock wrappers for attachment map and unmap.
+
+Bound the slowest permitted vendor clock level through a module
+parameter. Its default preserves the vendor ABI; a policy value of zero
+permits the measured 256 MHz path rather than the blob's 76.8 MHz default.
+Apply changes only when a new CONFIG_FREQ request precedes a job.
+
+Tie MM runtime power to ACQUIRE/RELEASE instead of the lifetime of every
+open file. Revoke userspace MMIO PTEs before gating clocks and service
+register faults only for the enabled engine owner. Inactive faults return
+SIGBUS rather than touching an unclocked bus. Preserve the original high
+CMA mmap offsets so MMIO invalidation does not remove buffer mappings.
+
+On SM-T560 with Android clang r596125, verify ioctl rejection, timeout,
+CMA/VMA lifetime, register revocation and reacquisition, H.264 High/B-frame
+decode to Gralloc, import reuse and stale-ID rejection. A 120-frame Blender
+sample matches the software decoder byte for byte. Suspend for 15 seconds
+with an idle FD and both MMIO/CMA mappings retained, then reacquire and
+verify the buffer and engine. Keep the existing audio overlay unchanged.
+
+Assisted-by: GPT-6 (Codex)
+---
+ drivers/media/platform/sprd/Kconfig      |   1 +
+ drivers/media/platform/sprd/sc7730-vsp.c | 273 ++++++++++++++++++++---
+ include/uapi/linux/sprd_vsp.h            |  15 +-
+ 3 files changed, 251 insertions(+), 38 deletions(-)
+
+diff --git a/drivers/media/platform/sprd/Kconfig b/drivers/media/platform/sprd/Kconfig
+index 883ab2f2f..66b85458a 100644
+--- a/drivers/media/platform/sprd/Kconfig
++++ b/drivers/media/platform/sprd/Kconfig
+@@ -24,6 +24,7 @@ config VIDEO_SC7730_DCAM
+ config VIDEO_SC7730_VSP
+ 	bool "Spreadtrum SC7730 privileged VSP bridge"
+ 	depends on ARCH_SPRD && OF && PM
++	select DMA_SHARED_BUFFER
+ 	select MFD_SYSCON
+ 	help
+ 	  Register mapping, coherent buffers, clocks and interrupt waiting
+diff --git a/drivers/media/platform/sprd/sc7730-vsp.c b/drivers/media/platform/sprd/sc7730-vsp.c
+index e85b0bcf3..7b1794849 100644
+--- a/drivers/media/platform/sprd/sc7730-vsp.c
++++ b/drivers/media/platform/sprd/sc7730-vsp.c
+@@ -3,11 +3,14 @@
+  *
+  * This is a privileged bring-up interface, not a V4L2 decoder. Userspace
+  * programs DMA addresses directly. Keep the device root-only. A single
+- * acquisition owns the engine; an mmap holds its file and power domain.
++ * acquisition owns the engine and power domain. Register PTEs are revoked
++ * before gating clocks; inactive register faults return SIGBUS.
+  */
+ #include <linux/capability.h>
+ #include <linux/delay.h>
+ #include <linux/dma-mapping.h>
++#include <linux/dma-buf.h>
++#include <linux/scatterlist.h>
+ #include <linux/interrupt.h>
+ #include <linux/io.h>
+ #include <linux/mfd/syscon.h>
+@@ -51,10 +54,37 @@
+ #define MAX_BUFFERS 32
+ #define MAX_DMA_BYTES (96 * SZ_1M)
+ 
++/* Apply policy only at the next CONFIG_FREQ, never during a running job. */
++static unsigned int max_freq_level = 3;
++
++static int vsp_set_max_freq_level(const char *val, const struct kernel_param *kp)
++{
++	unsigned int level;
++	int ret = kstrtouint(val, 0, &level);
++
++	if (ret)
++		return ret;
++	if (level > 3)
++		return -EINVAL;
++	WRITE_ONCE(*(unsigned int *)kp->arg, level);
++	return 0;
++}
++
++static const struct kernel_param_ops vsp_freq_ops = {
++	.set = vsp_set_max_freq_level,
++	.get = param_get_uint,
++};
++module_param_cb(max_freq_level, &vsp_freq_ops, &max_freq_level, 0644);
++MODULE_PARM_DESC(max_freq_level, "Slowest allowed vendor level: 0=256MHz, 3=76.8MHz");
++
+ struct vsp_buffer {
+ 	void *cpu;
+ 	dma_addr_t dma;
+ 	size_t size;
++	struct dma_buf *dmabuf;
++	struct dma_buf_attachment *attachment;
++	struct sg_table *sgt;
++	u32 id;
+ };
+ 
+ struct vsp_file;
+@@ -78,7 +108,9 @@ struct sc7730_vsp {
+ 
+ struct vsp_file {
+ 	struct sc7730_vsp *vsp;
++	struct address_space *mapping;
+ 	unsigned int nbufs;
++	u32 next_id;
+ 	size_t allocated;
+ 	struct vsp_buffer bufs[MAX_BUFFERS];
+ };
+@@ -160,27 +192,44 @@ static int vsp_open(struct inode *inode, struct file *file)
+ 	struct sc7730_vsp *v = container_of(file->private_data,
+ 					  struct sc7730_vsp, misc);
+ 	struct vsp_file *fh;
+-	int ret;
+ 
+ 	if (!capable(CAP_SYS_RAWIO))
+ 		return -EPERM;
+ 	fh = kzalloc_obj(*fh);
+ 	if (!fh)
+ 		return -ENOMEM;
+-	mutex_lock(&v->lock);
+-	ret = pm_runtime_resume_and_get(v->dev);
+-	if (ret < 0) {
+-		kfree(fh);
+-		goto out;
+-	}
+-	if (!v->users++)
+-		pm_stay_awake(v->dev);
+ 	fh->vsp = v;
++	fh->mapping = file->f_mapping;
++	mutex_lock(&v->lock);
++	v->users++;
+ 	file->private_data = fh;
+-	ret = 0;
+-out:
+ 	mutex_unlock(&v->lock);
+-	return ret;
++	return 0;
++}
++
++static void vsp_revoke_registers(struct vsp_file *fh)
++{
++	fh->vsp->enabled = false;
++	/* Only offset 0 is MMIO. CMA VMAs retain their original high offsets. */
++	unmap_mapping_range(fh->mapping, 0, SPRD_VSP_MAP_SIZE, 1);
++}
++
++static void vsp_unimport(struct vsp_buffer *b)
++{
++	dma_buf_unmap_attachment_unlocked(b->attachment, b->sgt, DMA_BIDIRECTIONAL);
++	dma_buf_detach(b->dmabuf, b->attachment);
++	dma_buf_put(b->dmabuf);
++	memset(b, 0, sizeof(*b));
++}
++
++static unsigned int vsp_free_slot(struct vsp_file *fh)
++{
++	unsigned int i;
++
++	for (i = 0; i < MAX_BUFFERS; i++)
++		if (!fh->bufs[i].size)
++			return i;
++	return MAX_BUFFERS;
+ }
+ 
+ static int vsp_close(struct inode *inode, struct file *file)
+@@ -191,21 +240,26 @@ static int vsp_close(struct inode *inode, struct file *file)
+ 
+ 	mutex_lock(&v->lock);
+ 	/* An allocator fd must outlive every decoder using its buffers. */
+-	if (v->owner == fh || fh->nbufs) {
++	if (v->owner == fh) {
++		vsp_revoke_registers(fh);
+ 		vsp_quiesce(v);
+ 		synchronize_irq(v->irq);
+-	}
+-	if (v->owner == fh) {
+ 		v->owner = NULL;
+-		v->enabled = false;
++		pm_runtime_put_sync(v->dev);
++		pm_relax(v->dev);
+ 		up(&v->gate);
+ 	}
+-	for (i = 0; i < fh->nbufs; i++)
+-		dma_free_coherent(v->dev, fh->bufs[i].size,
+-				  fh->bufs[i].cpu, fh->bufs[i].dma);
+-	pm_runtime_put_sync(v->dev);
+-	if (!--v->users)
+-		pm_relax(v->dev);
++	for (i = 0; i < fh->nbufs; i++) {
++		struct vsp_buffer *b = &fh->bufs[i];
++
++		if (!b->size)
++			continue;
++		if (b->dmabuf)
++			vsp_unimport(b);
++		else
++			dma_free_coherent(v->dev, b->size, b->cpu, b->dma);
++	}
++	v->users--;
+ 	mutex_unlock(&v->lock);
+ 	kfree(fh);
+ 	return 0;
+@@ -215,12 +269,13 @@ static long vsp_alloc(struct vsp_file *fh, void __user *arg)
+ {
+ 	struct sc7730_vsp *v = fh->vsp;
+ 	struct sprd_vsp_buffer request;
+-	struct vsp_buffer b;
++	struct vsp_buffer b = {};
++	unsigned int slot = vsp_free_slot(fh);
+ 
+ 	if (copy_from_user(&request, arg, sizeof(request)))
+ 		return -EFAULT;
+ 	if (request.reserved || !request.size || request.size > BUFFER_STEP ||
+-	    fh->nbufs == MAX_BUFFERS)
++	    slot == MAX_BUFFERS)
+ 		return -EINVAL;
+ 	b.size = PAGE_ALIGN(request.size);
+ 	if (fh->allocated + b.size > MAX_DMA_BYTES)
+@@ -230,16 +285,114 @@ static long vsp_alloc(struct vsp_file *fh, void __user *arg)
+ 		return -ENOMEM;
+ 	request.size = b.size;
+ 	request.dma_addr = b.dma;
+-	request.mmap_offset = BUFFER_BASE + fh->nbufs * BUFFER_STEP;
++	request.mmap_offset = BUFFER_BASE + slot * BUFFER_STEP;
+ 	if (copy_to_user(arg, &request, sizeof(request))) {
+ 		dma_free_coherent(v->dev, b.size, b.cpu, b.dma);
+ 		return -EFAULT;
+ 	}
+-	fh->bufs[fh->nbufs++] = b;
++	fh->bufs[slot] = b;
++	fh->nbufs = max(fh->nbufs, slot + 1);
+ 	fh->allocated += b.size;
+ 	return 0;
+ }
+ 
++static long vsp_import(struct vsp_file *fh, void __user *arg)
++{
++	struct sc7730_vsp *v = fh->vsp;
++	struct sprd_vsp_import request;
++	struct vsp_buffer b = {};
++	struct scatterlist *sg;
++	size_t span = 0;
++	unsigned int i, slot = vsp_free_slot(fh);
++	int ret;
++
++	if (copy_from_user(&request, arg, sizeof(request)))
++		return -EFAULT;
++	if (request.buffer_id || slot == MAX_BUFFERS)
++		return -EINVAL;
++	b.dmabuf = dma_buf_get(request.fd);
++	if (IS_ERR(b.dmabuf))
++		return PTR_ERR(b.dmabuf);
++	b.size = b.dmabuf->size;
++	if (!b.size || b.size > BUFFER_STEP ||
++	    fh->allocated + b.size > MAX_DMA_BYTES) {
++		ret = -EINVAL;
++		goto put;
++	}
++	b.attachment = dma_buf_attach(b.dmabuf, v->dev);
++	if (IS_ERR(b.attachment)) {
++		ret = PTR_ERR(b.attachment);
++		goto put;
++	}
++	b.sgt = dma_buf_map_attachment_unlocked(b.attachment, DMA_BIDIRECTIONAL);
++	if (IS_ERR(b.sgt)) {
++		ret = PTR_ERR(b.sgt);
++		goto detach;
++	}
++	if (!b.sgt->nents || !b.sgt->sgl) {
++		ret = -EINVAL;
++		goto unmap;
++	}
++	b.dma = sg_dma_address(b.sgt->sgl);
++	for_each_sgtable_dma_sg(b.sgt, sg, i) {
++		if (sg_dma_address(sg) != b.dma + span) {
++			ret = -EINVAL;
++			goto unmap;
++		}
++		span += sg_dma_len(sg);
++	}
++	if (span < b.size || b.dma > U32_MAX - (b.size - 1)) {
++		ret = -EINVAL;
++		goto unmap;
++	}
++	if (fh->next_id == U32_MAX) {
++		ret = -ENOSPC;
++		goto unmap;
++	}
++	b.id = ++fh->next_id;
++	request.buffer_id = b.id;
++	request.dma_addr = b.dma;
++	request.size = b.size;
++	if (copy_to_user(arg, &request, sizeof(request))) {
++		ret = -EFAULT;
++		goto unmap;
++	}
++	fh->bufs[slot] = b;
++	fh->nbufs = max(fh->nbufs, slot + 1);
++	fh->allocated += b.size;
++	return 0;
++unmap:
++	dma_buf_unmap_attachment_unlocked(b.attachment, b.sgt, DMA_BIDIRECTIONAL);
++detach:
++	dma_buf_detach(b.dmabuf, b.attachment);
++put:
++	dma_buf_put(b.dmabuf);
++	return ret;
++}
++
++static long vsp_release_import(struct vsp_file *fh, void __user *arg)
++{
++	u32 id;
++	unsigned int i;
++
++	if (get_user(id, (u32 __user *)arg))
++		return -EFAULT;
++	if (!id)
++		return -EINVAL;
++	if (fh->vsp->owner)
++		return -EBUSY;
++	for (i = 0; i < fh->nbufs; i++) {
++		struct vsp_buffer *b = &fh->bufs[i];
++
++		if (b->dmabuf && b->id == id) {
++			fh->allocated -= b->size;
++			vsp_unimport(b);
++			return 0;
++		}
++	}
++	return -ENOENT;
++}
++
+ static long vsp_ioctl_locked(struct vsp_file *fh, unsigned int cmd,
+ 			     void __user *arg)
+ {
+@@ -249,29 +402,42 @@ static long vsp_ioctl_locked(struct vsp_file *fh, unsigned int cmd,
+ 	long ret;
+ 
+ 	if (v->owner && v->owner != fh &&
+-	    cmd != VSP_ALLOC_BUFFER && cmd != VSP_HW_INFO &&
++	    cmd != VSP_ALLOC_BUFFER && cmd != VSP_IMPORT_BUFFER &&
++	    cmd != VSP_RELEASE_IMPORT &&
++	    cmd != VSP_HW_INFO &&
+ 	    cmd != VSP_CAPABILITY && cmd != VSP_GET_FREQ)
+ 		return -EPERM;
+ 	switch (cmd) {
+ 	case VSP_CONFIG_FREQ:
++		if (v->owner != fh)
++			return -EPERM;
+ 		if (get_user(value, (u32 __user *)arg))
+ 			return -EFAULT;
+ 		if (value > 3)
+ 			return -EINVAL;
+ 		if (v->enabled)
+ 			return -EBUSY;
+-		v->freq = value;
++		v->freq = min(value, READ_ONCE(max_freq_level));
+ 		vsp_set_freq(v);
+ 		return 0;
+ 	case VSP_GET_FREQ:
+ 		return put_user(v->freq, (u32 __user *)arg);
+ 	case VSP_HW_INFO:
+-		/* Vendor ABI returns AON_APB_EB0, not a VSP register ID. */
+-		return put_user(readl(v->aon), (u32 __user *)arg);
++		/* Match the vendor's MM-enabled AON_APB_EB0 snapshot at open. */
++		ret = pm_runtime_resume_and_get(v->dev);
++		if (ret < 0)
++			return ret;
++		value = readl(v->aon);
++		pm_runtime_put_sync(v->dev);
++		return put_user(value, (u32 __user *)arg);
+ 	case VSP_CAPABILITY:
+ 		return put_user(2, (u32 __user *)arg); /* SCX30G */
+ 	case VSP_ALLOC_BUFFER:
+ 		return vsp_alloc(fh, arg);
++	case VSP_IMPORT_BUFFER:
++		return vsp_import(fh, arg);
++	case VSP_RELEASE_IMPORT:
++		return vsp_release_import(fh, arg);
+ 	}
+ 	if (v->owner != fh)
+ 		return -EPERM;
+@@ -281,15 +447,17 @@ static long vsp_ioctl_locked(struct vsp_file *fh, unsigned int cmd,
+ 		return 0;
+ 	case VSP_DISABLE:
+ 	case VSP_RELEASE:
++		vsp_revoke_registers(fh);
+ 		vsp_quiesce(v);
+ 		synchronize_irq(v->irq);
+ 		v->status = 0;
+ 		v->enabled = false;
+ 		if (cmd == VSP_RELEASE) {
+ 			v->owner = NULL;
++			pm_runtime_put_sync(v->dev);
++			pm_relax(v->dev);
+ 			up(&v->gate);
+ 		}
+-		/* Physical clocks stay on until final close, including VMAs. */
+ 		return 0;
+ 	case VSP_RESET:
+ 		vsp_quiesce(v);
+@@ -329,8 +497,15 @@ static long vsp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ 		if (ret)
+ 			return ret;
+ 		mutex_lock(&v->lock);
++		ret = pm_runtime_resume_and_get(v->dev);
++		if (ret < 0) {
++			mutex_unlock(&v->lock);
++			up(&v->gate);
++			return ret;
++		}
+ 		v->owner = fh;
+ 		v->status = 0;
++		pm_stay_awake(v->dev);
+ 		mutex_unlock(&v->lock);
+ 		return 0;
+ 	}
+@@ -341,6 +516,25 @@ static long vsp_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+ 	return ret;
+ }
+ 
++static vm_fault_t vsp_register_fault(struct vm_fault *vmf)
++{
++	struct vsp_file *fh = vmf->vma->vm_private_data;
++	struct sc7730_vsp *v = fh->vsp;
++	vm_fault_t ret = VM_FAULT_SIGBUS;
++
++	mutex_lock(&v->lock);
++	if (v->owner == fh && v->enabled &&
++	    vmf->pgoff < (SPRD_VSP_MAP_SIZE >> PAGE_SHIFT))
++		ret = vmf_insert_pfn(vmf->vma, vmf->address,
++				     (v->phys >> PAGE_SHIFT) + vmf->pgoff);
++	mutex_unlock(&v->lock);
++	return ret;
++}
++
++static const struct vm_operations_struct vsp_register_vm_ops = {
++	.fault = vsp_register_fault,
++};
++
+ static int vsp_mmap(struct file *file, struct vm_area_struct *vma)
+ {
+ 	struct vsp_file *fh = file->private_data;
+@@ -358,16 +552,20 @@ static int vsp_mmap(struct file *file, struct vm_area_struct *vma)
+ 	vm_flags_set(vma, VM_DONTEXPAND | VM_DONTDUMP | VM_DONTCOPY);
+ 	if (!vma->vm_pgoff && size <= SPRD_VSP_MAP_SIZE) {
+ 		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+-		ret = io_remap_pfn_range(vma, vma->vm_start,
+-					v->phys >> PAGE_SHIFT, size,
+-					vma->vm_page_prot);
++		vm_flags_set(vma, VM_IO | VM_PFNMAP);
++		vma->vm_ops = &vsp_register_vm_ops;
++		vma->vm_private_data = fh;
++		ret = 0;
+ 	} else if (offset >= BUFFER_BASE &&
+ 		   !((offset - BUFFER_BASE) % BUFFER_STEP)) {
+ 		slot = (offset - BUFFER_BASE) / BUFFER_STEP;
+-		if (slot < fh->nbufs && size == fh->bufs[slot].size) {
++		if (slot < fh->nbufs && !fh->bufs[slot].dmabuf &&
++		    size == fh->bufs[slot].size) {
+ 			vma->vm_pgoff = 0;
+ 			ret = dma_mmap_coherent(v->dev, vma, fh->bufs[slot].cpu,
+ 						fh->bufs[slot].dma, size);
++			/* Keep CMA out of the low-offset MMIO invalidation range. */
++			vma->vm_pgoff = offset >> PAGE_SHIFT;
+ 		}
+ 	}
+ 	mutex_unlock(&v->lock);
+@@ -389,7 +587,7 @@ static int vsp_system_suspend(struct device *dev)
+ 	int ret;
+ 
+ 	mutex_lock(&v->lock);
+-	ret = v->users ? -EBUSY : 0;
++	ret = v->owner ? -EBUSY : 0;
+ 	mutex_unlock(&v->lock);
+ 	return ret;
+ }
+@@ -481,3 +679,4 @@ static struct platform_driver vsp_driver = {
+ builtin_platform_driver(vsp_driver);
+ MODULE_DESCRIPTION("SC7730 VSP privileged register and IRQ bridge");
+ MODULE_LICENSE("GPL");
++MODULE_IMPORT_NS("DMA_BUF");
+diff --git a/include/uapi/linux/sprd_vsp.h b/include/uapi/linux/sprd_vsp.h
+index 89447b5b3..38f79fefd 100644
+--- a/include/uapi/linux/sprd_vsp.h
++++ b/include/uapi/linux/sprd_vsp.h
+@@ -21,7 +21,7 @@
+ 
+ /* Local bring-up extension: coherent CMA buffers, owned by this open file.
+  * mmap at mmap_offset; buffers live until the file and its VMAs are gone.
+- * No arbitrary physical addresses or foreign DMA buffers can be imported.
++ * No arbitrary physical addresses can be supplied by userspace.
+  */
+ struct sprd_vsp_buffer {
+ 	__u32 size;
+@@ -31,4 +31,17 @@ struct sprd_vsp_buffer {
+ };
+ #define VSP_ALLOC_BUFFER _IOWR('m', 32, struct sprd_vsp_buffer)
+ 
++/* Import a DMA-BUF owned by the caller. Reject noncontiguous DMA mappings.
++ * The import remains pinned until this file (and all of its VMAs) closes.
++ */
++struct sprd_vsp_import {
++	__s32 fd;
++	__u32 dma_addr;
++	__u32 size;
++	__u32 buffer_id;
++};
++#define VSP_IMPORT_BUFFER _IOWR('m', 33, struct sprd_vsp_import)
++/* Release an import only after the decoder has dropped every DPB reference. */
++#define VSP_RELEASE_IMPORT _IOW('m', 34, __u32)
++
+ #endif
+-- 
+2.47.3
+
